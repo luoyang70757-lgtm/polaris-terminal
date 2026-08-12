@@ -1,0 +1,6535 @@
+'use strict';
+/**
+ * renderer.js — 渲染进程(纯 SSH/SFTP 终端版)
+ * 会话列表(SQLite)→ 双击 → 建标签 + xterm 终端 → SSH 直连
+ */
+
+/* global XTerm, XTermAddonFit, Terminal, FitAddon, XLSX */
+
+// ---- xterm 全局兼容 ----
+// 不同版本/构建的浏览器全局名不一样,这里统一归一成"类":
+//   xterm 5.3:   window.Terminal(类)   window.FitAddon(命名空间,类在 .FitAddon 里)
+//   其他版本:    window.XTerm(.Terminal)   window.XTermAddonFit(.FitAddon)
+const XTermClass =
+  (window.XTerm && window.XTerm.Terminal) ||
+  (window.Terminal && window.Terminal.Terminal) ||
+  window.Terminal;
+const FitAddonClass =
+  (window.XTermAddonFit && window.XTermAddonFit.FitAddon) ||
+  (window.FitAddon && window.FitAddon.FitAddon) ||
+  window.FitAddon;
+const SearchAddonClass =
+  (window.XTermAddonSearch && window.XTermAddonSearch.SearchAddon) ||
+  (window.SearchAddon && window.SearchAddon.SearchAddon) ||
+  window.SearchAddon;
+
+// ---- 主题预设(参考 Netcatty 的个性化)----
+// term = 终端配色;css = 应用外壳的 CSS 变量(--term-bg 是终端区域底色)
+const THEMES = {
+  dark: {
+    name: '深空(默认)',
+    term: { background: '#070c18', foreground: '#d7e5ff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
+    css: { '--bg': '#070c18', '--bg-panel': '#0d1530', '--bg-panel-2': '#131d3d', '--bg-hover': '#1b2a52', '--border': '#1d3a66', '--text': '#d7e5ff', '--text-dim': '#7c90c0', '--term-bg': '#070c18', '--input-bg': '#0a1128' },
+  },
+  light: {
+    name: '浅色',
+    term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
+    css: { '--bg': '#f5f6f8', '--bg-panel': '#ffffff', '--bg-panel-2': '#eef0f3', '--bg-hover': '#e2e6ec', '--border': '#d4d7dc', '--text': '#1f2430', '--text-dim': '#5b6472', '--term-bg': '#ffffff', '--input-bg': '#ffffff' },
+  },
+  green: {
+    name: '经典绿',
+    term: { background: '#001b00', foreground: '#33ff33', cursor: '#33ff33', selectionBackground: '#0e6b0e', selectionForeground: '#ffffff' },
+    css: { '--bg': '#001100', '--bg-panel': '#002200', '--bg-panel-2': '#003300', '--bg-hover': '#004400', '--border': '#005500', '--text': '#33ff33', '--text-dim': '#1d7a1d', '--term-bg': '#001b00', '--input-bg': '#001a00' },
+  },
+  solarizedDark: {
+    name: 'Solarized 深',
+    term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
+    css: { '--bg': '#002b36', '--bg-panel': '#073642', '--bg-panel-2': '#0a3d4a', '--bg-hover': '#0e4a58', '--border': '#0e4a58', '--text': '#839496', '--text-dim': '#586e75', '--term-bg': '#002b36', '--input-bg': '#00212b' },
+  },
+  solarizedLight: {
+    name: 'Solarized 浅',
+    term: { background: '#fdf6e3', foreground: '#657b83', cursor: '#657b83', selectionBackground: '#d9d2b5', selectionForeground: '#073642' },
+    css: { '--bg': '#fdf6e3', '--bg-panel': '#eee8d5', '--bg-panel-2': '#e6e0c9', '--bg-hover': '#e3dcc9', '--border': '#d6cfb8', '--text': '#586e75', '--text-dim': '#93a1a1', '--term-bg': '#fdf6e3', '--input-bg': '#fdf6e3' },
+  },
+  nord: {
+    name: 'Nord',
+    term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#5e81ac', selectionForeground: '#ffffff' },
+    css: { '--bg': '#2e3440', '--bg-panel': '#3b4252', '--bg-panel-2': '#434c5e', '--bg-hover': '#4c566a', '--border': '#4c566a', '--text': '#d8dee9', '--text-dim': '#81a1c1', '--term-bg': '#2e3440', '--input-bg': '#2e3440' },
+  },
+  dracula: {
+    name: 'Dracula',
+    term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
+    css: { '--bg': '#282a36', '--bg-panel': '#343746', '--bg-panel-2': '#3d4050', '--bg-hover': '#3d4050', '--border': '#44475a', '--text': '#f8f8f2', '--text-dim': '#bd93f9', '--term-bg': '#282a36', '--input-bg': '#1e2029' },
+  },
+  onedark: {
+    name: 'One Dark',
+    term: { background: '#282c34', foreground: '#abb2bf', cursor: '#528bff', selectionBackground: '#5c78d6', selectionForeground: '#ffffff' },
+    css: { '--bg': '#282c34', '--bg-panel': '#2c313a', '--bg-panel-2': '#353b45', '--bg-hover': '#353b45', '--border': '#3e4451', '--text': '#abb2bf', '--text-dim': '#5c6370', '--term-bg': '#282c34', '--input-bg': '#21252b' },
+  },
+};
+
+// 终端 ANSI 16 色默认色板(可用设置自定义覆盖)
+const DEFAULT_ANSI = ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'];
+
+// ---------- 元素引用 ----------
+const $ = (id) => document.getElementById(id);
+const els = {
+  toolbarStatus: $('toolbar-status'),
+  btnNewSession: $('btn-new-session'),
+  inputSessionSearch: $('input-session-search'),
+  sessionTree: $('session-tree'),
+  tabBar: $('tab-bar'),
+  tabScrollLeft: $('tab-scroll-left'),
+  tabScrollRight: $('tab-scroll-right'),
+  terminalContainer: $('terminal-container'),
+  welcomeHintSession: $('welcome-hint-session'),
+
+  sessionModal: $('session-modal'),
+  sessionModalTitle: $('session-modal-title'),
+  fName: $('f-name'),
+  fHost: $('f-host'),
+  fPort: $('f-port'),
+  fUsername: $('f-username'),
+  fPassword: $('f-password'),
+  fPasswordToggle: $('f-password-toggle'),
+  fPrivateKey: $('f-private-key'),
+  fPrivateKeyPick: $('f-private-key-pick'),
+  fPassphrase: $('f-passphrase'),
+  fPassphraseToggle: $('f-passphrase-toggle'),
+  fJumpHost: $('f-jump-host'),
+  fJumpPort: $('f-jump-port'),
+  fJumpUsername: $('f-jump-username'),
+  fJumpPassword: $('f-jump-password'),
+  fJumpPasswordToggle: $('f-jump-password-toggle'),
+  fEncoding: $('f-encoding'),
+  fOnConnect: $('f-on-connect'),
+  fGroup: $('f-group'),
+  modalSave: $('modal-save'),
+  modalCancel: $('modal-cancel'),
+
+  btnQuickConnect: $('btn-quick-connect'),
+  quickConnect: $('quick-connect'),
+  qcInput: $('qc-input'),
+  qcGo: $('qc-go'),
+  qcClose: $('qc-close'),
+
+  btnNewGroup: $('btn-new-group'),
+  vsGrid: $('vs-grid'),
+  vsList: $('vs-list'),
+  vsTree: $('vs-tree'),
+
+  // 导入/导出已移到"文件"菜单,这里不再放按钮
+  importModal: $('import-modal'),
+  importText: $('import-text'),
+  importResult: $('import-result'),
+  importSave: $('import-save'),
+  importCancel: $('import-cancel'),
+  importExcel: $('import-excel'),
+  importFile: $('import-file'),
+  importBackup: $('import-backup'),
+  importBackupFile: $('import-backup-file'),
+  importExternal: $('import-external'),
+  importExternalFile: $('import-external-file'),
+  importTemplate: $('import-template'),
+  importOverwrite: $('import-overwrite'),
+
+  // 自定义输入弹窗 + 右键菜单
+  promptModal: $('prompt-modal'),
+  promptTitle: $('prompt-title'),
+  promptLabel: $('prompt-label'),
+  promptInput: $('prompt-input'),
+  promptOk: $('prompt-ok'),
+  promptCancel: $('prompt-cancel'),
+  ctxMenu: $('ctx-menu'),
+
+  // 连接/中断二合一 + 锁定
+  btnConnect: $('btn-connect'),
+  btnLock: $('btn-lock'),
+  // JumpServer 资产面板
+  btnBastion2: $('btn-bastion2'),
+  jmsModal: $('jms-modal'),
+  jmsServerSelect: $('jms-server-select'),
+  jmsServerAdd: $('jms-server-add'),
+  jmsServerDel: $('jms-server-del'),
+  jmsName: $('jms-name'),
+  jmsUrl: $('jms-url'),
+  jmsSshHost: $('jms-ssh-host'),
+  jmsSshPort: $('jms-ssh-port'),
+  jmsUser: $('jms-user'),
+  jmsPass: $('jms-pass'),
+  jmsOtp: $('jms-otp'),
+  jmsOtpWrap: $('jms-otp-wrap'),
+  jmsAdvToggle: $('jms-adv-toggle'),
+  jmsAdvBody: $('jms-adv-body'),
+  jmsMsg: $('jms-msg'),
+  jmsSaveBtn: $('jms-save'),
+  jmsLoginBtn: $('jms-login'),
+  jmsLogoutBtn: $('jms-logout'),
+  jmsRefreshBtn: $('jms-refresh'),
+  jmsClose: $('jms-close'),
+  // H3C 堡垒机内置浏览器
+  bastionPanel: $('bastion-panel'),
+  bastionMini: $('bastion-mini'),
+  bastionServerSelect: $('bastion-server-select'),
+  bastionCfg: $('bastion-cfg'),
+  bastionEmptyCfg: $('bastion-empty-cfg'),
+  bastionCfgModal: $('bastion-cfg-modal'),
+  bastionCfgList: $('bastion-cfg-list'),
+  bastionCfgName: $('bastion-cfg-name'),
+  bastionCfgUrl: $('bastion-cfg-url'),
+  bastionCfgAccount: $('bastion-cfg-account'),
+  bastionCfgPass: $('bastion-cfg-pass'),
+  bastionCfgAdd: $('bastion-cfg-add'),
+  bastionCfgClose: $('bastion-cfg-close'),
+  bastionCfgMsg: $('bastion-cfg-msg'),
+  bastionUrl: $('bastion-url'),
+  bastionGo: $('bastion-go'),
+  bastionMin: $('bastion-min'),
+  bastionBack: $('bastion-back'),
+  bastionForward: $('bastion-forward'),
+  bastionReload: $('bastion-reload'),
+  bastionCurrent: $('bastion-current'),
+  bastionEmpty: $('bastion-empty'),
+  bastionClose: $('bastion-close'),
+  bastionLoad: $('bastion-load'),
+  bastionLoading: $('bastion-loading'),
+  bastionZoomIn: $('bastion-zoom-in'),
+  bastionZoomOut: $('bastion-zoom-out'),
+  bastionZoomLabel: $('bastion-zoom-label'),
+  bastionWebview: document.getElementById('bastion-webview'),
+  // 锁定覆盖层(临时锁定)
+  lockOverlay: $('lock-overlay'),
+  loPw: $('lo-pw'),
+  loMsg: $('lo-msg'),
+  loBtn: $('lo-btn'),
+  // 广播模式(批量执行)
+  btnBroadcast: $('btn-broadcast'),
+  // 视图(分屏)下拉菜单
+  btnView: $('btn-view'),
+  viewMenu: $('view-menu'),
+  // 设置
+  btnSettings: $('btn-settings'),
+  settingsModal: $('settings-modal'),
+  setTheme: $('set-theme'),
+  setHighlight: $('set-highlight'),
+  setFontSize: $('set-font-size'),
+  setFontFamily: $('set-font-family'),
+  setAutoReconnect: $('set-autoreconnect'),
+  setVerify: $('set-verify'),
+  setRestore: $('set-restore'),
+  setClose: $('set-close'),
+  ansiEditor: $('ansi-editor'),
+  ansiReset: $('ansi-reset'),
+  setPwd: $('set-pwd'),
+  pwdModal: $('pwd-modal'),
+  pwdCurrent: $('pwd-current'),
+  pwdNew: $('pwd-new'),
+  pwdConfirm: $('pwd-confirm'),
+  pwdMsg: $('pwd-msg'),
+  pwdSave: $('pwd-save'),
+  pwdCancel: $('pwd-cancel'),
+  confirmPwdModal: $('confirm-pwd-modal'),
+  confirmPwdDesc: $('confirm-pwd-desc'),
+  confirmPwdInput: $('confirm-pwd-input'),
+  confirmPwdMsg: $('confirm-pwd-msg'),
+  confirmPwdOk: $('confirm-pwd-ok'),
+  confirmPwdCancel: $('confirm-pwd-cancel'),
+  kbdModal: $('kbd-modal'),
+  kbdDesc: $('kbd-desc'),
+  kbdFields: $('kbd-fields'),
+  kbdOk: $('kbd-ok'),
+  kbdCancel: $('kbd-cancel'),
+  filePwdModal: $('file-pwd-modal'),
+  filePwdTitle: $('file-pwd-title'),
+  filePwdHint: $('file-pwd-hint'),
+  filePwdLabel: $('file-pwd-label'),
+  filePwdInput: $('file-pwd-input'),
+  filePwdInput2: $('file-pwd-input2'),
+  filePwdConfirmWrap: $('file-pwd-confirm-wrap'),
+  filePwdMsg: $('file-pwd-msg'),
+  filePwdOk: $('file-pwd-ok'),
+  filePwdCancel: $('file-pwd-cancel'),
+  // AI 助手
+  btnAi: $('btn-ai'),
+  aiPanel: $('ai-panel'),
+  aiHostDrop: $('ai-host-drop'),
+  aiHostToggle: $('ai-host-toggle'),
+  aiHostLabel: $('ai-host-label'),
+  aiHostPanel: $('ai-host-panel'),
+  aiChat: $('ai-chat'),
+  aiInput: $('ai-input'),
+  aiSend: $('ai-send'),
+  aiStop: $('ai-stop'),
+  aiClose: $('ai-close'),
+  aiConfigToggle: $('ai-config-toggle'),
+  aiConfig: $('ai-config'),
+  aiUrl: $('ai-url'),
+  aiModel: $('ai-model'),
+  aiModelAdd: $('ai-model-add'),
+  aiModelDel: $('ai-model-del'),
+  aiFormat: $('ai-format'),
+  aiKey: $('ai-key'),
+  aiVendor: $('ai-vendor'),
+  aiVendorSelect: $('ai-vendor-select'),
+  aiVendorNew: $('ai-vendor-new'),
+  aiVendorDel: $('ai-vendor-del'),
+  aiConfigSave: $('ai-config-save'),
+
+  // 终端搜索
+  termSearch: $('term-search'),
+  termSearchInput: $('term-search-input'),
+  termSearchPrev: $('term-search-prev'),
+  termSearchNext: $('term-search-next'),
+  termSearchCount: $('term-search-count'),
+  termSearchClose: $('term-search-close'),
+
+  // SFTP 面板
+  btnSftpToggle: $('btn-sftp-toggle'),
+  sftpPanel: $('sftp-panel'),
+  btnTunnel: $('btn-tunnel'),
+  tunnelModal: $('tunnel-modal'),
+  tunnelList: $('tunnel-list'),
+  tunnelNew: $('tunnel-new'),
+  tunnelForm: $('tunnel-form'),
+  tunnelSession: $('tunnel-session'),
+  tunnelType: $('tunnel-type'),
+  tunnelLocalport: $('tunnel-localport'),
+  tunnelName: $('tunnel-name'),
+  tunnelRemoteRow: $('tunnel-remote-row'),
+  tunnelRemotehost: $('tunnel-remotehost'),
+  tunnelRemoteport: $('tunnel-remoteport'),
+  tunnelCreate: $('tunnel-create'),
+  tunnelFormCancel: $('tunnel-form-cancel'),
+  tunnelClose: $('tunnel-close'),
+  sftpPath: $('sftp-path'),
+  sftpList: $('sftp-list'),
+  sftpLog: $('sftp-log'),
+  btnSftpUp: $('btn-sftp-up'),
+  btnSftpRefresh: $('btn-sftp-refresh'),
+  btnSftpMkdir: $('btn-sftp-mkdir'),
+  btnSftpUpload: $('btn-sftp-upload'),
+  btnSftpDownload: $('btn-sftp-download'),
+  btnSftpDelete: $('btn-sftp-delete'),
+  btnSftpSelectAll: $('btn-sftp-select-all'),
+  btnSftpEdit: $('btn-sftp-edit'),
+  sftpProgress: $('sftp-progress'),
+  sftpProgressLabel: $('sftp-progress-label'),
+  btnSftpTransfersClear: $('btn-sftp-transfers-clear'),
+  editModal: $('edit-modal'),
+  editPath: $('edit-path'),
+  editContent: $('edit-content'),
+  editSave: $('edit-save'),
+  editCancel: $('edit-cancel'),
+  sftpFooter: $('sftp-footer'),
+  btnCmd: $('btn-cmd'),
+  cmdPanel: $('cmd-panel'),
+  cmdList: $('cmd-list'),
+  cmdCount: $('cmd-count'),
+  cmdRecordToggle: $('cmd-record-toggle'),
+  cmdArchive: $('cmd-archive'),
+  cmdClear: $('cmd-clear'),
+  cmdClose: $('cmd-close'),
+  setCmdRecord: $('set-cmdrecord'),
+  setSessionLog: $('set-sessionlog'),
+  setLockIdle: $('set-lock-idle'),
+  lockNote: $('lock-note'),
+
+  // 快速命令
+  btnQuick: $('btn-quick'),
+  quickModal: $('quick-modal'),
+  quickList: $('quick-list'),
+  quickName: $('quick-name'),
+  quickCommand: $('quick-command'),
+  quickAddBtn: $('quick-add-btn'),
+  quickCancelBtn: $('quick-cancel-btn'),
+  quickClose: $('quick-close'),
+
+  // 批量执行面板
+  btnBatch: $('btn-batch'),
+  batchPanel: $('batch-panel'),
+  batchHosts: $('batch-hosts'),
+  batchCmd: $('batch-cmd'),
+  batchPanelCount: $('batch-panel-count'),
+  batchRun: $('batch-run'),
+  batchPanelClear: $('batch-panel-clear'),
+  batchResults: $('batch-results'),
+  batchPanelClose: $('batch-panel-close'),
+
+  // 会话录制与回放(一个按钮 + 下拉菜单)
+  btnRec: $('btn-rec'),
+  recMenu: $('rec-menu'),
+  recordingsModal: $('recordings-modal'),
+  recordingsList: $('recordings-list'),
+  recordingsEmpty: $('recordings-empty'),
+  recordingsOpenDir: $('recordings-open-dir'),
+  recordingsClose: $('recordings-close'),
+  replayModal: $('replay-modal'),
+  replayTitle: $('replay-title'),
+  replayTerm: $('replay-term'),
+  replayInputSide: $('replay-input-side'),
+  replaySideToggle: $('replay-side-toggle'),
+  replayInputList: $('replay-input-list'),
+  replayPlay: $('replay-play'),
+  replaySpeed: $('replay-speed'),
+  replayProgress: $('replay-progress'),
+  replayTime: $('replay-time'),
+  replayAllsync: $('replay-allsync'),
+  replayClose: $('replay-close'),
+
+  // 可拖动分隔条
+  sessionPanel: $('session-panel'),
+  dividerV: $('divider-v'),
+  dividerH: $('divider-h'),
+  dividerBastion: $('divider-bastion'),
+  bastionSlot: $('bastion-slot'),
+  btnTogglePanel: $('btn-toggle-panel'),
+
+  // 批量操作条
+  batchBar: $('batch-bar'),
+  batchCount: $('batch-count'),
+  batchConnect: $('batch-connect'),
+  batchClose: $('batch-close'),
+  batchUpload: $('batch-upload'),
+  batchDownload: $('batch-download'),
+  batchDelete: $('batch-delete'),
+  batchClear: $('batch-clear'),
+  btnSelectAllFiltered: $('btn-select-all-filtered'),
+};
+
+// ---------- 应用状态 ----------
+const state = {
+  sessions: [],          // SQLite 里的全部会话
+  tabs: new Map(),       // 终端标签:sessionId -> { ... }
+  activeSessionId: null, // 当前激活的标签
+  editingId: null,       // 弹窗正在编辑的会话 id(null = 新建)
+  broadcast: false,      // 广播模式(参考 Xshell):输入同步到所有已连接会话
+  splitMode: null,       // 分屏模式:null=单面板,'v'=垂直均分(等宽列),'h'=横向均分(等高行)
+  splitSizes: {},        // 分屏面板拖动后的大小:sessionId -> { v: px, h: px }(重新渲染不丢)
+  splitZoom: null,       // 分屏"放大"的面板 sessionId,null=正常网格(点 Cmd+Enter 或面板 ⤢ 切换)
+  groups: [],            // 分组列表 [{ id, name }]
+  collapsedGroups: new Set(), // 被折叠的分组 id 集合
+  recentCollapsed: false, // "最近连接"分组是否折叠(点三角切换)
+  activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
+  selectedForBatch: new Set(), // 多选用于批量操作的会话 id 集合
+  settings: {            // 应用设置(存 localStorage)
+    theme: 'dark',       // 主题名(对应 THEMES 的键)
+    highlight: true,     // 终端关键字高亮开关
+    highlightKeywords: ['error', 'warning', 'fail', 'failed', 'fatal'],
+    aiKey: '',           // (兼容旧数据)AI API Key —— 新结构见 aiVendors
+    aiVendor: '',        // (兼容旧数据)模型厂商名 —— 新结构见 aiVendors
+    aiUrl: 'https://api.anthropic.com/v1/messages', // (兼容旧数据)
+    aiModel: 'deepseek-v4-flash', // (兼容旧数据)
+    aiModels: ['deepseek-v4-flash', 'deepseek-v4-pro'], // (兼容旧数据)
+    aiFormat: 'anthropic',      // (兼容旧数据)
+    aiVendors: {},       // 多厂商配置: 厂商名 -> { url, key, format, model, models[] },每家独立互不影响
+    aiActiveVendor: '',  // 当前激活的厂商名(AI 对话用这家)
+    fontSize: 13,               // 终端字体大小
+    fontFamily: '"SF Mono", Menlo, Consolas, "Courier New", monospace', // 终端字体
+    autoReconnect: true,        // 断线自动重连开关
+    verifyHostKey: true,        // 服务器指纹校验(known_hosts)
+    restoreOnStartup: false,    // 启动时恢复上次打开的会话(默认关,不自动连)
+    restoreSessions: [],        // 上次打开的会话 id 列表
+    sessionLog: true,           // 会话日志落盘开关(默认开)
+    settingsVersion: 2,         // 设置结构版本(用于一次性的默认值迁移)
+    cmdRecord: true,            // 命令记录开关(默认开)
+    lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
+    customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
+    panelCollapsed: false,      // 左侧会话列表是否折叠
+    sessionView: 'tree',        // 会话列表视图: 'tree'树形 | 'list'列表 | 'grid'网格
+  },
+  jmsServers: [],   // JumpServer 服务器列表: [{ id, name, baseUrl, sshHost, sshPort, account, password, token, user, assets, seq }]
+  jmsActiveId: null, // 当前正在管理/登录的服务器 id
+  jmsSeq: 0,         // 合成会话 id 全局计数器
+  jmsRestoreDone: false, // 是否已做过持久登录恢复(避免重复登录)
+  bastionAssets: [], // H3C 堡垒机资产(从 webview 拦截的资产 API 捕获)
+  bastionCollapsed: false, // H3C 堡垒机区是否折叠
+  bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
+  collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
+  sftp: {
+    visible: false,  // 面板是否展开
+    sessionId: null, // 正在浏览哪个连接(跟随活动标签)
+    path: '.',       // 当前远程目录
+    selected: null,  // 最近一次点击的条目 { name, isDir, remotePath }(兼容旧逻辑)
+    selectedSet: new Set(), // 多选集合:存的是 remotePath 字符串,点一下加/取消
+    entries: [],     // 当前列表数据
+    log: [],         // 传输记录: [{ time, text, isError }]
+  },
+  cmdHistory: {},    // 命令记录: sessionId -> { host, commands: [{ time, command }] }
+  cmdArchivesView: null,   // 命令面板视图: null=当前记录, 'files'=归档文件列表
+  cmdArchiveFiles: [],     // 归档批次列表
+  cmdArchiveHost: '',      // 当前查看归档的主机
+  selectedArchiveFile: null, // 选中的归档批次(用于下载/删除)
+  aiSelectedHosts: new Set(), // AI 选中的主机(sessionId 集合,可多选)
+  batchHosts: new Set(),      // 批量执行面板选中的主机(sessionId 集合)
+  recent: [],                 // 最近连接: [{ id, time }] 最近的在前(会话列表顶部展示)
+  recording: new Map(),       // 录制中: sessionId -> true(工具栏录制按钮按当前标签查它)
+};
+
+let sessionSeq = 0;
+
+// 回车键是否应触发"提交":中文输入法组合中(isComposing / keyCode 229)按回车是选字,
+// 不算提交,否则输入法选字会误触发送/保存。
+function isEnterSubmit(e) {
+  return e.key === 'Enter' && !e.isComposing && e.keyCode !== 229;
+}
+
+function setStatus(text, color) {
+  els.toolbarStatus.textContent = text;
+  els.toolbarStatus.style.color = color || 'var(--green)';
+}
+
+// =====================================================================
+// 设置:主题 + 终端关键字高亮(参考 Netcatty 的个性化)
+// =====================================================================
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('jms-settings');
+    if (raw) Object.assign(state.settings, JSON.parse(raw));
+  } catch { /* ignore */ }
+  // v2 迁移:默认"不自动恢复上次连接的会话"(旧默认是 true,老用户一次改成 false)
+  if (!state.settings.settingsVersion || state.settings.settingsVersion < 2) {
+    state.settings.restoreOnStartup = false;
+    state.settings.settingsVersion = 2;
+    saveSettings();
+  }
+  migrateAiVendors(); // 旧版单厂商配置 → 新版多厂商结构
+}
+function saveSettings() {
+  try { localStorage.setItem('jms-settings', JSON.stringify(state.settings)); } catch { /* ignore */ }
+}
+
+// 应用主题:改终端配色 + 应用外壳的 CSS 变量
+function applyTheme() {
+  const th = THEMES[state.settings.theme] || THEMES.dark;
+  const root = document.documentElement.style;
+  for (const [k, v] of Object.entries(th.css)) root.setProperty(k, v);
+  const ansi = state.settings.customAnsi || DEFAULT_ANSI; // ANSI 16 色(可自定义)
+  for (const t of state.tabs.values()) {
+    try {
+      t.term.options.theme = { ...th.term, ansi };
+      t.term.options.background = th.term.background;
+      t.term.refresh(0, t.term.rows - 1);
+    } catch { /* ignore */ }
+  }
+}
+
+function openSettingsModal() {
+  els.setTheme.innerHTML = '';
+  for (const [key, th] of Object.entries(THEMES)) {
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = th.name;
+    els.setTheme.appendChild(opt);
+  }
+  els.setTheme.value = THEMES[state.settings.theme] ? state.settings.theme : 'dark';
+  els.setHighlight.checked = !!state.settings.highlight;
+  els.setFontSize.value = state.settings.fontSize || 13;
+  els.setFontFamily.value = state.settings.fontFamily || '';
+  els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
+  els.setVerify.checked = state.settings.verifyHostKey !== false;
+  els.setRestore.checked = state.settings.restoreOnStartup !== false;
+  els.setCmdRecord.checked = state.settings.cmdRecord !== false;
+  els.setSessionLog.checked = state.settings.sessionLog !== false;
+  els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
+  renderAnsiEditor();
+  refreshLockNote();
+  els.settingsModal.classList.remove('hidden');
+}
+
+// 闲置锁定依赖 App 密码:未设置密码时禁用输入并说明(否则会静默不生效)
+function refreshLockNote() {
+  window.api.lockHas().then((r) => {
+    const has = !!(r && r.ok && r.has);
+    els.setLockIdle.disabled = !has;
+    els.lockNote.textContent = has ? '' : '⚠ 未设置 App 密码,闲置锁定不会生效,请先在下方设置密码';
+  });
+}
+
+// 渲染 ANSI 16 色编辑器(颜色选择器,改色即时生效)
+const ANSI_NAMES = ['黑', '红', '绿', '黄', '蓝', '紫', '青', '白', '亮黑', '亮红', '亮绿', '亮黄', '亮蓝', '亮紫', '亮青', '亮白'];
+function renderAnsiEditor() {
+  const box = els.ansiEditor;
+  box.innerHTML = '';
+  const colors = state.settings.customAnsi || DEFAULT_ANSI;
+  colors.forEach((hex, i) => {
+    const row = document.createElement('label');
+    row.className = 'ansi-row';
+    row.title = `${ANSI_NAMES[i]} (${i + 1})`;
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.value = hex;
+    picker.addEventListener('input', () => {
+      if (!state.settings.customAnsi) state.settings.customAnsi = [...DEFAULT_ANSI];
+      state.settings.customAnsi[i] = picker.value;
+      saveSettings();
+      applyTheme(); // 即时预览
+    });
+    const name = document.createElement('span');
+    name.textContent = ANSI_NAMES[i];
+    row.appendChild(picker);
+    row.appendChild(name);
+    box.appendChild(row);
+  });
+}
+// 重置 ANSI 色板为默认
+function resetAnsi() {
+  state.settings.customAnsi = null;
+  saveSettings();
+  renderAnsiEditor();
+  applyTheme();
+}
+
+// ---- 修改密码(App 密码锁 + 数据库整库重新加密) ----
+function openPwdModal() {
+  els.pwdCurrent.value = els.pwdNew.value = els.pwdConfirm.value = '';
+  els.pwdMsg.classList.add('hidden');
+  els.pwdModal.classList.remove('hidden');
+  els.pwdCurrent.focus();
+}
+function closePwdModal() { els.pwdModal.classList.add('hidden'); }
+async function changePassword() {
+  const cur = els.pwdCurrent.value;
+  const n1 = els.pwdNew.value;
+  const n2 = els.pwdConfirm.value;
+  const showErr = (msg) => { els.pwdMsg.textContent = msg; els.pwdMsg.classList.remove('hidden'); };
+  if (!cur || !n1) { showErr('请填写当前密码和新密码'); return; }
+  if (n1 !== n2) { showErr('两次新密码不一致'); return; }
+  const res = await window.api.lockChange(cur, n1);
+  if (res && res.ok) {
+    closePwdModal();
+    refreshLockNote(); // 密码已设置 → 闲置锁定重新可用
+    alert('✅ 密码已修改,数据库已用新密码重新加密');
+  } else {
+    showErr((res && res.error) || '修改失败');
+  }
+}
+
+// ---- 备份文件密码弹窗(导出设密码 set / 导入输密码 enter) ----
+let filePwdAction = null; // { type:'export', data } | { type:'import', buf }
+function promptFilePwd(mode, action) {
+  filePwdAction = action;
+  const isSet = mode === 'set';
+  els.filePwdTitle.textContent = isSet ? '设置导出密码' : '输入备份密码';
+  els.filePwdHint.textContent = isSet ? '备份文件会用这个密码加密,导入时需输入它。' : '请输入该备份文件当初设置的密码。';
+  els.filePwdConfirmWrap.classList.toggle('hidden', !isSet);
+  els.filePwdInput.value = '';
+  els.filePwdInput2.value = '';
+  els.filePwdMsg.classList.add('hidden');
+  els.filePwdModal.classList.remove('hidden');
+  els.filePwdInput.focus();
+}
+function closeFilePwd() { filePwdAction = null; els.filePwdModal.classList.add('hidden'); }
+async function confirmFilePwd() {
+  const action = filePwdAction;
+  const isSet = !els.filePwdConfirmWrap.classList.contains('hidden');
+  const p1 = els.filePwdInput.value;
+  const showErr = (m) => { els.filePwdMsg.textContent = m; els.filePwdMsg.classList.remove('hidden'); };
+  if (!p1) { showErr('请输入密码'); return; }
+  if (isSet) {
+    if (p1.length < 4) { showErr('密码至少 4 位'); return; }
+    if (p1 !== els.filePwdInput2.value) { showErr('两次密码不一致'); return; }
+  }
+  closeFilePwd();
+  if (!action) return;
+  if (action.type === 'export') {
+    const res = await window.api.exportSessions(action.data, p1);
+    if (res && res.ok) setStatus(`已导出 ${res.count} 个会话(加密) → ${res.path}`, 'var(--green)');
+    else if (res && !res.canceled) alert(res && res.error ? res.error : '导出失败');
+  } else if (action.type === 'import') {
+    const res = await window.api.importBackup(action.buf, p1);
+    if (res && res.ok) {
+      els.importResult.innerHTML = '';
+      setImportPreview(rowsToSessions(res.rows)); // 先预览,点"导入"才提交
+    } else {
+      els.importResult.innerHTML = `<span class="bad">${(res && res.error) || '导入失败'}</span>`;
+    }
+  }
+}
+
+// 从 Xshell/iTerm2 导入:选文件 → 主进程解析 → 预览(密码需重新填,Xshell 加密无法还原)
+async function importExternalSelected() {
+  const files = els.importExternalFile.files;
+  if (!files || !files.length) return;
+  els.importExternalFile.value = '';
+  const paths = [];
+  for (const f of files) {
+    const p = window.api.getPathForFile ? window.api.getPathForFile(f) : f.path;
+    if (p) paths.push(p);
+  }
+  if (!paths.length) { alert('无法获取文件路径'); return; }
+  const res = await window.api.importExternal(paths);
+  if (res && res.ok) {
+    els.importResult.innerHTML = '';
+    setImportPreview(res.rows);
+  } else {
+    els.importResult.innerHTML = `<span class="bad">${(res && res.error) || '解析失败'}</span>`;
+  }
+}
+
+// 从加密备份(.polaris)导入:选文件 → 输密码 → 解密解析 → 统一导入
+async function importBackupSelected() {
+  const file = els.importBackupFile.files[0];
+  if (!file) return;
+  els.importBackupFile.value = ''; // 允许下次再选同一文件
+  const buf = await file.arrayBuffer();
+  promptFilePwd('enter', { type: 'import', buf });
+}
+
+// 把字体大小/字体应用到所有已打开的终端
+function applyFontSettings() {
+  for (const t of state.tabs.values()) {
+    try {
+      t.term.options.fontSize = state.settings.fontSize || 13;
+      t.term.options.fontFamily = state.settings.fontFamily || '"SF Mono", Menlo, Consolas, "Courier New", monospace';
+      t.term.refresh(0, t.term.rows - 1);
+    } catch { /* ignore */ }
+  }
+}
+
+// 旧版只有单套 AI 配置 → 迁移成多厂商字典 aiVendors(老用户不丢配置)
+function migrateAiVendors() {
+  const s = state.settings;
+  const vendors = s.aiVendors && typeof s.aiVendors === 'object' ? s.aiVendors : {};
+  if (Object.keys(vendors).length === 0) {
+    const name = (s.aiVendor || '').trim() || '默认厂商';
+    const models = (Array.isArray(s.aiModels) && s.aiModels.length) ? s.aiModels : ['deepseek-v4-flash', 'deepseek-v4-pro'];
+    vendors[name] = {
+      url: s.aiUrl || '', key: s.aiKey || '', format: s.aiFormat || 'anthropic',
+      model: s.aiModel || models[0], models,
+    };
+    s.aiVendors = vendors;
+  }
+  if (!s.aiActiveVendor || !vendors[s.aiActiveVendor]) {
+    s.aiActiveVendor = Object.keys(vendors)[0] || '';
+  }
+}
+
+// 取当前激活厂商的配置对象
+function activeAiVendor() {
+  return (state.settings.aiVendors || {})[state.settings.aiActiveVendor] || null;
+}
+
+// 填充厂商下拉框(头部那个)
+function fillVendorSelect() {
+  const vendors = state.settings.aiVendors || {};
+  els.aiVendorSelect.innerHTML = '';
+  for (const name of Object.keys(vendors)) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    els.aiVendorSelect.appendChild(opt);
+  }
+  els.aiVendorSelect.value = state.settings.aiActiveVendor || '';
+}
+
+// 切换到某厂商:激活它并把它的配置填进 ⚙ 面板
+function selectAiVendor(name) {
+  if (!name || !(state.settings.aiVendors || {})[name]) return;
+  state.settings.aiActiveVendor = name;
+  saveSettings();
+  fillVendorSelect();
+  fillAiConfig();
+}
+
+// 把当前厂商的配置填进面板(展开 ⚙ 或打开面板/切换厂商时用)
+function fillAiConfig() {
+  const v = activeAiVendor() || {};
+  els.aiVendor.value = state.settings.aiActiveVendor || '';
+  els.aiUrl.value = v.url || '';
+  els.aiFormat.value = v.format || 'anthropic';
+  els.aiKey.value = v.key || '';
+  fillModelSelect();
+}
+
+// 填充模型下拉框:列出当前厂商的模型列表,当前选中的高亮
+function fillModelSelect() {
+  const v = activeAiVendor() || {};
+  if (!Array.isArray(v.models)) v.models = [];
+  // 注意:不再自动补默认模型 —— 否则删空后又会冒出来,看起来"删不掉"。
+  // 默认模型只在新建厂商/迁移老配置时填一次。
+  els.aiModel.innerHTML = '';
+  for (const m of v.models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    els.aiModel.appendChild(opt);
+  }
+  els.aiModel.value = v.model || v.models[0];
+  v.model = els.aiModel.value;
+}
+
+// 添加一个模型(加到当前厂商的列表)
+function addAiModel() {
+  showPrompt({
+    title: '添加模型', label: '模型名', value: '',
+    onOk: (name) => {
+      if (!name) return;
+      const v = activeAiVendor() || {};
+      if (!Array.isArray(v.models)) v.models = [];
+      if (!v.models.includes(name)) v.models.push(name);
+      v.model = name;
+      saveSettings();
+      fillModelSelect();
+    },
+  });
+}
+
+// 删除当前选中的模型(只删当前厂商的)
+function delAiModel() {
+  const cur = els.aiModel.value;
+  if (!cur) return;
+  const v = activeAiVendor() || {};
+  if (!Array.isArray(v.models)) v.models = [];
+  v.models = v.models.filter((m) => m !== cur);
+  v.model = v.models[0] || '';
+  saveSettings();
+  fillModelSelect();
+}
+function closeSettingsModal() {
+  els.settingsModal.classList.add('hidden');
+}
+
+// =====================================================================
+// AI 运维助手(参考 Netcatty 的 Catty Agent)
+// =====================================================================
+const aiHistory = []; // 对话历史 [{ role, content }]
+// 历史上限:只留最近 100 条,防止长时间对话内存无限增长(性能优化)
+function pushAiHistory(msg) {
+  aiHistory.push(msg);
+  if (aiHistory.length > 100) aiHistory.splice(0, aiHistory.length - 100);
+}
+let aiBusy = false;
+let aiSentHistory = [];   // AI 输入框历史(用户发过的提问),↑↓ 调出
+let aiHistoryIndex = -1;  // 当前浏览到的历史位置:-1=未在浏览
+
+function toggleAiPanel() {
+  els.aiPanel.classList.toggle('hidden');
+  if (!els.aiPanel.classList.contains('hidden')) {
+    updateAiHostList();
+    fillVendorSelect();
+    fillAiConfig();
+    els.aiInput.focus();
+  }
+  refitAll(); // 终端区域宽度变了,重新适配
+  syncPanelButtons();
+}
+
+// 刷新 AI 面板的主机多选下拉:列出所有已连接主机(带复选框),可勾选多个
+function updateAiHostList() {
+  const panel = els.aiHostPanel;
+  panel.innerHTML = '';
+  const connected = [...state.tabs.values()].filter((t) => t.status === 'connected');
+  if (connected.length === 0) {
+    panel.innerHTML = '<div class="ai-host-empty">未连接主机</div>';
+    state.aiSelectedHosts.clear();
+    updateAiHostLabel();
+    return;
+  }
+  // 首次(或没选)默认全选已连接主机
+  if (state.aiSelectedHosts.size === 0) {
+    for (const t of connected) state.aiSelectedHosts.add(t.sessionId);
+  }
+  for (const t of connected) {
+    const label = document.createElement('label');
+    label.className = 'ai-host-opt';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.aiSelectedHosts.has(t.sessionId);
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.aiSelectedHosts.add(t.sessionId);
+      else state.aiSelectedHosts.delete(t.sessionId);
+      updateAiHostLabel();
+    });
+    const span = document.createElement('span');
+    span.textContent = `${t.session.name} (${t.session.host})`;
+    label.appendChild(cb);
+    label.appendChild(span);
+    panel.appendChild(label);
+  }
+  updateAiHostLabel();
+}
+
+// 更新主机下拉按钮的显示(已选数量 + 名称)
+function updateAiHostLabel() {
+  const names = [...state.aiSelectedHosts]
+    .map((id) => { const t = state.tabs.get(id); return t && t.session ? t.session.name : null; })
+    .filter(Boolean);
+  const n = names.length;
+  els.aiHostLabel.textContent = n ? `已选 ${n} 台: ${names.join(', ')}` : '未选择主机';
+  els.aiHostLabel.title = names.join(', ') || '';
+}
+
+// 当前正在进行的流式 AI 会话(渲染层实时更新消息气泡用)
+let activeAiStream = null;
+
+// 是不是"清屏"类请求(本地拦截用,保证不依赖模型也能清屏)
+function isClearRequest(text) {
+  const t = String(text).trim();
+  return /^(清屏|清除屏幕|清理屏幕|清一下屏|清下屏|clear|cls)\s*$/i.test(t) ||
+    /^(请|帮我|麻烦|请帮我)(清屏|清除屏幕|清理屏幕)/.test(t);
+}
+
+// 清除 AI 相关终端的显示:优先清"AI 选中的主机"的终端,没选就清当前激活标签
+function clearAiTerminals() {
+  const tabs = [...state.aiSelectedHosts].map((id) => state.tabs.get(id)).filter((t) => t && t.term);
+  const targets = tabs.length
+    ? tabs
+    : (state.tabs.get(state.activeSessionId) ? [state.tabs.get(state.activeSessionId)] : []);
+  for (const t of targets) {
+    try { t.term.clear(); } catch { /* ignore */ }
+  }
+  return targets.length;
+}
+
+async function aiSend() {
+  const text = els.aiInput.value.trim();
+  if (!text || aiBusy) return;
+  // 本地兜底:用户直接说"清屏/clear"→ 不清模型,直接本地清屏。
+  // 原因:小模型有时只在文字里说"已清屏"而不调用 clear_screen 工具,屏幕根本不会真的被清除。
+  if (isClearRequest(text)) {
+    const cleared = clearAiTerminals();
+    els.aiInput.value = '';
+    pushAiHistory({ role: 'user', content: text });
+    appendAiMsg('user', text);
+    const wrap = appendAiMsg('assistant', '');
+    const bodyEl = wrap.querySelector('.ai-msg-body');
+    const span = document.createElement('span');
+    bodyEl.appendChild(span);
+    span.textContent = cleared ? '已清除本地终端屏幕 ✅' : '没有可清屏的终端(请先连接主机)';
+    pushAiHistory({ role: 'assistant', content: span.textContent });
+    return;
+  }
+  const av = activeAiVendor(); // 用当前激活厂商的配置发请求
+  if (!av || !av.key) {
+    alert('请先在 AI ⚙ 里配置当前厂商的 API Key');
+    return;
+  }
+  // 记录发送的提问,供 ↑↓ 调出历史(连续重复只记一条,上限 100)
+  if (aiSentHistory[aiSentHistory.length - 1] !== text) {
+    aiSentHistory.push(text);
+    if (aiSentHistory.length > 100) aiSentHistory.shift();
+  }
+  aiHistoryIndex = -1;
+  els.aiInput.value = '';
+  // 带上选中主机的上下文,让 AI 知道在操作哪些机器(可多选)
+  const selTabs = [...state.aiSelectedHosts]
+    .map((id) => state.tabs.get(id))
+    .filter((t) => t && t.status === 'connected');
+  const ctx = selTabs.length
+    ? `(目标主机: ${selTabs.map((t) => `${t.session.name}(${t.session.username}@${t.session.host})`).join(', ')})`
+    : '(未连接主机)';
+  const hosts = selTabs.map((t) => ({
+    host: t.session.host, port: t.session.port, username: t.session.username, password: t.session.password,
+    privateKey: t.session.private_key || '', passphrase: t.session.passphrase || '',
+    sessionId: t.sessionId,
+  }));
+  pushAiHistory({ role: 'user', content: `${ctx}\n${text}` });
+  appendAiMsg('user', text);
+
+  // 流式消息容器:正文里放一个 span 实时追加文本;工具执行行作为独立 tool 消息
+  const wrap = appendAiMsg('assistant', '');
+  const bodyEl = wrap.querySelector('.ai-msg-body');
+  const streamSpan = document.createElement('span');
+  bodyEl.appendChild(streamSpan);
+  const requestId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  activeAiStream = { requestId, bodyEl, streamSpan, text: '' };
+
+  aiBusy = true;
+  els.aiSend.disabled = true;
+  els.aiStop.classList.remove('hidden'); // 显示"停止"按钮
+
+  const res = await window.api.aiChat({
+    apiKey: av.key,
+    url: av.url,
+    model: av.model,
+    format: av.format,
+    messages: aiHistory,
+    hosts, // 多主机:每项含连接信息 + sessionId(命令同步到这些终端)
+    requestId, // 流事件用它对应到本条消息
+  });
+  aiBusy = false;
+  els.aiSend.disabled = false;
+  els.aiStop.classList.add('hidden');
+
+  const s = activeAiStream;
+  activeAiStream = null;
+  if (res && res.ok) {
+    pushAiHistory({ role: 'assistant', content: res.text });
+    if (s && s.text) fillAiBody(s.bodyEl, s.text); // 流结束用完整文本重渲染(带代码块"执行"按钮)
+  } else if (s && !s.text) {
+    s.bodyEl.textContent = `⚠️ ${res && res.error ? res.error : '请求失败'}`;
+  }
+}
+
+// 主进程流式事件 → 实时更新消息气泡(文本逐字出现,工具执行实时显示)
+window.api.onAiStream((evt) => {
+  const s = activeAiStream;
+  if (!s || evt.requestId !== s.requestId) return;
+  if (evt.type === 'text') {
+    s.text += evt.delta;
+    s.streamSpan.textContent = s.text;
+    els.aiChat.scrollTop = els.aiChat.scrollHeight;
+  } else if (evt.type === 'tool') {
+    appendAiMsg('tool', `▶ AI 执行: ${evt.command}`);
+  } else if (evt.type === 'tool_result') {
+    appendAiMsg('tool', `✓ ${evt.command}\n${String(evt.output).slice(0, 300)}`);
+  } else if (evt.type === 'tool_rejected') {
+    appendAiMsg('tool', `🚫 已拒绝危险命令: ${evt.command}`);
+  } else if (evt.type === 'clear_screen') {
+    // AI 要求清屏:清除"AI 选中的主机"的终端(没选就清当前激活标签)
+    clearAiTerminals();
+  } else if (evt.type === 'error') {
+    // 中途出错:流式文本末尾打上错误标记(否则气泡无提示地停在半截)
+    s.streamSpan.textContent = s.text + (s.text ? '\n' : '') + '⚠️ ' + (evt.message || '请求出错');
+    s.text = s.streamSpan.textContent;
+  }
+});
+
+// 停止按钮:告诉主进程中断当前 AI 执行
+els.aiStop.addEventListener('click', () => {
+  if (activeAiStream) window.api.aiStop(activeAiStream.requestId);
+});
+
+// 把文本填进消息体,解析 ```bash 代码块(带"执行"按钮)
+function fillAiBody(body, text) {
+  body.innerHTML = '';
+  const parts = String(text).split(/```(\w*)\n?([\s\S]*?)```/g);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 3 === 0) {
+      if (parts[i]) body.appendChild(document.createTextNode(parts[i]));
+    } else if (i % 3 === 2) {
+      const code = parts[i].trim();
+      const pre = document.createElement('pre');
+      pre.className = 'ai-code';
+      pre.textContent = code;
+      body.appendChild(pre);
+      const btn = document.createElement('button');
+      btn.className = 'btn-mini ai-run';
+      btn.textContent = '▶ 在当前终端执行';
+      btn.addEventListener('click', () => runInActiveTerminal(code));
+      body.appendChild(btn);
+    }
+  }
+}
+
+// 渲染一条消息;assistant 消息里的 ```bash 代码块会带"执行"按钮
+function appendAiMsg(role, text) {
+  const wrap = document.createElement('div');
+  wrap.className = `ai-msg ${role}`;
+  const label = document.createElement('div');
+  label.className = 'ai-msg-label';
+  label.textContent = role === 'user' ? '你' : 'AI';
+  wrap.appendChild(label);
+  const body = document.createElement('div');
+  body.className = 'ai-msg-body';
+  fillAiBody(body, text);
+  wrap.appendChild(body);
+  els.aiChat.appendChild(wrap);
+  els.aiChat.scrollTop = els.aiChat.scrollHeight;
+  return wrap;
+}
+
+// 把命令打到当前活动连接的终端里执行
+function runInActiveTerminal(command) {
+  const t = state.tabs.get(state.activeSessionId);
+  if (!t || t.status !== 'connected') { alert('当前没有已连接的终端'); return; }
+  window.api.sshWrite(t.sessionId, command + '\r');
+  setStatus(`已在终端执行: ${command.split('\n')[0]}`, 'var(--green)');
+}
+
+// 关键字高亮:把输出文本里的关键字用红色 ANSI 包起来
+// 高亮正则缓存:关键词没变就不重新编译(原来每次收到数据都 new RegExp,很浪费)
+let highlightPattern = null;
+let highlightPatternKey = '';
+function getHighlightPattern() {
+  const kws = state.settings.highlightKeywords.filter(Boolean);
+  const key = kws.join('\u0000'); // 关键词数组变成缓存 key
+  if (highlightPatternKey !== key) {
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    highlightPattern = new RegExp(`\\b(${kws.map(esc).join('|')})\\b`, 'gi');
+    highlightPatternKey = key;
+  }
+  return highlightPattern;
+}
+
+// 对已解码的字符串做关键字高亮(GBK 转码后走这里)
+function highlightString(text) {
+  const kws = state.settings.highlightKeywords.filter((k) => k);
+  if (!state.settings.highlight || !kws.length) return text;
+  return text.replace(getHighlightPattern(), '\x1b[31m$1\x1b[0m');
+}
+
+// UTF-8 字节流高亮:先流式解码成字符串再着色
+function highlightText(tab, bytes) {
+  return highlightString(tab.decoder.decode(bytes, { stream: true }));
+}
+
+// =====================================================================
+// 会话列表(从 SQLite 读取并渲染)
+// =====================================================================
+let groupsCollapsedOnBoot = false; // 只折叠一次(启动时),之后用户自己展开的保持
+async function loadSessions() {
+  const [res, gres] = await Promise.all([
+    window.api.listSessions(),
+    window.api.listGroups(),
+  ]);
+  if (res.ok) {
+    state.sessions = res.sessions;
+    state.groups = gres.ok ? gres.groups : [];
+    // 打开 app 时默认折叠所有分组(不展开一大片);只影响首次加载
+    if (!groupsCollapsedOnBoot) {
+      groupsCollapsedOnBoot = true;
+      for (const g of state.groups) state.collapsedGroups.add(g.id);
+    }
+    renderSessionList(els.inputSessionSearch.value);
+    restoreSessions(); // 数据就绪后恢复上次打开的会话(默认关闭,restoreOnStartup=false 时直接跳过)
+  } else {
+    setStatus(`读取会话失败: ${res.error}`, 'var(--red)');
+  }
+}
+
+// ---------- 最近连接(一键重连) ----------
+function loadRecent() {
+  try { state.recent = JSON.parse(localStorage.getItem('polaris.recent')) || []; } catch { state.recent = []; }
+}
+function saveRecent() {
+  try { localStorage.setItem('polaris.recent', JSON.stringify(state.recent)); } catch { /* ignore */ }
+}
+// 每次连上一个会话,把它记到"最近连接"最前面(去重,最多 8 条)
+function recordRecent(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session || !t.session.id) return;
+  state.recent = state.recent.filter((r) => r.id !== t.session.id);
+  state.recent.unshift({ id: t.session.id, time: Date.now() });
+  if (state.recent.length > 8) state.recent.length = 8;
+  saveRecent();
+}
+
+// 导出会话:选中分组→导该分组(含子分组);否则 勾选 > 搜索 > 全部(与选择逻辑同步)
+async function exportSessions() {
+  const checked = selectedSessions(); // 复选框勾选的会话
+  const filter = (els.inputSessionSearch.value || '').trim();
+  let rows, label;
+  if (state.activeGroupId != null) {
+    const ids = new Set(collectGroupAndDescendants(Number(state.activeGroupId)));
+    rows = state.sessions.filter((s) => ids.has(Number(s.group_id)));
+    const g = state.groups.find((x) => Number(x.id) === Number(state.activeGroupId));
+    label = `分组「${g ? g.name : ''}」(含子分组)共 ${rows.length} 台`;
+  } else if (checked.length) {
+    rows = checked;
+    label = `勾选的 ${rows.length} 台主机`;
+  } else if (filter) {
+    rows = filterSessions(filter);
+    label = `搜索「${filter}」的结果 ${rows.length} 台`;
+  } else {
+    rows = state.sessions;
+    label = `全部会话 ${rows.length} 台`;
+  }
+  if (!rows.length) { alert('没有可导出的会话'); return; }
+  if (!confirm(`将导出 ${label} 到加密备份文件(.polaris)。\n\n🔒 文件会用你设置的密码 AES 加密,密码不再明文落盘。\n\n继续?`)) return;
+  const data = rows.map((s) => ({
+    name: s.name, host: s.host, port: s.port, username: s.username,
+    password: s.password || '', group: s.group_name || '默认分组',
+  }));
+  promptFilePwd('set', { type: 'export', data }); // 设导出密码 → 加密导出
+}
+
+// 导出指定分组的全部会话(分组右键菜单"导出此分组")
+async function exportGroup(gid, groupName) {
+  const ids = new Set(collectGroupAndDescendants(Number(gid)));
+  const rows = state.sessions.filter((s) => ids.has(Number(s.group_id)));
+  if (!rows.length) { alert(`分组「${groupName}」没有会话可导出`); return; }
+  if (!confirm(`将导出分组「${groupName}」的 ${rows.length} 个会话到加密备份。\n\n🔒 文件会用你设置的密码 AES 加密。\n\n继续?`)) return;
+  const data = rows.map((s) => ({
+    name: s.name, host: s.host, port: s.port, username: s.username,
+    password: s.password || '', group: groupName || '默认分组',
+  }));
+  promptFilePwd('set', { type: 'export', data });
+}
+
+// 堡垒机资产搜索:空格分隔多关键词(如多个 IP/名称),命中任意一个就显示
+// 与 filterSessions 语义一致 —— 之前 JMS/H3C 用整体 includes(),空格分隔的多 IP 搜不出来
+function bastionAssetMatch(a, filter) {
+  const terms = (filter || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const hay = (a.name + ' ' + (a.ip || '') + ' ' + (a.accounts || []).join(' ')).toLowerCase();
+  return terms.some((t) => hay.includes(t));
+}
+
+// 按关键词过滤会话(搜索框):空格分隔多关键词,命中任意一个就显示
+function filterSessions(filter) {
+  const terms = (filter || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return state.sessions;
+  return state.sessions.filter((s) => {
+    const hay = `${s.name} ${s.host} ${s.username}`.toLowerCase();
+    return terms.some((t) => hay.includes(t));
+  });
+}
+
+// 按视图渲染会话列表:树形(tree)/列表(list)/网格(grid)
+function renderSessionList(filter) {
+  els.sessionTree.innerHTML = '';
+  const f = (filter || '').toLowerCase();
+  const sessions = filterSessions(filter);
+  if (sessions.length === 0) {
+    renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f);
+    if (els.sessionTree.children.length === 0) { // 无会话也无堡垒机资产时才显示空提示
+      const empty = document.createElement('div');
+      empty.className = 'asset-group';
+      empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
+      els.sessionTree.appendChild(empty);
+    }
+    refreshSelectAllBtn();
+    return;
+  }
+  const view = state.settings.sessionView || 'tree';
+  if (view === 'grid') renderSessionsGrid(sessions);
+  else if (view === 'list') renderSessionsList(sessions);
+  else renderSessionsTree(sessions);
+  // 有搜索词时:会话下方也显示匹配的 JMS/H3C 堡垒机资产(搜索同时对资产生效)
+  if (f) { renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f); }
+  refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
+}
+
+// 按分组归类:Map<分组名, 会话数组>
+function groupSessions(sessions) {
+  const groups = new Map();
+  for (const s of sessions) {
+    const key = s.group_name || '默认分组';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  return groups;
+}
+
+// 建一个会话行(名称 + 悬停地址;拖拽/双击/右键)
+function makeSessionRow(s) {
+  const item = document.createElement('div');
+  const prod = isSessionProd(s); // 生产分组会话:红色警示
+  item.className = 'asset-item' + (prod ? ' prod' : '');
+  item.title = `${s.name}\n${s.username}@${s.host}:${s.port}${prod ? '\n🔴 生产环境!' : ''}`;
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'asset-check';
+  check.checked = state.selectedForBatch.has(s.id);
+  check.addEventListener('change', () => {
+    if (check.checked) state.selectedForBatch.add(s.id);
+    else state.selectedForBatch.delete(s.id);
+    updateBatchBar();
+  });
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = '🖥';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = s.name;
+  item.appendChild(check);
+  item.appendChild(icon);
+  item.appendChild(name);
+
+  // 点会话行 = 用户改在操作会话,取消分组选中(全选回到"全部")
+  item.addEventListener('click', () => {
+    if (state.activeGroupId != null) {
+      state.activeGroupId = null;
+      renderSessionList(els.inputSessionSearch.value);
+    }
+  });
+
+  item.draggable = true;
+  item.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', String(s.id));
+    e.dataTransfer.effectAllowed = 'move';
+    item.classList.add('dragging');
+  });
+  item.addEventListener('dragend', () => item.classList.remove('dragging'));
+  item.addEventListener('dblclick', () => connectToServer(s));
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '✏️ 编辑', action: () => openSessionModal(s) },
+      { label: '📋 克隆', action: () => cloneSession(s) },
+      { label: '🗑 删除', danger: true, action: () => removeSession(s.id) },
+    ]);
+  });
+  return item;
+}
+
+// 树形视图:分组 = 可折叠文件夹(所有连接都挂在某个分组下,无"未分组"概念)
+// 找某分组的"顶级祖先"分组 id(沿 parent_id 一直往上;孤儿返回 null)
+function topLevelGroupId(gid) {
+  let g = state.groups.find((x) => Number(x.id) === Number(gid));
+  if (!g) return null;
+  while (g.parent_id != null) {
+    const parent = state.groups.find((p) => Number(p.id) === Number(g.parent_id));
+    if (!parent) break;
+    g = parent;
+  }
+  return Number(g.id);
+}
+// 收集某分组及其全部后代分组的 id(全选/导出/删除联动用)
+function collectGroupAndDescendants(gid) {
+  const out = [Number(gid)];
+  for (const g of state.groups) {
+    if (Number(g.parent_id) === Number(gid)) out.push(...collectGroupAndDescendants(g.id));
+  }
+  return out;
+}
+
+// 渲染一个分组头(支持缩进);depth 越深缩进越多
+function makeGroupHead(g, depth, collapsed) {
+  const gid = g.id;
+  const isProd = !!g.is_prod;
+  const directCount = state.sessions.filter((s) => Number(s.group_id) === Number(gid)).length;
+  const head = document.createElement('div');
+  head.className = 'asset-group-head' + (isProd ? ' prod' : '');
+  head.style.paddingLeft = `${8 + depth * 18}px`;
+  const caret = document.createElement('span');
+  caret.className = 'asset-group-caret';
+  caret.textContent = collapsed ? '▶' : '▼';
+  const gname = document.createElement('span');
+  gname.className = 'asset-group-name';
+  gname.textContent = g.name + (isProd ? ' 🔴' : '');
+  const gcount = document.createElement('span');
+  gcount.className = 'asset-group-count';
+  gcount.textContent = `(${directCount})`;
+  head.appendChild(caret);
+  head.appendChild(gname);
+  head.appendChild(gcount);
+  // 小三角:折叠/展开,同时把该组设为"全选"目标(用户点开分组=想操作这组)
+  caret.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (collapsed) state.collapsedGroups.delete(gid);
+    else state.collapsedGroups.add(gid);
+    state.activeGroupId = gid;
+    renderSessionList(els.inputSessionSearch.value);
+  });
+  // 点分组头(除小三角):选中该组作为"全选"目标(并展开它),再点一次取消选中
+  head.addEventListener('click', () => {
+    state.activeGroupId = (state.activeGroupId === gid) ? null : gid;
+    state.collapsedGroups.delete(gid);
+    scopeSelectionToTarget(); // 选中分组后:清除其他分组的勾选
+    renderSessionList(els.inputSessionSearch.value);
+  });
+  head.classList.toggle('active-group', Number(state.activeGroupId) === Number(gid));
+  head.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '✏️ 重命名分组', action: () => renameGroup(gid, g.name) },
+      { label: '📁 新建子分组', action: () => newGroup(gid) },
+      { label: isProd ? '🔴 取消生产标记' : '🚨 标记为生产环境', action: () => toggleGroupProd(gid, g.name) },
+      { label: '📤 导出此分组', action: () => exportGroup(gid, g.name) },
+      { label: '🗑 删除分组', danger: true, action: () => deleteGroup(gid, g.name) },
+    ]);
+  });
+  head.dataset.groupId = gid;
+  head.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; head.classList.add('drag-over'); });
+  head.addEventListener('dragleave', () => head.classList.remove('drag-over'));
+  head.addEventListener('drop', (e) => {
+    e.preventDefault();
+    head.classList.remove('drag-over');
+    const sid = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (sid && gid) moveSessionToGroup(sid, gid);
+  });
+  return head;
+}
+
+// 树形视图:支持分组嵌套(子分组缩进显示),父折叠时整棵子树隐藏
+function renderSessionsTree(sessions) {
+  // 最近连接:只在未搜索时显示在列表最顶部,点击/双击可一键重连
+  if (!(els.inputSessionSearch.value || '').trim()) {
+    const recentSessions = state.recent
+      .map((r) => state.sessions.find((s) => s.id === r.id))
+      .filter(Boolean);
+    if (recentSessions.length) {
+      const head = document.createElement('div');
+      head.className = 'asset-group-head';
+      const caret = document.createElement('span');
+      caret.className = 'asset-group-caret';
+      caret.textContent = state.recentCollapsed ? '▶' : '▼';
+      const label = document.createElement('span');
+      label.className = 'asset-group-name';
+      label.textContent = '🕘 最近连接';
+      head.appendChild(caret);
+      head.appendChild(label);
+      // 点三角或整行:折叠/展开"最近连接"(和普通分组的三角行为一致)
+      const toggleRecent = (e) => {
+        e.stopPropagation();
+        state.recentCollapsed = !state.recentCollapsed;
+        renderSessionList(els.inputSessionSearch.value);
+      };
+      caret.addEventListener('click', toggleRecent);
+      head.addEventListener('click', toggleRecent);
+      els.sessionTree.appendChild(head);
+      if (!state.recentCollapsed) {
+        for (const s of recentSessions) els.sessionTree.appendChild(makeSessionRow(s));
+      }
+    }
+  }
+  // 构建分组层级(按 parent_id)
+  const childrenOf = new Map(); // parent_id → [group]
+  const ids = new Set(state.groups.map((g) => g.id));
+  for (const g of state.groups) {
+    const pid = g.parent_id && ids.has(g.parent_id) ? g.parent_id : null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid).push(g);
+  }
+  // 按分组收纳会话
+  const sessByGroup = new Map();
+  for (const s of sessions) {
+    if (!sessByGroup.has(s.group_id)) sessByGroup.set(s.group_id, []);
+    sessByGroup.get(s.group_id).push(s);
+  }
+  // 递归渲染:父折叠 → 跳过整棵子树
+  const renderNode = (g, depth) => {
+    const collapsed = state.collapsedGroups.has(g.id);
+    els.sessionTree.appendChild(makeGroupHead(g, depth, collapsed));
+    if (collapsed) return;
+    for (const child of childrenOf.get(g.id) || []) renderNode(child, depth + 1);
+    for (const s of sessByGroup.get(g.id) || []) {
+      const row = makeSessionRow(s);
+      row.style.paddingLeft = `${24 + depth * 18}px`;
+      els.sessionTree.appendChild(row);
+    }
+  };
+  for (const g of childrenOf.get(null) || []) renderNode(g, 0);
+  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
+}
+
+// 列表视图:分组作为节标题(不折叠),会话平铺
+function renderSessionsList(sessions) {
+  const groups = groupSessions(sessions);
+  // 没在搜索时,把空分组也显示出来
+  if (!(els.inputSessionSearch.value || '').trim()) {
+    for (const g of state.groups) {
+      if (!groups.has(g.name)) groups.set(g.name, []);
+    }
+  }
+  for (const [groupName, list] of groups) {
+    const g = state.groups.find((x) => x.name === groupName);
+    const isProd = !!(g && g.is_prod);
+    const head = document.createElement('div');
+    head.className = 'asset-group-head list-head' + (isProd ? ' prod' : '');
+    head.textContent = `${groupName}${isProd ? ' 🔴' : ''} (${list.length})`;
+    // 仍是拖拽投放目标
+    head.dataset.groupId = (state.groups.find((g) => g.name === groupName) || {}).id || groupName;
+    head.addEventListener('dragover', (e) => { e.preventDefault(); head.classList.add('drag-over'); });
+    head.addEventListener('dragleave', () => head.classList.remove('drag-over'));
+    head.addEventListener('drop', (e) => {
+      e.preventDefault();
+      head.classList.remove('drag-over');
+      const sid = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      const gid = head.dataset.groupId;
+      if (sid && gid) moveSessionToGroup(sid, gid);
+    });
+    // 列表视图分组头:点击选中该分组作为"全选"目标(再点取消)
+    head.addEventListener('click', () => {
+      const gid = Number(head.dataset.groupId) || head.dataset.groupId; // dataset 是字符串,转回数字
+      if (gid) {
+        state.activeGroupId = (state.activeGroupId === gid) ? null : gid;
+        renderSessionList(els.inputSessionSearch.value);
+      }
+    });
+    head.classList.toggle('active-group', state.activeGroupId === Number(head.dataset.groupId) || state.activeGroupId === head.dataset.groupId);
+    els.sessionTree.appendChild(head);
+    for (const s of list) els.sessionTree.appendChild(makeSessionRow(s));
+  }
+  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
+}
+
+// 网格视图:会话卡片
+function renderSessionsGrid(sessions) {
+  const wrap = document.createElement('div');
+  wrap.className = 'session-grid';
+  for (const s of sessions) {
+    const card = document.createElement('div');
+    card.className = 'session-card';
+    card.dataset.sessionId = s.id; // 标签右键"定位到会话列表"靠它找到卡片
+    card.title = `${s.name}\n${s.username}@${s.host}:${s.port}`;
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'card-check';
+    check.checked = state.selectedForBatch.has(s.id);
+    check.addEventListener('change', () => {
+      if (check.checked) state.selectedForBatch.add(s.id);
+      else state.selectedForBatch.delete(s.id);
+      updateBatchBar();
+    });
+    const icon = document.createElement('div');
+    icon.className = 'card-icon';
+    icon.textContent = '🖥';
+    const name = document.createElement('div');
+    name.className = 'card-name';
+    name.textContent = s.name;
+    const addr = document.createElement('div');
+    addr.className = 'card-addr dim';
+    addr.textContent = `${s.username}@${s.host}`;
+    card.appendChild(check);
+    card.appendChild(icon);
+    card.appendChild(name);
+    card.appendChild(addr);
+    card.addEventListener('dblclick', () => connectToServer(s));
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showCtxMenu(e.clientX, e.clientY, [
+        { label: '✏️ 编辑', action: () => openSessionModal(s) },
+        { label: '📋 克隆', action: () => cloneSession(s) },
+        { label: '🗑 删除', danger: true, action: () => removeSession(s.id) },
+      ]);
+    });
+    wrap.appendChild(card);
+  }
+  els.sessionTree.appendChild(wrap);
+  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
+}
+
+// 切换会话列表视图(网格/列表/树形)
+function setSessionView(view) {
+  state.settings.sessionView = view;
+  saveSettings();
+  syncViewButtons();
+  renderSessionList(els.inputSessionSearch.value);
+}
+function syncViewButtons() {
+  const v = state.settings.sessionView || 'tree';
+  els.vsGrid.classList.toggle('active', v === 'grid');
+  els.vsList.classList.toggle('active', v === 'list');
+  els.vsTree.classList.toggle('active', v === 'tree');
+}
+
+// =====================================================================
+// 会话多选 + 批量操作(连接/关闭/SFTP上传下载)
+// =====================================================================
+function updateBatchBar() {
+  const n = state.selectedForBatch.size;
+  els.batchBar.classList.toggle('hidden', n === 0);
+  els.batchCount.textContent = `已选 ${n} 台`;
+  refreshSelectAllBtn(); // 勾选变化时同步"全选/取消全选"按钮文案
+}
+
+// 刷新搜索行"全选"按钮:当前搜索结果全被勾选 → 显示"取消全选",否则显示"全选"
+// 计算"全选"的目标会话:有搜索词按搜索结果;没搜索且选中了某个分组 → 只针对该组;否则全部
+function selectAllTarget() {
+  const f = (els.inputSessionSearch.value || '').trim();
+  if (f) return filterSessions(f);
+  if (state.activeGroupId != null) {
+    // 选中分组 → 含它及全部子分组的会话(Number() 兜底防类型错乱)
+    const ids = new Set(collectGroupAndDescendants(Number(state.activeGroupId)));
+    return state.sessions.filter((s) => ids.has(Number(s.group_id)));
+  }
+  return state.sessions;
+}
+
+function refreshSelectAllBtn() {
+  const target = selectAllTarget();
+  if (target.length === 0) {
+    els.btnSelectAllFiltered.textContent = '全选';
+    els.btnSelectAllFiltered.classList.remove('active');
+    return;
+  }
+  const all = target.every((s) => state.selectedForBatch.has(s.id));
+  // 选中了分组 → 按钮文案提示作用范围
+  const isGroup = state.activeGroupId != null;
+  els.btnSelectAllFiltered.textContent = isGroup ? (all ? '取消本组全选' : '全选本组') : (all ? '取消全选' : '全选');
+  els.btnSelectAllFiltered.classList.toggle('active', all);
+}
+
+// 选中某分组/未分组后:清除"其他分组"里已勾选的主机(选择只针对当前目标)
+function scopeSelectionToTarget() {
+  if (state.activeGroupId == null) return;
+  const targetIds = new Set(selectAllTarget().map((s) => s.id));
+  for (const id of [...state.selectedForBatch]) {
+    if (!targetIds.has(id)) state.selectedForBatch.delete(id);
+  }
+  updateBatchBar();
+}
+
+// 点"全选":把目标会话全部勾选;再点一次取消
+function toggleSelectAllFiltered() {
+  const target = selectAllTarget();
+  if (target.length === 0) return;
+  const allSelected = target.every((s) => state.selectedForBatch.has(s.id));
+  if (allSelected) {
+    for (const s of target) state.selectedForBatch.delete(s.id);
+  } else {
+    for (const s of target) state.selectedForBatch.add(s.id);
+  }
+  updateBatchBar();
+  renderSessionList(els.inputSessionSearch.value); // 重绘刷新勾选框和按钮
+}
+function selectedSessions() {
+  return [...state.selectedForBatch]
+    .map((id) => state.sessions.find((s) => s.id === id))
+    .filter(Boolean);
+}
+// 按数据库会话 id 找已打开的标签
+function findTabBySessionId(dbId) {
+  for (const t of state.tabs.values()) {
+    if (t.session && t.session.id === dbId) return t;
+  }
+  return null;
+}
+
+// 保存当前打开的会话 id(用于下次启动恢复)
+function saveRestoreList() {
+  state.settings.restoreSessions = [...state.tabs.values()]
+    .map((t) => t.session && t.session.id)
+    .filter(Boolean);
+  saveSettings();
+}
+
+// 启动时恢复上次打开的会话(自动重连)
+function restoreSessions() {
+  if (state.settings.restoreOnStartup === false) return;
+  for (const id of state.settings.restoreSessions || []) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (s && !findTabBySessionId(id)) connectToServer(s);
+  }
+}
+function batchClear() {
+  state.selectedForBatch.clear();
+  updateBatchBar();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+// 批量连接:打开所有选中的、尚未打开的会话
+function batchConnect() {
+  for (const s of selectedSessions()) {
+    if (!findTabBySessionId(s.id)) connectToServer(s);
+  }
+  batchClear();
+}
+
+// 批量关闭:关闭选中会话里已打开的终端
+function batchClose() {
+  for (const id of [...state.selectedForBatch]) {
+    const t = findTabBySessionId(id);
+    if (t) closeTab(t.sessionId);
+  }
+  batchClear();
+}
+
+// 菜单「连接选中会话」:连接勾选的会话;若没勾选但当前标签已断开,则重新连接它
+function menuConnect() {
+  const list = selectedSessions();
+  if (list.length) { for (const s of list) if (!findTabBySessionId(s.id)) connectToServer(s); batchClear(); return; }
+  const active = state.tabs.get(state.activeSessionId);
+  if (active && active.session && active.status !== 'connected' && active.status !== 'connecting') {
+    reconnectTab(state.activeSessionId);
+    return;
+  }
+  alert('请先勾选要连接的会话(可点搜索框旁「全选」)');
+}
+
+// 菜单「断开当前终端」:断开当前激活标签的连接但保留标签(可重新连接);无激活则断开勾选里已连接的
+function menuDisconnect() {
+  const activeId = state.activeSessionId;
+  if (activeId && state.tabs.get(activeId)) { disconnectTab(activeId); return; }
+  const checked = [...state.selectedForBatch];
+  let done = 0;
+  for (const id of checked) {
+    const t = findTabBySessionId(id);
+    if (t) { disconnectTab(t.sessionId); done++; }
+  }
+  if (!done) alert('当前没有可断开的连接');
+}
+
+// 锁定覆盖层(临时锁定):铺满主窗口,保留窗口按钮;会话在底层保持,解锁后原样恢复
+function showLockOverlay() {
+  els.lockOverlay.classList.remove('hidden');
+  // Windows 上原生菜单栏(文件/编辑/…)在 DOM 之外,覆盖层盖不住,锁定必须显式隐藏
+  if (window.api.lockMenu) window.api.lockMenu(false);
+  // webview 是原生层,会盖在锁定覆盖层之上(参见 bastion-resize-fix),必须显式隐藏;用 display:none(Windows 上 visibility 不可靠)
+  if (els.bastionWebview && els.bastionWebview.style.display !== 'none') els.bastionWebview.style.display = 'none';
+  els.loMsg.textContent = '';
+  els.loPw.value = '';
+  els.loBtn.disabled = false;
+  els.loPw.disabled = false;
+  els.loPw.focus();
+  // 若正处暴力破解锁定,直接进入倒计时
+  window.api.lockStatus().then((st) => {
+    if (st && st.ok && st.locked) lockOverlayCountdown(st.remainingSec);
+  });
+}
+function hideLockOverlay() {
+  els.lockOverlay.classList.add('hidden');
+  if (window.api.lockMenu) window.api.lockMenu(true);
+  if (els.bastionWebview && els.bastionWebview.style.display === 'none') {
+    els.bastionWebview.style.display = '';
+    setTimeout(bastionFitToWidth, 200); // display:none→显示 后重新适配画面宽度
+  }
+  els.loPw.value = '';
+  resetIdleLock(); // 解锁后重新武装闲置自动锁定
+}
+// 暴力破解锁定倒计时:禁用输入框/按钮,每秒刷新,到 0 恢复
+let loCountdownTimer = null;
+function lockOverlayCountdown(sec) {
+  clearInterval(loCountdownTimer);
+  els.loBtn.disabled = true;
+  els.loPw.disabled = true;
+  let left = Math.max(1, sec);
+  els.loMsg.textContent = `尝试次数过多,请 ${left} 秒后再试`;
+  loCountdownTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(loCountdownTimer);
+      els.loBtn.disabled = false;
+      els.loPw.disabled = false;
+      els.loMsg.textContent = '';
+      els.loPw.focus();
+    } else {
+      els.loMsg.textContent = `尝试次数过多,请 ${left} 秒后再试`;
+    }
+  }, 1000);
+}
+// 提交解锁密码(带防暴力:失败显示剩余次数,锁定显示倒计时)
+async function submitLock() {
+  const p = els.loPw.value;
+  if (!p) { els.loMsg.textContent = '请输入密码'; return; }
+  const v = await window.api.lockVerify(p);
+  if (!v.ok) {
+    if (v.locked) lockOverlayCountdown(v.remainingSec);
+    else els.loMsg.textContent = `密码错误,还剩 ${v.attemptsLeft} 次机会`;
+    els.loPw.value = '';
+    els.loPw.focus();
+    return;
+  }
+  hideLockOverlay();
+}
+
+// 菜单/工具栏「锁定」:临时锁定(需已设置 App 密码)
+function requestLock() {
+  window.api.lockHas().then((r) => {
+    if (!r || !r.ok || !r.has) { alert('请先在设置 → 安全 里设置 App 密码'); return; }
+    showLockOverlay();
+  });
+}
+
+// 连接/断开二合一按钮:跟随"当前激活标签"的状态
+//   激活标签已连接 → 断开它(保留标签);激活标签已断开 → 重新连接它;无激活标签 → 连接勾选会话
+function toggleConnectDisconnect() {
+  const t = state.tabs.get(state.activeSessionId);
+  if (t) {
+    if (t.status === 'connecting') return; // 连接中:不可操作,避免"断开无效"的竞态
+    if (t.status === 'connected') { disconnectTab(t.sessionId); return; }
+    if (t.session) { reconnectTab(t.sessionId); return; } // 已断开 → 重新连接
+  }
+  menuConnect(); // 无激活标签 → 连接勾选会话
+}
+// 刷新二合一按钮的状态:按"当前激活标签"判断
+// 高亮规则:有激活标签 → 按钮常亮;文字随状态:已连接→"断开"、连接中→"连接中…"、已断开→"连接"。
+//           无激活标签 → 不亮,显示"连接"(连接勾选会话)
+function updateConnectBtn() {
+  const t = state.tabs.get(state.activeSessionId);
+  const st = t ? t.status : null;
+  els.btnConnect.classList.toggle('active', !!t);
+  if (st === 'connecting') {
+    els.btnConnect.textContent = '🔌 连接中…';
+    els.btnConnect.title = '正在连接…';
+  } else if (st === 'connected') {
+    els.btnConnect.textContent = '🔌 断开';
+    els.btnConnect.title = '断开当前终端(标签保留,可重新连接)';
+  } else {
+    els.btnConnect.textContent = '🔌 连接';
+    els.btnConnect.title = t && t.session ? '重新连接当前终端' : '连接选中会话';
+  }
+}
+
+// ---- 闲置自动锁定:一段时间无操作(鼠标/键盘/滚轮)自动锁定;设置分钟数=0 则关闭 ----
+let idleLockTimer = null;
+function resetIdleLock() {
+  clearTimeout(idleLockTimer);
+  if (!els.lockOverlay.classList.contains('hidden')) return; // 已锁定,不重复计时
+  const min = Number(state.settings.lockIdleMin) || 0;
+  if (min <= 0) return;
+  idleLockTimer = setTimeout(maybeAutoLock, min * 60 * 1000);
+}
+// 闲置到点:有密码则弹锁定覆盖层,没设密码就继续计时(不打扰)
+async function maybeAutoLock() {
+  const r = await window.api.lockHas();
+  if (!r || !r.ok || !r.has) { resetIdleLock(); return; }
+  showLockOverlay();
+}
+// capture=true 确保 xterm 内部按键/点击也能重置计时
+['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach((ev) =>
+  document.addEventListener(ev, resetIdleLock, { capture: true, passive: true })
+);
+// 窗口重新获得焦点(如解锁恢复后)重新计时,保证坐下不动也会再锁定
+window.addEventListener('focus', resetIdleLock);
+
+// 批量删除选中会话:一次密码验证后全部删除
+async function batchDelete() {
+  const list = selectedSessions();
+  if (!list.length) return;
+  // 安全门槛(与"删分组一次只能删一个顶级分组"一致):
+  // 选中的主机若横跨多个顶级分组 → 拒绝,防止"全选所有分组→一次删光"
+  const topLevels = new Set();
+  for (const s of list) topLevels.add(topLevelGroupId(Number(s.group_id)));
+  if (topLevels.size > 1) {
+    alert('⚠️ 选中的主机横跨多个顶级分组,为安全起见,请逐个分组删除。');
+    return;
+  }
+  requirePassword(
+    `确定删除选中的 ${list.length} 个主机吗?此操作不可恢复,需要验证 App 密码。`,
+    async () => {
+      for (const s of list) {
+        const res = await window.api.removeSession(s.id);
+        if (!res.ok) alert(`删除「${s.name}」失败: ${res.error}`);
+      }
+      batchClear();
+      loadSessions();
+    }
+  );
+}
+
+// 批量上传:选一个本地文件,传到每个选中主机的远程目录
+function batchUpload() {
+  const list = selectedSessions();
+  if (!list.length) return;
+  showPrompt({
+    title: '批量上传', label: '远程目录(每台主机同一目录,如 /tmp)', value: '/tmp',
+    onOk: async (remoteDir) => {
+      if (!remoteDir) return;
+      const res = await window.api.sftpBatchUpload(list, remoteDir);
+      showBatchResult(res, '上传');
+    },
+  });
+}
+
+// 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名命名)
+function batchDownload() {
+  const list = selectedSessions();
+  if (!list.length) return;
+  showPrompt({
+    title: '批量下载', label: '远程文件路径(每台主机同一路径,如 /var/log/syslog)', value: '',
+    onOk: async (remotePath) => {
+      if (!remotePath) return;
+      const res = await window.api.sftpBatchDownload(list, remotePath);
+      showBatchResult(res, '下载');
+    },
+  });
+}
+
+function showBatchResult(res, label) {
+  if (!res || res.canceled) return;
+  if (!res.ok) { alert(`${label}失败: ${res.error}`); return; }
+  const ok = res.results.filter((r) => r.ok).length;
+  const fail = res.results.filter((r) => !r.ok);
+  let msg = `${label}完成:成功 ${ok} 台,失败 ${fail.length} 台`;
+  if (fail.length) msg += `\n\n${fail.map((r) => `❌ ${r.name}: ${r.error}`).join('\n')}`;
+  if (label === '下载') msg += '\n\n文件保存在所选文件夹,按 主机名_文件名 命名';
+  alert(msg);
+  batchClear();
+}
+
+// 右键菜单:动态填充菜单项(会话的 编辑/删除,分组的 重命名/删除,标签的 关闭/复制/重命名…)
+// items 每项: { label, action, danger? } 或 { separator: true } 分隔线
+function showCtxMenu(x, y, items) {
+  els.ctxMenu.innerHTML = '';
+  for (const it of items) {
+    if (it.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      els.ctxMenu.appendChild(sep);
+      continue;
+    }
+    const div = document.createElement('div');
+    div.className = `ctx-item${it.danger ? ' danger' : ''}`;
+    div.textContent = it.label;
+    div.addEventListener('click', it.action);
+    els.ctxMenu.appendChild(div);
+  }
+  els.ctxMenu.style.left = `${x}px`;
+  els.ctxMenu.style.top = `${y}px`;
+  els.ctxMenu.classList.remove('hidden');
+}
+function closeCtxMenu() {
+  els.ctxMenu.classList.add('hidden');
+}
+
+// ---------- 标签右键菜单(关闭/复制/重命名/定位) ----------
+function showTabMenu(e, sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  e.preventDefault();
+  const items = [
+    { label: `⤴ 激活「${t.title}」`, action: () => activateTab(sessionId) },
+  ];
+  // 已断开的标签:提供"重新连接"
+  if (t.status !== 'connected' && t.status !== 'connecting') {
+    items.push({ label: '🔃 重新连接', action: () => reconnectTab(sessionId) });
+  }
+  items.push(
+    { separator: true },
+    { label: '✂️ 关闭此标签', action: () => closeTab(sessionId) },
+    { label: '🗕 关闭其他标签', action: () => closeOtherTabs(sessionId) },
+    { label: '🗑 关闭全部标签', action: () => closeAllTabs(), danger: true },
+    { separator: true },
+    { label: '⧉ 复制会话', action: () => duplicateTab(sessionId) },
+    { label: '✏️ 重命名标签', action: () => renameTab(sessionId) },
+    { label: '🔍 定位到会话列表', action: () => locateInSessionList(sessionId) },
+    { separator: true },
+    { label: '🎨 标记颜色', separatorLabel: true },
+    { label: '🟥 红色', action: () => setTabColor(sessionId, 'red') },
+    { label: '🟩 绿色', action: () => setTabColor(sessionId, 'green') },
+    { label: '🟨 黄色', action: () => setTabColor(sessionId, 'yellow') },
+    { label: '🟦 蓝色', action: () => setTabColor(sessionId, 'blue') },
+    { label: '⬜ 清除标记', action: () => setTabColor(sessionId, '') },
+  );
+  showCtxMenu(e.clientX, e.clientY, items);
+}
+
+// 关闭除指定标签外的所有标签
+function closeOtherTabs(sessionId) {
+  for (const sid of [...state.tabs.keys()]) {
+    if (sid !== sessionId) closeTab(sid);
+  }
+}
+function closeAllTabs() {
+  for (const sid of [...state.tabs.keys()]) closeTab(sid);
+}
+
+// 复制会话:用同一个会话配置再开一个标签
+function duplicateTab(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session) return;
+  connectToServer(t.session);
+  setStatus(`已复制会话: ${t.session.name}`, 'var(--green)');
+}
+
+// 重命名标签:只改当前标签的显示名(不改会话配置)
+function renameTab(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  showPrompt({
+    title: '重命名标签', label: '标签显示名(仅当前标签)',
+    value: t.customTitle || t.title,
+    onOk: (name) => {
+      t.customTitle = (name || '').trim();
+      const span = t.titleSpan;
+      if (span) span.textContent = t.customTitle || t.session.name;
+      setStatus(t.customTitle ? `标签已重命名: ${t.customTitle}` : '已恢复会话名', 'var(--green)');
+    },
+  });
+}
+
+// 设置/清除标签颜色:存进会话(DB),同时更新标签左边框样式
+async function setTabColor(sessionId, color) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session) return;
+  const s = t.session;
+  const res = await window.api.updateSession(s.id, {
+    name: s.name, host: s.host, port: s.port, username: s.username, password: s.password,
+    privateKey: s.private_key || '', passphrase: s.passphrase || '',
+    encoding: s.encoding || 'utf8', groupId: s.group_id, tagColor: color,
+  });
+  if (res && res.ok) {
+    s.tag_color = color; // 本地记住,重连后标签还有颜色
+    for (const c of ['red', 'green', 'yellow', 'blue']) t.el.classList.remove(`tab-color-${c}`);
+    if (color) t.el.classList.add(`tab-color-${color}`);
+    setStatus(color ? `已标记 ${color} 色标签` : '已清除标签颜色', 'var(--green)');
+  } else {
+    alert(res && res.error ? res.error : '标记失败');
+  }
+}
+
+// 定位到会话列表:左侧列表滚动到该会话并闪烁提示
+function locateInSessionList(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session) return;
+  activateTab(sessionId);
+  const el = document.querySelector(`[data-session-id="${t.session.id}"]`);
+  if (el) {
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1400);
+  }
+}
+
+// =====================================================================
+// 分组管理(参考 Xshell)
+// =====================================================================
+// 新建分组(重名时友好提示,而不是报数据库 UNIQUE 错误)
+// 新建分组;传了 parentId 就建为它的子分组(右键"新建子分组"),否则用当前选中的分组作父级
+function newGroup(parentId) {
+  const pid = parentId != null ? parentId : (state.activeGroupId != null ? state.activeGroupId : null);
+  const parent = pid != null ? state.groups.find((g) => Number(g.id) === Number(pid)) : null;
+  showPrompt({
+    title: '新建分组',
+    label: parent ? `在分组「${parent.name}」下新建子分组名` : '分组名',
+    value: '',
+    onOk: async (name) => {
+      name = (name || '').trim();
+      if (!name) return;
+      const exists = state.groups.some((g) => g.name === name);
+      if (exists) { alert(`分组「${name}」已存在,无需重复创建`); return; }
+      const res = await window.api.createGroup(name, parent ? parent.id : null);
+      if (!res.ok) { alert(`新建分组失败: ${res.error}`); return; }
+      loadSessions();
+    },
+  });
+}
+
+// 重命名分组
+function renameGroup(id, oldName) {
+  showPrompt({
+    title: '重命名分组', label: '分组名', value: oldName,
+    onOk: async (name) => {
+      if (!name || name === oldName) return;
+      const res = await window.api.renameGroup(id, name);
+      if (!res.ok) { alert(`重命名失败: ${res.error}`); return; }
+      loadSessions();
+    },
+  });
+}
+
+// 删除分组(其下会话移到"默认分组")
+// 危险操作需要密码确认:验证 App 密码通过后才执行 onOk;未设置密码则直接执行
+function requirePassword(description, onOk) {
+  window.api.lockHas().then((r) => {
+    if (!r || !r.has) { onOk(); return; } // 没设密码锁 → 无需验证
+    confirmPwdAction = onOk;
+    els.confirmPwdDesc.textContent = description;
+    els.confirmPwdInput.value = '';
+    els.confirmPwdMsg.classList.add('hidden');
+    els.confirmPwdModal.classList.remove('hidden');
+    els.confirmPwdInput.focus();
+  });
+}
+let confirmPwdAction = null;
+async function confirmPwdOk() {
+  const action = confirmPwdAction;
+  const res = await window.api.lockVerify(els.confirmPwdInput.value);
+  if (res && res.ok) {
+    confirmPwdAction = null;
+    els.confirmPwdModal.classList.add('hidden');
+    if (action) action();
+  } else {
+    els.confirmPwdMsg.textContent = '密码不正确';
+    els.confirmPwdMsg.classList.remove('hidden');
+    els.confirmPwdInput.select();
+  }
+}
+function confirmPwdCancel() { confirmPwdAction = null; els.confirmPwdModal.classList.add('hidden'); }
+
+// 删除分组:分组下有主机 → 需验证密码,并连同主机一起删除;空分组 → 普通确认
+async function deleteGroup(id, name) {
+  // 安全校验:必须是对应真实分组(防止误传会话 id 等导致误删)
+  const g = state.groups.find((x) => Number(x.id) === Number(id));
+  if (!g) { alert('分组不存在,已取消删除'); return; }
+  // 默认分组是系统保留(所有无组连接都归它),不可删除
+  if (g.name === '默认分组') { alert('「默认分组」是系统保留分组,不能删除'); return; }
+  const affected = collectGroupAndDescendants(Number(id));
+  // 安全门槛:一次删除最多只能涉及 1 个顶级分组(防父链错乱/异常时误删多个顶级树)
+  const topLevelInvolved = affected.filter((gid) => {
+    const gg = state.groups.find((x) => Number(x.id) === Number(gid));
+    if (!gg) return false; // 组已不存在的会话归属不算
+    const hasParent = gg.parent_id != null && state.groups.some((p) => Number(p.id) === Number(gg.parent_id));
+    return !hasParent;
+  });
+  if (topLevelInvolved.length > 1) {
+    alert('⚠️ 本次删除会涉及多个顶级分组,已取消。\n请逐个顶级分组删除。');
+    return;
+  }
+  const ids = new Set(affected);
+  const groupSessions = state.sessions.filter((s) => ids.has(Number(s.group_id)));
+  const doDelete = async () => {
+    // 先关闭该分组下已打开的终端标签(否则连接还挂着)
+    for (const s of groupSessions) {
+      const tab = findTabBySessionId(s.id);
+      if (tab) closeTab(tab.sessionId);
+    }
+    const res = await window.api.deleteGroup(id);
+    if (!res.ok) { alert(`删除分组失败: ${res.error}`); return; }
+    loadSessions();
+  };
+  if (groupSessions.length > 0) {
+    requirePassword(
+      `删除分组「${name}」吗?其下 ${groupSessions.length} 台主机将一并删除(不可恢复)。\n此操作需要验证 App 密码。`,
+      doDelete
+    );
+  } else {
+    if (!confirm(`删除空分组「${name}」吗?`)) return;
+    await doDelete();
+  }
+}
+
+// 把会话拖拽移动到另一个分组(拖到分组文件夹头触发)
+async function moveSessionToGroup(sessionId, groupId) {
+  const s = state.sessions.find((x) => x.id === sessionId);
+  if (!s) return;
+  if (s.group_id === groupId) return; // 已在同组
+  const res = await window.api.updateSession(sessionId, {
+    name: s.name,
+    host: s.host,
+    port: s.port || 22,
+    username: s.username,
+    password: s.password || '',
+    groupId,
+  });
+  if (!res.ok) { alert(`移动失败: ${res.error}`); return; }
+  setStatus(`已将「${s.name}」移动到分组`, 'var(--green)');
+  loadSessions();
+}
+
+// 切换分组的"生产环境"标记(生产分组红色警示 + 危险命令确认)
+async function toggleGroupProd(gid, groupName) {
+  const g = state.groups.find((x) => x.id === gid);
+  const next = !(g && g.is_prod);
+  const res = await window.api.setGroupProd(gid, next);
+  if (!res.ok) { alert(`设置失败: ${res.error}`); return; }
+  setStatus(
+    next ? `🚨 「${groupName}」已标记为生产环境(该分组所有会话红色警示 + 危险命令确认)` : `「${groupName}」已取消生产标记`,
+    next ? 'var(--red)' : 'var(--green)'
+  );
+  await loadSessions(); // 重新拉分组/会话并重渲染
+}
+
+// 填充会话弹窗的分组下拉框(所有分组 + "新建分组..."入口)
+function fillGroupSelect() {
+  els.fGroup.innerHTML = '';
+  for (const g of state.groups) {
+    const opt = document.createElement('option');
+    opt.value = g.id;
+    opt.textContent = g.name;
+    els.fGroup.appendChild(opt);
+  }
+  const opt = document.createElement('option');
+  opt.value = '__new__';
+  opt.textContent = '＋ 新建分组...';
+  els.fGroup.appendChild(opt);
+}
+
+// =====================================================================
+// 新建 / 编辑会话弹窗
+// =====================================================================
+function openSessionModal(session) {
+  state.editingId = session ? session.id : null;
+  els.sessionModalTitle.textContent = session ? `编辑会话: ${session.name}` : '新建会话';
+  els.fName.value = session ? session.name : '';
+  els.fHost.value = session ? session.host : '';
+  els.fPort.value = session ? session.port : 22;
+  els.fUsername.value = session ? session.username : '';
+  els.fPassword.value = session ? (session.password || '') : '';
+  els.fPrivateKey.value = session ? (session.private_key || '') : '';
+  els.fPassphrase.value = session ? (session.passphrase || '') : '';
+  const jump = session && session.jump ? session.jump : null;
+  els.fJumpHost.value = jump ? (jump.host || '') : '';
+  els.fJumpPort.value = jump ? (jump.port || 22) : 22;
+  els.fJumpUsername.value = jump ? (jump.username || '') : '';
+  els.fJumpPassword.value = jump ? (jump.password || '') : '';
+  els.fEncoding.value = session ? (session.encoding || 'utf8') : 'utf8';
+  els.fOnConnect.value = session ? (session.on_connect || '') : '';
+  fillGroupSelect();
+  els.fGroup.value = session && session.group_id != null
+    ? String(session.group_id)
+    : (state.groups[0] ? String(state.groups[0].id) : '');
+  els.sessionModal.classList.remove('hidden');
+  els.fName.focus();
+}
+
+function closeSessionModal() {
+  state.editingId = null;
+  els.sessionModal.classList.add('hidden');
+}
+
+// 真正保存会话(传分组 id)
+async function doSaveSession(groupId) {
+  const data = {
+    name: els.fName.value.trim(),
+    host: els.fHost.value.trim(),
+    port: parseInt(els.fPort.value || '22', 10),
+    username: els.fUsername.value.trim(),
+    password: els.fPassword.value,
+    privateKey: els.fPrivateKey.value.trim(),
+    passphrase: els.fPassphrase.value,
+    jump: els.fJumpHost.value.trim()
+      ? {
+          host: els.fJumpHost.value.trim(),
+          port: parseInt(els.fJumpPort.value || '22', 10),
+          username: els.fJumpUsername.value.trim(),
+          password: els.fJumpPassword.value,
+        }
+      : null,
+    encoding: els.fEncoding.value,
+    onConnect: els.fOnConnect.value,
+    groupId,
+  };
+
+  // 简单校验:必填项
+  if (!data.name || !data.host || !data.username) {
+    alert('名称、主机、用户名不能为空');
+    return;
+  }
+
+  // 会话名称唯一:已存在同名会话(排除正在编辑的这条)则拒绝
+  const nameDup = state.sessions.some((s) => s.name === data.name && s.id !== state.editingId);
+  if (nameDup) { alert(`已存在同名会话「${data.name}」,请换个名称`); return; }
+
+  if (state.editingId) {
+    const res = await window.api.updateSession(state.editingId, data);
+    if (!res.ok) alert(`保存失败: ${res.error}`);
+  } else {
+    const res = await window.api.createSession(data);
+    if (!res.ok) alert(`保存失败: ${res.error}`);
+  }
+  closeSessionModal();
+  loadSessions(); // 刷新列表
+}
+
+// 保存会话:分组下拉框选了"＋ 新建分组..."时,先建组再保存
+function saveSession() {
+  const groupVal = els.fGroup.value;
+  if (groupVal === '__new__') {
+    showPrompt({
+      title: '新建分组', label: '分组名', value: '',
+      onOk: async (gname) => {
+        gname = (gname || '').trim();
+        if (!gname) return;
+        // 分组已存在 → 直接用现有的,不再报 UNIQUE 错
+        const exist = state.groups.find((g) => g.name === gname);
+        if (exist) { await doSaveSession(exist.id); return; }
+        const gres = await window.api.createGroup(gname);
+        if (!gres.ok) { alert(`新建分组失败: ${gres.error}`); return; }
+        await doSaveSession(gres.id);
+      },
+    });
+    return;
+  }
+  doSaveSession(groupVal ? Number(groupVal) : null);
+}
+
+// 删除单个主机:需要密码验证(和删分组一致的安全级别,防误删)
+async function removeSession(id) {
+  const s = state.sessions.find((x) => x.id === id);
+  requirePassword(
+    `确定删除主机「${s ? s.name : id}」吗?此操作不可恢复,需要验证 App 密码。`,
+    async () => {
+      const res = await window.api.removeSession(id);
+      if (!res.ok) alert(`删除失败: ${res.error}`);
+      loadSessions();
+    }
+  );
+}
+
+// 克隆会话:复制全部配置(含私钥/口令/编码/分组),名字加"副本"
+async function cloneSession(s) {
+  const newName = `${s.name} 副本`;
+  const res = await window.api.createSession({
+    name: newName,
+    host: s.host,
+    port: s.port || 22,
+    username: s.username,
+    password: s.password || '',       // 已是解密后的明文,主进程会再加密入库
+    privateKey: s.private_key || '',
+    passphrase: s.passphrase || '',
+    encoding: s.encoding || 'utf8',
+    groupId: s.group_id != null ? s.group_id : undefined,
+  });
+  if (!res.ok) { alert(`克隆失败: ${res.error}`); return; }
+  setStatus(`已克隆 → ${newName}`, 'var(--green)');
+  loadSessions();
+}
+
+// =====================================================================
+// 批量导入主机(第 5 课)
+// =====================================================================
+// 把"二维数组行"(每行 = [名称,主机,端口,用户名,密码,分组])转成会话对象并校验。
+// 粘贴文本 和 Excel 文件解析完都变成这种行,再走这里统一处理。
+function rowsToSessions(rows) {
+  const out = [];
+  for (const [idx, row] of rows.entries()) {
+    const parts = row.map((c) => String(c == null ? '' : c).trim());
+    if (parts.every((p) => !p)) continue; // 整行空白(如 ,,,,, 或末尾空行)→ 跳过,不算格式错误
+    // 跳过表头行(名称,主机,端口,...)——防止被当成"主机叫 主机"的假会话导进来
+    if (/^(名称|name)$/i.test(parts[0])) continue;
+    const [name, host, port, username, password, group] = parts;
+    if (!host || !username) {
+      out.push({ error: `第 ${idx + 1} 行缺少主机或用户名(当前: ${parts.join('|')})` });
+      continue;
+    }
+    out.push({
+      name: name || host, // 没填名称就用主机地址当名称
+      host,
+      port: parseInt(port || '22', 10) || 22,
+      username,
+      password: password || '',
+      group: group || '默认分组',
+    });
+  }
+  return out;
+}
+
+// 解析粘贴的文本:每行一台,逗号分隔 名称,主机,端口,用户名,密码,分组。
+function parseHostLines(text) {
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  // 首行若是表头(如 名称,主机,...)就跳过
+  const data = lines.filter((l, i) => {
+    if (i !== 0) return true;
+    const parts = l.split(',');
+    return !(/名称|主机|host/i.test(parts[0] || '') && parts.length <= 2);
+  });
+  return rowsToSessions(data.map((l) => l.split(',')));
+}
+
+function openImportModal() {
+  els.importText.value = '';
+  els.importResult.innerHTML = '';
+  els.importFile.value = ''; // 清空上次选的文件
+  els.importBackupFile.value = '';
+  pendingImport = null;      // 重新打开导入弹窗,待导入列表清空
+  pendingUpdate = [];
+  importDone = false;        // 重置完成状态
+  els.importSave.textContent = '导入';
+  els.importModal.classList.remove('hidden');
+  els.importText.focus();
+}
+
+function closeImportModal() {
+  els.importModal.classList.add('hidden');
+}
+
+// 重名清单预览:去重后最多列 20 个,超出的用"…等 N 条"收尾(防止几百条刷屏)
+function dupNamesPreview(names) {
+  const uniq = [...new Set(names)];
+  const shown = uniq.slice(0, 20).join('、');
+  return uniq.length > 20 ? `${shown} 等共 ${uniq.length} 条` : shown;
+}
+
+// ---- 导入:先解析预览,点"导入"才真正落库 ----
+let pendingImport = null; // 待新增的会话列表
+let pendingUpdate = [];   // 待覆盖更新的会话 [{ id, data }]
+let importDone = false;   // 是否已导入完成(完成按钮=关闭弹窗)
+
+// 解析 + 名称去重(勾了"覆盖更新"则同名改为更新而不是跳过) → { errors, toImport, toUpdate, skippedDup }
+function buildImportList(sessions) {
+  const errors = sessions.filter((r) => r.error);
+  const valid = sessions.filter((r) => !r.error);
+  const overwrite = !!els.importOverwrite.checked;
+  const existing = new Map(state.sessions.map((s) => [s.name, s])); // name → 已存在的会话
+  const toImport = [];
+  const toUpdate = [];
+  const skippedDup = [];
+  for (const s of valid) {
+    const ex = existing.get(s.name);
+    if (ex) {
+      if (overwrite) {
+        toUpdate.push({
+          id: ex.id,
+          data: {
+            name: s.name, host: s.host, port: s.port, username: s.username, password: s.password,
+            privateKey: ex.private_key || '', passphrase: ex.passphrase || '',
+            encoding: ex.encoding || 'utf8', groupId: ex.group_id, // 保留原有分组/私钥设置
+          },
+        });
+      } else skippedDup.push(s.name);
+    } else toImport.push(s);
+  }
+  return { errors, toImport, toUpdate, skippedDup };
+}
+
+// 预览:解析结果展示出来,但不导入,等用户点"导入"
+function setImportPreview(sessions) {
+  const { errors, toImport, toUpdate, skippedDup } = buildImportList(sessions);
+  pendingImport = toImport;
+  pendingUpdate = toUpdate;
+  importDone = false;                    // 预览后按钮回到"导入"
+  els.importSave.textContent = '导入';
+  let html = '';
+  if (toImport.length || toUpdate.length) {
+    const names = toImport.map((s) => s.name).slice(0, 15).join('、');
+    html = `<div class="ok">已解析 <b>${toImport.length}</b> 台新增` + (toUpdate.length ? `, <b>${toUpdate.length}</b> 台将覆盖更新` : '') + `:</div>`;
+    if (toImport.length) html += `<div class="ok">新增:${toImport.length > 15 ? `${names} 等` : names}</div>`;
+    if (toUpdate.length) html += `<div class="ok">覆盖更新:${toUpdate.map((u) => u.data.name).slice(0, 10).join('、')}${toUpdate.length > 10 ? ' 等' : ''}</div>`;
+    html += `<div class="ok">确认无误后,点下方「导入」按钮提交。</div>`;
+  } else {
+    const reason = [];
+    if (skippedDup.length) reason.push(`${skippedDup.length} 条已存在(重名)`);
+    if (errors.length) reason.push(`${errors.length} 条格式错误`);
+    html = `<div class="bad">没有可导入的新条目${reason.length ? `: ${reason.join(', ')}` : ''}。</div>`;
+    if (skippedDup.length) html += `<div class="bad">重名跳过: ${dupNamesPreview(skippedDup)}</div>`;
+    if (errors.length) html += `<div class="bad">格式错误行:<br/>${errors.map((e) => e.error).join('<br/>')}</div>`;
+    els.importResult.innerHTML = html;
+    return;
+  }
+  if (errors.length) html += `<div class="bad">${errors.map((e) => e.error).join('<br/>')}</div>`;
+  if (skippedDup.length) html += `<div class="bad">重名跳过: ${dupNamesPreview(skippedDup)}</div>`;
+  els.importResult.innerHTML = html;
+}
+
+// 点"导入":导入完成后再点=关闭弹窗;否则优先提交文件待导入列表,或解析粘贴文本
+async function doImport() {
+  if (importDone) { closeImportModal(); return; } // 已完成 → 按钮变"完成",点了关弹窗
+  if (pendingImport != null) {
+    // 文件解析好的待导入列表(新增 + 覆盖更新)
+    await commitImport(pendingImport, pendingUpdate);
+    pendingImport = null;
+    pendingUpdate = [];
+  } else {
+    // 粘贴文本:同样按"覆盖更新"勾选处理
+    const sessions = parseHostLines(els.importText.value);
+    const { toImport, toUpdate } = buildImportList(sessions);
+    await commitImport(toImport, toUpdate);
+  }
+}
+
+// 真正落库(新增 importMany + 覆盖 updateSession)+ 显示结果
+async function commitImport(toImport, toUpdate) {
+  const toImportList = (toImport || []).filter(Boolean);
+  const toUpdateList = (toUpdate || []).filter(Boolean);
+  let imported = 0, updated = 0, failCount = 0;
+  let html = '';
+  if (!toImportList.length && !toUpdateList.length) {
+    els.importResult.innerHTML = '<span class="bad">没有可导入/更新的条目(都重名且未勾选覆盖?)</span>';
+    return;
+  }
+  if (toImportList.length) {
+    const res = await window.api.importSessions(toImportList);
+    if (!res.ok) { els.importResult.innerHTML = `<span class="bad">导入失败: ${res.error}</span>`; return; }
+    const fail = (res.results || []).filter((r) => !r.ok);
+    imported = res.imported || 0;
+    failCount += fail.length;
+    if (fail.length) html += `<div class="bad">${fail.map((f) => `${f.name || '?'}: ${f.error}`).join('<br/>')}</div>`;
+  }
+  if (toUpdateList.length) {
+    for (const u of toUpdateList) {
+      const res = await window.api.updateSession(u.id, u.data);
+      if (res && res.ok) updated++;
+      else failCount++;
+    }
+  }
+  html = `<div class="ok">导入完成:新增 ${imported} 条,更新 ${updated} 条,失败 ${failCount} 条</div>` + html;
+  els.importResult.innerHTML = html;
+  // 全部成功 → 主按钮变"完成"关闭弹窗;有失败 → 保持"导入"可重试
+  if (failCount === 0 && (imported + updated) > 0) {
+    importDone = true;
+    els.importSave.textContent = '完成';
+  } else {
+    importDone = false;
+    els.importSave.textContent = '导入';
+  }
+  loadSessions(); // 刷新会话列表
+}
+
+// 下载导入模板:主进程生成带表头和示例行的 Excel,弹保存对话框写盘
+async function saveTemplate() {
+  const res = await window.api.saveTemplate();
+  if (!res.ok) {
+    if (res.error !== '已取消') alert(`保存模板失败: ${res.error}`);
+    return;
+  }
+  els.importResult.innerHTML = `<div class="ok">模板已保存: ${res.path}</div>`;
+}
+
+// 方式二:Excel 文件导入
+async function importFromExcel() {
+  const file = els.importFile.files[0];
+  if (!file) return;
+  try {
+    const buf = await file.arrayBuffer(); // 把文件读成二进制
+    const wb = XLSX.read(buf);             // SheetJS 解析成工作簿
+    const sheet = wb.Sheets[wb.SheetNames[0]]; // 只读第一个 sheet
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }); // 转二维数组
+    // 首行若是表头就跳过
+    const first = rows[0] || [];
+    const hasHeader = /名称|主机|host/i.test(String(first[0] || '')) && first.length <= 6;
+    setImportPreview(rowsToSessions(hasHeader ? rows.slice(1) : rows)); // 先预览,点"导入"才提交
+  } catch (err) {
+    els.importResult.innerHTML = `<span class="bad">读取 Excel 失败: ${err.message}</span>`;
+  }
+}
+
+// =====================================================================
+// 标签页 + 终端
+// =====================================================================
+// ---- 生产环境保护:危险命令确认(参考 Xshell/SecureCRT 的保命功能) ----
+const DANGEROUS_CMDS = [
+  /rm\s+-[a-zA-Z]*rf[a-zA-Z]*\b/i,   // rm -rf(含 -rfv 等变体)
+  /rm\s+-[a-zA-Z]*fr[a-zA-Z]*\b/i,   // rm -fr
+  /\bshutdown\b/i, /\breboot\b/i, /\bhalt\b/i, /\bpoweroff\b/i,
+  /\binit\s+[06]\b/i, /\bmkfs(\s|\b)/i, /\bfdisk\b/i, /\bparted\b/i,
+  /\bdd\s+if=.*\bof=\/dev\//i, /\bformat\b/i,
+  />\s*\/dev\/(sda|sdb|sdc|nvme)/i, /:\(\)\s*\{/i, /:\|:/i, // 写盘 / fork 炸弹
+];
+function isDangerousCommand(line) {
+  return DANGEROUS_CMDS.some((re) => re.test(line));
+}
+// 会话所在分组是否标记为生产
+function isSessionProd(s) {
+  if (!s) return false;
+  const g = state.groups.find((x) => x.id === s.group_id);
+  return !!(g && g.is_prod);
+}
+// 是否开着至少一个生产环境会话(广播模式用)
+function hasProdSession() {
+  for (const t of state.tabs.values()) {
+    if (t.status === 'connected' && isSessionProd(t.session)) return true;
+  }
+  return false;
+}
+// 把输入发给服务器(单会话 / 广播模式统一走这里)
+function sendInput(sessionId, data) {
+  // ---- 多行粘贴保护:一次贴入多行(如整段脚本)时先确认,防止误贴进生产 ----
+  const lineCount = (String(data).match(/\r|\n/g) || []).length;
+  if (lineCount > 1) {
+    const targets = state.broadcast
+      ? [...state.tabs.values()].filter((t) => t.status === 'connected')
+      : [state.tabs.get(sessionId)].filter(Boolean);
+    const isProd = state.broadcast ? hasProdSession() : targets.some((t) => t.session && isSessionProd(t.session));
+    const lines = String(data).split(/\r|\n/).filter(Boolean);
+    const preview = lines.slice(0, 5).join('\n') + (lines.length > 5 ? '\n…' : '');
+    const targetName = state.broadcast ? `广播到 ${targets.length} 台` : (targets[0] && targets[0].session.name);
+    const ok = confirm(
+      `⚠️ 检测到多行粘贴(${lineCount} 行)!\n\n` +
+      `目标:${isProd ? ' ⚠️ 生产环境' : ' ' + (targetName || '')}\n\n` +
+      `内容预览:\n${preview}\n\n` +
+      `确认要发送吗?`
+    );
+    if (!ok) return; // 拒绝则整段不发送
+  }
+
+  if (state.broadcast) {
+    for (const t of state.tabs.values()) {
+      if (t.status === 'connected') window.api.sshWrite(t.sessionId, data);
+    }
+  } else {
+    window.api.sshWrite(sessionId, data);
+  }
+}
+
+// =====================================================================
+// 命令记录(记录每台终端执行过的命令,可查看/重发/清空/导出)
+// =====================================================================
+// 显示完整日期+时间(如 2026-08-05 09:31:02),跨年跨天都分得清
+function fmtTime() {
+  const now = new Date();
+  const p = (x) => String(x).padStart(2, '0');
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+}
+
+// 从终端缓冲区还原被"历史回显"的命令:当前行内容 − 已学习的提示符
+// 只在学习到提示符且匹配时才返回,否则返回空(宁可不记,也不记错)
+function recoverRecalledCommand(tab, term) {
+  try {
+    const buf = term.buffer.active;
+    const prompt = tab.promptText || '';
+    if (!prompt) return '';
+    // 长命令会在终端里换行成多行:从光标行往回找"以提示符开头"的那一行(命令起始行),
+    // 再把起始行到光标行拼接起来还原完整命令。
+    let start = buf.cursorY;
+    for (let y = buf.cursorY; y >= 0; y--) {
+      const line = buf.getLine(y);
+      if (!line) break;
+      if (line.translateToString(true).trim().startsWith(prompt)) { start = y; break; }
+    }
+    let joined = '';
+    for (let y = start; y <= buf.cursorY; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      joined += line.translateToString(true).trim();
+    }
+    if (joined.startsWith(prompt)) return joined.slice(prompt.length).trim();
+    return '';
+  } catch { return ''; }
+}
+
+// 记录一条命令(回车时调用);每次执行都记录(连续相同命令也逐条记);按主机聚合
+// 同时持久化到 SQLite(cmd_history 表),重启不丢。
+function recordCommand(host, line) {
+  line = (line || '').trim();
+  if (!line) return;
+  const key = host || '未知主机';
+  if (!state.cmdHistory[key]) state.cmdHistory[key] = { host: key, commands: [] };
+  const rec = state.cmdHistory[key];
+  rec.commands.push({ time: fmtTime(), command: line });
+  if (rec.commands.length > 1000) rec.commands.shift();
+  window.api.addCmdHistory(key, line); // 持久化(失败不影响使用)
+  if (!els.cmdPanel.classList.contains('hidden')) renderCmdPanel();
+}
+
+// 启动时从 SQLite 加载已持久化的命令记录
+async function loadCmdHistory() {
+  try {
+    const res = await window.api.listCmdHistory();
+    if (!res || !res.ok || !Array.isArray(res.cmds)) return;
+    state.cmdHistory = {}; // 先清空再加载,避免重复调用导致重复
+    for (const row of res.cmds) {
+      const h = row.host || '未知主机';
+      if (!state.cmdHistory[h]) state.cmdHistory[h] = { host: h, commands: [] };
+      state.cmdHistory[h].commands.push({
+        time: (row.created_at || '').slice(0, 19), // "YYYY-MM-DD HH:MM:SS" → 完整含年份
+        command: row.command,
+      });
+    }
+    if (!els.cmdPanel.classList.contains('hidden')) renderCmdPanel();
+  } catch { /* 忽略 */ }
+}
+
+// 渲染命令记录面板:归档文件视图 / 当前记录
+function renderCmdPanel() {
+  const list = els.cmdList;
+  list.innerHTML = '';
+  // 归档文件视图
+  if (state.cmdArchivesView === 'files') {
+    renderArchiveFiles(list);
+    els.cmdCount.textContent = '归档文件';
+    list.scrollTop = list.scrollHeight;
+    return;
+  }
+  let total = 0;
+  for (const key of Object.keys(state.cmdHistory)) {
+    const rec = state.cmdHistory[key];
+    const cmds = rec.commands || [];
+    if (!cmds.length) continue;
+    total += cmds.length;
+    const group = document.createElement('div');
+    group.className = 'cmd-group';
+    const title = document.createElement('div');
+    title.className = 'cmd-group-title';
+    title.textContent = `🖥 ${rec.host || key}`;
+    group.appendChild(title);
+    for (const c of cmds) {
+      const item = document.createElement('div');
+      item.className = 'cmd-item';
+      item.title = `点击重发到 ${rec.host}`;
+      const time = document.createElement('span');
+      time.className = 'cmd-time';
+      time.textContent = c.time;
+      const text = document.createElement('span');
+      text.className = 'cmd-text';
+      text.textContent = c.command;
+      item.appendChild(time);
+      item.appendChild(text);
+      item.addEventListener('click', () => resendCommand(key, c.command));
+      group.appendChild(item);
+    }
+    list.appendChild(group);
+  }
+  els.cmdCount.textContent = total ? `共 ${total} 条` : '';
+  if (!total) list.innerHTML = '<div class="dim" style="padding:12px">还没有命令记录,在终端里敲命令试试</div>';
+  // 自动滚到底部,让最新命令始终可见
+  list.scrollTop = list.scrollHeight;
+}
+
+// 点击命令 → 重发到对应主机(找到该主机任一已连接终端)
+function resendCommand(host, command) {
+  let target = null;
+  for (const t of state.tabs.values()) {
+    if (t.status === 'connected' && t.session && t.session.host === host) { target = t; break; }
+  }
+  if (!target) { alert('该主机未连接,无法重发'); return; }
+  // 切到目标标签并聚焦,让命令立刻可见、生效
+  if (state.activeSessionId !== target.sessionId) activateTab(target.sessionId);
+  window.api.sshWrite(target.sessionId, command + '\r');
+  target.term.focus();
+  // 重发的命令也算执行了一次 → 同样记录(开关开启时)
+  if (state.settings.cmdRecord !== false) recordCommand(host, command);
+  setStatus(`已重发到 ${target.session.name}: ${command.split('\n')[0]}`, 'var(--green)');
+}
+
+// 清空:内存 + SQLite 一起清
+function clearCmdHistory() {
+  if (!confirm('确定清空所有命令记录吗?')) return;
+  state.cmdHistory = {};
+  window.api.clearCmdHistoryDb(); // 同步清掉数据库里的持久化记录
+  renderCmdPanel();
+}
+
+// 显示归档文件视图:列出 archives 文件夹里的归档文件,选中可下载/删除
+// 当前活动主机(用于归档/查看归档)
+function activeCmdHost() {
+  const t = state.tabs.get(state.activeSessionId);
+  return t && t.session ? t.session.host : '';
+}
+function basename(p) { return String(p || '').split(/[\\/]/).pop(); }
+
+// 显示归档视图:列出"当前主机"的归档批次,选中可下载/删除
+async function showCmdArchiveFiles(host) {
+  const h = host || activeCmdHost();
+  const res = await window.api.listCmdArchives(h);
+  if (!res || !res.ok) { alert(`读取归档失败: ${res && res.error}`); return; }
+  state.cmdArchiveFiles = res.archives || [];
+  state.selectedArchiveFile = null;
+  state.cmdArchivesView = 'files';
+  state.cmdArchiveHost = h;
+  renderCmdPanel();
+}
+// 返回当前记录视图
+function showCmdCurrent() {
+  state.cmdArchivesView = null;
+  state.selectedArchiveFile = null;
+  renderCmdPanel();
+}
+// 渲染"当前主机"的归档批次列表(文件名用标签页名_时间戳,点击选中可下载/删除)
+function renderArchiveFiles(list) {
+  const back = document.createElement('div');
+  back.className = 'cmd-arch-back';
+  back.textContent = '← 返回当前记录';
+  back.addEventListener('click', showCmdCurrent);
+  list.appendChild(back);
+  const title = document.createElement('div');
+  title.className = 'cmd-group-title';
+  title.textContent = `🖥 归档 · ${state.cmdArchiveHost || '当前主机'}`;
+  list.appendChild(title);
+  const files = state.cmdArchiveFiles || [];
+  if (!files.length) {
+    list.appendChild(Object.assign(document.createElement('div'), { className: 'dim', textContent: '该主机还没有归档文件,点「归档」创建', style: 'padding:12px' }));
+    return;
+  }
+  for (const f of files) {
+    const row = document.createElement('div');
+    row.className = 'cmd-item' + (state.selectedArchiveFile && state.selectedArchiveFile.archiveId === f.archive_id ? ' sel' : '');
+    row.title = '点击选中,可下载/删除';
+    const name = document.createElement('span');
+    name.className = 'cmd-text';
+    name.textContent = basename(f.file) || f.archive_id;
+    const meta = document.createElement('span');
+    meta.className = 'cmd-time';
+    meta.textContent = `${f.count} 条 · ${(f.created_at || '').slice(5, 16)}`;
+    row.appendChild(name);
+    row.appendChild(meta);
+    row.addEventListener('click', () => {
+      state.selectedArchiveFile = { archiveId: f.archive_id, file: f.file, name: basename(f.file) || f.archive_id };
+      renderCmdPanel();
+    });
+    list.appendChild(row);
+  }
+  // 底部操作条
+  const bar = document.createElement('div');
+  bar.className = 'cmd-arch-actions';
+  if (state.selectedArchiveFile) {
+    const sel = document.createElement('span');
+    sel.className = 'cmd-text';
+    sel.textContent = `已选: ${state.selectedArchiveFile.name}`;
+    bar.appendChild(sel);
+    const dl = document.createElement('button');
+    dl.className = 'btn-mini'; dl.textContent = '⬇ 下载';
+    dl.addEventListener('click', () => downloadArchiveFile(state.selectedArchiveFile));
+    const del = document.createElement('button');
+    del.className = 'btn-mini danger'; del.textContent = '🗑 删除';
+    del.addEventListener('click', () => deleteArchiveFile(state.selectedArchiveFile));
+    bar.appendChild(dl);
+    bar.appendChild(del);
+  } else {
+    bar.appendChild(Object.assign(document.createElement('span'), { className: 'dim', textContent: '点击上面的归档文件可选中,然后下载或删除' }));
+  }
+  list.appendChild(bar);
+}
+
+// 下载选中的归档文件(主进程弹保存对话框复制一份)
+async function downloadArchiveFile(sel) {
+  const res = await window.api.downloadArchive(sel.file);
+  if (!res || !res.ok) { if (res && res.error !== '已取消') alert(`下载失败: ${res.error}`); return; }
+  setStatus(`归档已下载 → ${res.path}`, 'var(--green)');
+}
+
+// 删除选中的归档(文件 + 数据库批次一起删)
+async function deleteArchiveFile(sel) {
+  if (!confirm(`确定删除归档「${sel.name}」吗?`)) return;
+  const res = await window.api.deleteArchive(sel.archiveId, sel.file);
+  if (!res || !res.ok) { alert(`删除失败: ${res && res.error}`); return; }
+  setStatus(`已删除归档: ${sel.name}`, 'var(--orange)');
+  await showCmdArchiveFiles(); // 刷新列表(保持当前主机)
+}
+
+// 「归档」按钮:归档当前主机的命令记录(存数据库+文件,不自动打开),然后进入该主机的归档视图
+async function archiveAndView() {
+  const host = activeCmdHost();
+  const t = state.tabs.get(state.activeSessionId);
+  const sessionName = t && t.session ? t.session.name : '归档';
+  const recs = host && state.cmdHistory[host] ? state.cmdHistory[host].commands : [];
+  if (recs.length > 0) {
+    if (!confirm('归档后当前主机的命令记录会存入归档文件并从面板清空,继续?')) return;
+    const res = await window.api.archiveCmdHistory(host, sessionName);
+    if (!res || !res.ok) { alert(`归档失败: ${res && res.error ? res.error : '未知错误'}`); return; }
+    if (res.archived) {
+      delete state.cmdHistory[host]; // 只清该主机的内存记录
+      setStatus(`已归档 ${res.archived} 条命令 → ${res.path}`, 'var(--green)');
+    }
+  }
+  await showCmdArchiveFiles(host); // 进入该主机的归档视图
+}
+
+// 开关命令记录面板
+function toggleCmdPanel() {
+  els.cmdPanel.classList.toggle('hidden');
+  if (!els.cmdPanel.classList.contains('hidden')) renderCmdPanel();
+  syncPanelButtons();
+  refitAll(); // 面板打开/收起后终端区宽度变了,重新适配 xterm,避免输出越过竖直分割线
+}
+
+// =====================================================================
+// 批量执行结果面板:一条命令发多台主机,结果统一看
+// =====================================================================
+function toggleBatchPanel() {
+  els.batchPanel.classList.toggle('hidden');
+  if (!els.batchPanel.classList.contains('hidden')) {
+    renderBatchHosts(); // 打开时刷新主机勾选列表
+    els.batchCmd.focus();
+  }
+  syncPanelButtons();
+  refitAll();
+}
+
+// 渲染主机勾选列表(来自当前已打开的所有标签)
+function renderBatchHosts() {
+  const box = els.batchHosts;
+  box.innerHTML = '';
+  for (const t of state.tabs.values()) {
+    const connected = t.status === 'connected';
+    const label = document.createElement('label');
+    label.className = 'batch-host';
+    label.title = connected ? `${t.session.username}@${t.session.host}` : '未连接,不会执行';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.batchHosts.has(t.sessionId);
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.batchHosts.add(t.sessionId);
+      else state.batchHosts.delete(t.sessionId);
+      updateBatchCount();
+    });
+    const name = document.createElement('span');
+    name.textContent = `${t.session.name} (${t.session.host})`;
+    if (!connected) name.classList.add('dim');
+    label.appendChild(cb);
+    label.appendChild(name);
+    box.appendChild(label);
+  }
+  updateBatchCount();
+}
+
+function updateBatchCount() {
+  els.batchPanelCount.textContent = `已选 ${state.batchHosts.size} 台`;
+}
+
+// 执行:把命令发到勾选的已连接主机,渲染逐台结果
+async function runBatchExec() {
+  const cmd = els.batchCmd.value.trim();
+  if (!cmd) { alert('先输入要执行的命令'); return; }
+  const selTabs = [...state.batchHosts].map((id) => state.tabs.get(id)).filter((t) => t && t.status === 'connected');
+  if (!selTabs.length) { alert('请先勾选已连接的主机'); return; }
+  const hosts = selTabs.map((t) => ({
+    name: t.session.name, host: t.session.host, port: t.session.port,
+    username: t.session.username, password: t.session.password,
+    privateKey: t.session.private_key || '', passphrase: t.session.passphrase || '',
+  }));
+  els.batchRun.disabled = true;
+  els.batchRun.textContent = '⏳ 执行中…';
+  const res = await window.api.batchExec({ hosts, command: cmd });
+  els.batchRun.disabled = false;
+  els.batchRun.textContent = '▶ 执行';
+  if (res && res.ok) renderBatchResults(res.results);
+  else alert(res && res.error ? res.error : '执行失败');
+}
+
+// =====================================================================
+// 快速命令(命令收藏)
+// =====================================================================
+async function openQuickModal() {
+  await refreshQuickList();
+  els.quickModal.classList.remove('hidden');
+}
+function closeQuickModal() { els.quickModal.classList.add('hidden'); }
+
+async function refreshQuickList() {
+  const res = await window.api.quickList();
+  renderQuickList(res && res.ok ? res.cmds : []);
+}
+
+// 渲染命令列表:每行 名称+命令 + [发送到当前][批量][删除]
+function renderQuickList(cmds) {
+  const box = els.quickList;
+  box.innerHTML = '';
+  if (!cmds.length) {
+    const empty = document.createElement('div');
+    empty.className = 'quick-empty dim';
+    empty.textContent = '还没有收藏。填下面「名称 + 命令」保存一个。';
+    box.appendChild(empty);
+    return;
+  }
+  for (const c of cmds) {
+    const row = document.createElement('div');
+    row.className = 'quick-item';
+    const main = document.createElement('div');
+    main.className = 'quick-main';
+    const title = document.createElement('div');
+    title.className = 'quick-title';
+    title.textContent = c.name;
+    const cmd = document.createElement('div');
+    cmd.className = 'quick-cmd dim';
+    cmd.textContent = c.command;
+    main.appendChild(title);
+    main.appendChild(cmd);
+    const actions = document.createElement('div');
+    actions.className = 'quick-actions';
+    const b1 = document.createElement('button');
+    b1.className = 'btn-mini';
+    b1.textContent = '▶ 当前';
+    b1.title = '发送到当前激活的终端';
+    b1.addEventListener('click', () => sendQuickCurrent(c.name, c.command));
+    const b2 = document.createElement('button');
+    b2.className = 'btn-mini';
+    b2.textContent = '⚡ 批量';
+    b2.title = '批量执行到所有已连接主机';
+    b2.addEventListener('click', () => sendQuickBatch(c.command));
+    const b3 = document.createElement('button');
+    b3.className = 'btn-mini';
+    b3.textContent = '编辑';
+    b3.title = '修改名称/命令';
+    b3.addEventListener('click', () => editQuick(c));
+    const b4 = document.createElement('button');
+    b4.className = 'btn-mini danger';
+    b4.textContent = '删除';
+    b4.addEventListener('click', async () => {
+      if (confirm(`删除快速命令「${c.name}」?`)) { await window.api.quickDel(c.id); refreshQuickList(); }
+    });
+    actions.appendChild(b1);
+    actions.appendChild(b2);
+    actions.appendChild(b3);
+    actions.appendChild(b4);
+    row.appendChild(main);
+    row.appendChild(actions);
+    box.appendChild(row);
+  }
+}
+
+// ---- 编辑已存快速命令:复用下方"名称+命令"表单(保存按钮变"保存修改") ----
+let editingQuickId = null;
+function editQuick(c) {
+  editingQuickId = c.id;
+  els.quickName.value = c.name;
+  els.quickCommand.value = c.command;
+  els.quickAddBtn.textContent = '✓ 保存修改';
+  els.quickCancelBtn.classList.remove('hidden');
+  els.quickName.focus();
+}
+function cancelEditQuick() {
+  editingQuickId = null;
+  els.quickName.value = '';
+  els.quickCommand.value = '';
+  els.quickAddBtn.textContent = '＋ 保存命令';
+  els.quickCancelBtn.classList.add('hidden');
+}
+
+// 保存新命令 / 保存修改(名称+命令)
+async function addQuickCommand() {
+  const name = els.quickName.value.trim();
+  const command = els.quickCommand.value.trim();
+  if (!command) { alert('命令不能为空'); return; }
+  const editing = editingQuickId;
+  const res = editing
+    ? await window.api.quickUpdate(editing, name || '未命名', command)
+    : await window.api.quickAdd(name || '未命名', command);
+  if (res && res.ok) {
+    const shown = name || command.split('\n')[0].slice(0, 30) || '未命名';
+    cancelEditQuick();
+    refreshQuickList();
+    setStatus(editing ? `已修改快速命令: ${shown}` : `已保存快速命令: ${shown}`, 'var(--green)');
+  } else {
+    alert(res && res.error ? res.error : '保存失败');
+  }
+}
+
+// 发送到当前激活终端(状态提示只显示名称,不显示整条命令,避免状态栏被撑爆)
+function sendQuickCurrent(name, command) {
+  const t = state.tabs.get(state.activeSessionId);
+  if (!t || t.status !== 'connected') { alert('请先连接一个会话'); return; }
+  window.api.sshWrite(t.sessionId, command + '\r');
+  setStatus(`已发送: ${name}`, 'var(--green)');
+  closeQuickModal();
+}
+
+// 批量执行到所有已连接主机(复用批量面板)
+async function sendQuickBatch(command) {
+  const connected = [...state.tabs.values()].filter((t) => t.status === 'connected');
+  if (!connected.length) { alert('没有已连接的主机'); return; }
+  if (els.batchPanel.classList.contains('hidden')) toggleBatchPanel();
+  state.batchHosts.clear();
+  connected.forEach((t) => state.batchHosts.add(t.sessionId));
+  renderBatchHosts();
+  els.batchCmd.value = command;
+  await runBatchExec();
+  closeQuickModal();
+}
+
+// =====================================================================
+// SSH 隧道 / 端口转发
+// =====================================================================
+// =====================================================================
+// JumpServer 资产(堡垒机):登录 → 列资产 → 选资产连 SSH / SFTP(经 KoKo 网关)
+// =====================================================================
+function jmsFind(id) { return state.jmsServers.find((s) => s.id === id); }
+function jmsActive() { return jmsFind(state.jmsActiveId); }
+
+// 持久化服务器配置(名称/地址/账号/密码;token 不持久化,重启后静默重登)
+// 落盘前用主进程 safeStorage 加密密码(异步;调用处不 await,持久化是最终一致的)
+async function jmsPersistConfig() {
+  const servers = await Promise.all(state.jmsServers.map(async (s) => {
+    let enc = s.password;
+    try { if (enc && !enc.startsWith('enc:v1:')) enc = (await window.api.cryptoEncrypt(enc)).value || enc; } catch { /* 加密失败保留原值 */ }
+    return { id: s.id, name: s.name, baseUrl: s.baseUrl, sshHost: s.sshHost, sshPort: s.sshPort, account: s.account, password: enc };
+  }));
+  state.settings.jmsServers = servers;
+  saveSettings();
+}
+
+function openJmsModal() {
+  jmsRenderServerSelect();
+  els.jmsOtpWrap.style.display = 'none';
+  els.jmsOtp.value = '';
+  els.jmsModal.classList.remove('hidden');
+}
+function closeJmsModal() { els.jmsModal.classList.add('hidden'); }
+
+// 在堡垒机面板 webview 中打开 JumpServer Web 控制台
+// 打开 JumpServer 控制台首页(v3/v4 在 /ui/,登录后显示工作台/首页),不再直达 Luna Web 终端页:
+// 站点根 / 会(登录后)被 JumpServer 重定向到 /luna/?token=xxx —— 那正是用户不需要的 Web 终端内容。
+// 登录页则自动填凭据提交(MFA 等手输验证码)。
+async function openJmsWeb() {
+  const s = state.jmsServers.find((x) => x.token && x.user) || jmsActive();
+  if (!s || !s.baseUrl) { showJmsMsg('请先配置并连接 JumpServer(🛡 → JumpServer(API 对接))'); openJmsModal(); return; }
+  openBastionPanel();
+  const base = s.baseUrl.replace(/\/+$/, '');
+  const home = `${base}/ui/`;
+  els.bastionUrl.value = home;
+  loadBastion(home);
+  setStatus('打开 JumpServer Web 控制台', 'var(--green)');
+  // 等页面起来:停在登录页则自动填账号密码并提交(登录后即到控制台首页)
+  setTimeout(async () => {
+    try { await jmsWebEnsureLogin(s, base); } catch { /* 自动登录失败不打断,用户可手动操作 */ }
+  }, 800);
+}
+
+function showJmsMsg(text) {
+  els.jmsMsg.textContent = text;
+  els.jmsMsg.classList.toggle('hidden', !text);
+}
+
+// 填充服务器下拉,并回显当前服务器配置
+function jmsRenderServerSelect() {
+  const sel = els.jmsServerSelect;
+  sel.innerHTML = '';
+  for (const s of state.jmsServers) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name}${s.token ? ' ✓' : ''}`;
+    sel.appendChild(opt);
+  }
+  if (state.jmsServers.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(暂无服务器,点 ＋ 新增)';
+    sel.appendChild(opt);
+  }
+  if (!state.jmsActiveId && state.jmsServers.length) state.jmsActiveId = state.jmsServers[0].id;
+  sel.value = state.jmsActiveId || '';
+  jmsFillForm(jmsActive());
+}
+
+function jmsFillForm(s) {
+  els.jmsName.value = s ? s.name : '';
+  els.jmsUrl.value = s ? s.baseUrl : '';
+  els.jmsSshHost.value = s ? s.sshHost : '';
+  els.jmsSshPort.value = s ? s.sshPort : 2222;
+  els.jmsUser.value = s ? s.account : '';
+  els.jmsPass.value = s ? s.password : '';
+  els.jmsOtpWrap.style.display = 'none';
+  els.jmsOtp.value = '';
+  const loggedIn = !!(s && s.token);
+  els.jmsLoginBtn.classList.toggle('hidden', loggedIn);
+  els.jmsLogoutBtn.classList.toggle('hidden', !loggedIn);
+  els.jmsRefreshBtn.classList.toggle('hidden', !loggedIn);
+}
+
+function jmsSelectServer(id) {
+  state.jmsActiveId = id || null;
+  jmsFillForm(jmsActive());
+}
+
+// 新增服务器
+function jmsAddServer() {
+  const s = { id: `jms-server-${++state.jmsSeq}`, name: '新服务器', baseUrl: '', sshHost: '', sshPort: 2222, account: '', password: '', token: null, user: null, assets: [] };
+  state.jmsServers.push(s);
+  state.jmsActiveId = s.id;
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  els.jmsName.focus();
+}
+
+// 删除当前服务器
+function jmsDeleteServer() {
+  const s = jmsActive();
+  if (!s) return;
+  if (!confirm(`删除服务器「${s.name}」的配置吗?`)) return;
+  state.jmsServers = state.jmsServers.filter((x) => x.id !== s.id);
+  state.jmsActiveId = state.jmsServers.length ? state.jmsServers[0].id : null;
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+// 保存当前服务器配置(不登录;之后可随时点"连接 JumpServer")
+function jmsDoSave() {
+  const s = jmsActive();
+  const name = els.jmsName.value.trim() || 'JumpServer';
+  let baseUrl = els.jmsUrl.value.trim();
+  const sshHost = els.jmsSshHost.value.trim();
+  const sshPort = parseInt(els.jmsSshPort.value || '2222', 10);
+  const account = els.jmsUser.value.trim();
+  const password = els.jmsPass.value;
+  if (!baseUrl) { showJmsMsg('请填 Web 地址'); return; }
+  if (!/^https?:\/\//i.test(baseUrl)) baseUrl = 'http://' + baseUrl;
+  const server = s || { id: `jms-server-${++state.jmsSeq}`, assets: [], token: null, user: null };
+  Object.assign(server, { name, baseUrl, sshHost, sshPort, account, password });
+  if (!state.jmsServers.includes(server)) state.jmsServers.push(server);
+  state.jmsActiveId = server.id;
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  showJmsMsg(`✅ 已保存「${name}」(尚未连接,点"连接 JumpServer"登录)`);
+}
+
+async function jmsDoLogin() {
+  const s = jmsActive();
+  const name = els.jmsName.value.trim() || (s && s.name) || 'JumpServer';
+  let baseUrl = els.jmsUrl.value.trim();
+  let sshHost = els.jmsSshHost.value.trim();
+  let sshPort = parseInt(els.jmsSshPort.value || '2222', 10);
+  const account = els.jmsUser.value.trim();
+  const password = els.jmsPass.value;
+  if (!baseUrl || !account || !password) { showJmsMsg('请填 Web 地址、账号、密码'); return; }
+  // 智能推导:Web 地址 → API 地址(同源);SSH 网关留空 = Web 地址主机;端口留空 = 2222
+  if (!/^https?:\/\//i.test(baseUrl)) baseUrl = 'http://' + baseUrl;
+  let webUrl;
+  try { webUrl = new URL(baseUrl); } catch { showJmsMsg('Web 地址无效'); return; }
+  if (!sshHost) sshHost = webUrl.hostname;
+  if (!sshPort) sshPort = 2222;
+  const server = s || { id: `jms-server-${++state.jmsSeq}`, assets: [] };
+  Object.assign(server, { name, baseUrl, sshHost, sshPort, account, password });
+  if (!state.jmsServers.includes(server)) state.jmsServers.push(server);
+  state.jmsActiveId = server.id;
+  showJmsMsg('');
+  els.jmsLoginBtn.disabled = true;
+  els.jmsLoginBtn.textContent = '登录中…';
+  const r = await window.api.jmsLogin({ baseUrl, username: account, password });
+  if (!r.ok) { showJmsMsg(`登录失败: ${r.error}`); els.jmsLoginBtn.disabled = false; els.jmsLoginBtn.textContent = '连接 JumpServer'; return; }
+  if (r.mfaRequired) {
+    server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
+    jmsPersistConfig();
+    jmsRenderServerSelect(); // 先刷新下拉(会重置表单),再显示 OTP
+    els.jmsOtpWrap.style.display = '';
+    els.jmsOtp.value = '';
+    els.jmsOtp.focus();
+    els.jmsLoginBtn.disabled = false;
+    els.jmsLoginBtn.textContent = '验证并登录';
+    showJmsMsg('该账号开启了双因素认证,请输入验证码');
+    return;
+  }
+  server.token = r.token; server.user = r.user;
+  els.jmsOtpWrap.style.display = 'none';
+  els.jmsLoginBtn.disabled = false;
+  els.jmsLoginBtn.textContent = '连接 JumpServer';
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  await jmsLoadAssets();
+}
+
+// 提交双因素验证码 → 完成登录 → 拉资产
+async function jmsDoMfa() {
+  const s = jmsActive();
+  if (!s) return;
+  const code = els.jmsOtp.value.trim();
+  if (!code) { showJmsMsg('请输入验证码'); return; }
+  if (!s.mfaCookie) { showJmsMsg('会话已失效,请重新登录'); return; }
+  showJmsMsg('');
+  els.jmsLoginBtn.disabled = true;
+  els.jmsLoginBtn.textContent = '验证中…';
+  const r = await window.api.jmsMfa({
+    baseUrl: s.baseUrl, cookie: s.mfaCookie, challengeUrl: s.mfaUrl,
+    type: s.mfaType, code, username: s.account, password: s.password,
+  });
+  if (!r.ok) {
+    showJmsMsg(`验证失败: ${r.error}`);
+    els.jmsLoginBtn.disabled = false;
+    els.jmsLoginBtn.textContent = '验证并登录';
+    els.jmsOtp.select();
+    return;
+  }
+  s.token = r.token; s.user = r.user; s.mfaCookie = null; s.mfaUrl = null;
+  els.jmsOtpWrap.style.display = 'none';
+  els.jmsOtp.value = '';
+  els.jmsLoginBtn.disabled = false;
+  els.jmsLoginBtn.textContent = '连接 JumpServer';
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  await jmsLoadAssets();
+}
+
+async function jmsLoadAssets() {
+  const s = jmsActive();
+  if (!s || !s.token) return;
+  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
+  if (!r.ok) { showJmsMsg(`拉取资产失败: ${r.error}`); return; }
+  s.assets = r.assets || [];
+  els.jmsModal.classList.add('hidden'); // 登录成功 → 资产整合进会话列表
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+async function jmsRefreshActive() {
+  const s = jmsActive();
+  if (!s || !s.token) return;
+  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
+  if (!r.ok) { showJmsMsg(`刷新失败: ${r.error}`); return; }
+  s.assets = r.assets || [];
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+function jmsLogout() {
+  const s = jmsActive();
+  if (!s) return;
+  s.token = null; s.user = null; s.assets = [];
+  jmsPersistConfig();
+  jmsRenderServerSelect();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+// 连接资产(经 KoKo 网关):用户名 = JMS用户@协议@账号@资产地址
+// accountName 可选:多账号时指定;不传用第一个
+function jmsConnect(serverId, asset, accountName, openSftp) {
+  const s = jmsFind(serverId);
+  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
+  const account = accountName || (asset.accounts && asset.accounts[0] && asset.accounts[0].username) || 'root';
+  const username = `${s.user.username}@${protocol}@${account}@${asset.address}`;
+  const session = {
+    id: `jms-${++state.jmsSeq}`,
+    name: asset.name,
+    host: s.sshHost,
+    port: s.sshPort || 2222,
+    username,
+    password: s.password,
+    encoding: 'utf8',
+    tag_color: '',
+    // 标记来源:供会话列表按资产「断开连接」
+    jmsKey: `${s.id}|${asset.address}|${account}`,
+  };
+  connectToServer(session);
+  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+}
+
+// 断开该 JumpServer 资产已打开的连接(标签保留,显示"已断开")
+function jmsDisconnectAsset(serverId, asset, accountName) {
+  const prefix = `${serverId}|${asset.address}|`;
+  let n = 0;
+  for (const t of state.tabs.values()) {
+    if (t.session && t.session.jmsKey && t.session.jmsKey.startsWith(prefix) &&
+        (!accountName || t.session.jmsKey === prefix + accountName)) {
+      if (t.status === 'connected' || t.status === 'connecting') { disconnectTab(t.sessionId); n++; }
+    }
+  }
+  setStatus(n ? `已断开「${asset.name}」的连接` : `「${asset.name}」无进行中的连接`, n ? 'var(--green)' : 'var(--orange)');
+}
+
+// =====================================================================
+// JumpServer 网页版文件管理:webview 打开 JMS,自动登录,进入资产节点连接对话框选 SFTP 方式
+// =====================================================================
+const jmsWebSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 在堡垒机 webview 里执行 JS;executeJavaScript 可能长期不 settle(页面导航中),加超时兜底防挂死
+function jmsWebExec(expr, timeout = 8000) {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return Promise.resolve(null);
+  return Promise.race([
+    wv.executeJavaScript(expr).then((r) => (r === undefined ? null : r)).catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), timeout))
+  ]);
+}
+function jmsWebUrl() {
+  try { return els.bastionWebview.getURL && els.bastionWebview.getURL() ? els.bastionWebview.getURL() : ''; } catch { return ''; }
+}
+
+// 导航 webview 到 url,等待到达同一 origin(最多 ~15s);页面是否加载完由后续轮询兜底
+function jmsWebGo(url) {
+  return new Promise((resolve) => {
+    try { els.bastionWebview.src = url; } catch { /* ignore */ }
+    const origin = url.replace(/^https?:\/\//, '').split('/')[0];
+    const t0 = Date.now();
+    const poll = setInterval(() => {
+      const cur = jmsWebUrl();
+      const curHost = cur.replace(/^https?:\/\//, '').split('/')[0];
+      if (curHost === origin) { clearInterval(poll); resolve(); }
+      else if (Date.now() - t0 > 15000) { clearInterval(poll); resolve(); }
+    }, 200);
+  });
+}
+
+// 确保 webview 已登录 JMS:登录页则填账号密码并提交;MFA 账号提交后停手等用户在页面里输验证码
+async function jmsWebEnsureLogin(s, base) {
+  // 等 webview 初始化(executeJavaScript 就绪 = 已 attach;真实 URL 加载后 ~0.5s 内可用)
+  const t0 = Date.now();
+  let ready = false;
+  for (let i = 0; i < 40; i++) {
+    if (await jmsWebExec(`1`) === 1) { ready = true; break; }
+    if (Date.now() - t0 > 20000) break;
+    await jmsWebSleep(500);
+  }
+  if (!ready) return false;
+  // 轮询到已登录(资产树出现),最长 60s;期间若停在登录页则填账号密码并提交(MFA 账号提交后停在验证码页,等用户手输)
+  const t1 = Date.now();
+  let submitted = false;
+  for (let i = 0; i < 120; i++) {
+    // 用 pathname 判断是否已到 Luna 资产页(登录页 URL 带 next=/luna/ 会误命中 href 里的 /luna)
+    const path = await jmsWebExec(`location.pathname`);
+    const tree = await jmsWebExec(`document.querySelectorAll('span.node_name').length`);
+    if ((path || '').indexOf('/luna') === 0 || (tree || 0) > 0) return true;
+    // 登录页:自动填账号密码并提交(页面未就绪时每次重试,直到提交成功或超时)
+    // JMS 登录表单:密码是双字段 —— #password(可见,type=password,无 name)+ #password-hidden(name=password),
+    // 表单真正提交后者;故两个都要填,并点「登录」按钮走页面 JS 登录逻辑
+    if (!submitted && (s.account || s.password)) {
+      const r = await jmsWebExec(`(function(){
+        const u = document.getElementById('id_username') || document.querySelector('input[name="username"], input[type=text]');
+        const pws = [...document.querySelectorAll('input[name="password"], input[type=password]')];
+        if (!pws.length && !u) return 'no-form';
+        if (u) { u.value = ${JSON.stringify(s.account || '')}; u.dispatchEvent(new Event('input', {bubbles:true})); }
+        for (const p of pws) { p.value = ${JSON.stringify(s.password || '')}; p.dispatchEvent(new Event('input', {bubbles:true})); }
+        const btn = [...document.querySelectorAll('button, input[type=submit]')].find((x) => /登录|login/i.test((x.textContent || x.value || '').trim()));
+        if (btn) { try { btn.click(); return 'submitted'; } catch(e) { return 'fail'; } }
+        const f = document.querySelector('#login-form') || document.querySelector('#form_login') || document.querySelector('form');
+        if (f) { try { f.submit(); return 'submitted'; } catch(e) { return 'fail'; } }
+        return 'no-form';
+      })()`);
+      if (r === 'submitted') submitted = true;
+    }
+    if (Date.now() - t1 > 60000) break;
+    await jmsWebSleep(500);
+  }
+  return false;
+}
+
+// 资产树中右键资产 → 连接对话框 → 选 SFTP 方式 → 连接
+// 返回: 'ok' 已点连接 | 'no-node' 资产节点未找到 | 'no-menu' 右键菜单异常 | 'no-dialog' 连接对话框未出现 | 'no-sftp' 该资产无 SFTP 协议
+async function jmsWebOpenSftpDialog(asset) {
+  // 等资产节点出现(树可能按需加载,最长 30s)
+  const t0 = Date.now();
+  let node = null;
+  for (let i = 0; i < 60; i++) {
+    node = await jmsWebExec(`(function(){
+      const sp=[...document.querySelectorAll('span.node_name')].find(s=>s.textContent.trim()===${JSON.stringify(asset.name)});
+      if(!sp) return null;
+      const r=sp.getBoundingClientRect();
+      if(!r.width && !r.height) return null;
+      return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};
+    })()`);
+    if (node && node.x) break;
+    if (Date.now() - t0 > 30000) break;
+    await jmsWebSleep(500);
+  }
+  if (!node || !node.x) return 'no-node';
+  // 右键资产节点
+  await jmsWebExec(`(function(){
+    const el=document.elementFromPoint(${node.x},${node.y});
+    if(!el) return false;
+    el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:${node.x},clientY:${node.y},button:2}));
+    return true;
+  })()`);
+  // 等右键菜单 → 点「连接」
+  let clicked = false;
+  for (let i = 0; i < 20; i++) {
+    const mi = await jmsWebExec(`(function(){
+      const it=[...document.querySelectorAll('.view-menu__item')].find(e=>e.textContent.trim()==='连接');
+      if(!it) return null;
+      const r=it.getBoundingClientRect();
+      return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};
+    })()`);
+    if (mi && mi.x) {
+      await jmsWebExec(`document.elementFromPoint(${mi.x},${mi.y}).click(); true`);
+      clicked = true; break;
+    }
+    await jmsWebSleep(300);
+  }
+  if (!clicked) return 'no-menu';
+  // 等连接对话框出现
+  let dlg = false;
+  for (let i = 0; i < 20; i++) {
+    dlg = await jmsWebExec(`!!(document.querySelector('.connect-dialog-wrap, .ant-modal-wrap'))`);
+    if (dlg) break;
+    await jmsWebSleep(300);
+  }
+  if (!dlg) return 'no-dialog';
+  await jmsWebSleep(700); // 等对话框渲染完
+  // 协议 tab 定位:只有 SFTP tab(已激活)或需点击 SFTP tab;两者皆无 → 该资产无 SFTP 协议
+  const proto = await jmsWebExec(`(function(){
+    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
+    const tabs=[...w.querySelectorAll('.protocol-tab .ant-tabs-tab')];
+    if(!tabs.length) return null;
+    const sftp=tabs.find(t=>/sftp|ftp/i.test(t.textContent));
+    if(!sftp) return null;
+    return sftp.className.includes('ant-tabs-tab-active') ? 'active' : 'click';
+  })()`);
+  if (proto === null) return 'no-sftp';
+  if (proto === 'click') {
+    await jmsWebExec(`(function(){
+      const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
+      const t=[...w.querySelectorAll('.protocol-tab .ant-tabs-tab')].find(t=>/sftp|ftp/i.test(t.textContent));
+      const btn=t.querySelector('.ant-tabs-tab-btn')||t; btn.click();
+      return true;
+    })()`);
+    await jmsWebSleep(900); // 切协议后重拉连接方式
+  }
+  // 连接方式:优先「文件管理/web_sftp」radio;没有则用默认(Web 分类自动选中项)
+  await jmsWebExec(`(function(){
+    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
+    const labels=[...w.querySelectorAll('.connect-method label.ant-radio-wrapper')];
+    let target=labels.find(l=>/文件管理|web_sftp/i.test(l.textContent));
+    if(!target) target=labels.find(l=>l.textContent.trim());
+    if(target){ target.click(); return true; }
+    return false;
+  })()`);
+  await jmsWebSleep(300);
+  // 点「连接」
+  await jmsWebExec(`(function(){
+    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
+    const b=w.querySelector('.connect-btn-wrap button')||[...w.querySelectorAll('button')].find(x=>x.textContent.trim()==='连接');
+    if(b){ b.click(); return true; }
+    return false;
+  })()`);
+  return 'ok';
+}
+
+// 「📁 打开 SFTP」:JMS 资产 → 打开 JumpServer 网页版文件管理(webview 自动登录 + 走连接对话框选 SFTP)
+async function jmsOpenWebSftp(serverId, asset) {
+  const s = jmsFind(serverId);
+  if (!s) return;
+  const base = String(s.baseUrl || '').replace(/\/+$/, '');
+  if (!base) { alert('该 JumpServer 未配置 Web 地址,请在设置里填写'); return; }
+  if (els.bastionSlot.classList.contains('hidden')) openBastionPanel();
+  // 确保 webview 已加载 JMS 站点
+  if (!jmsWebUrl().startsWith(base)) await jmsWebGo(`${base}/core/auth/login/?next=/luna/`);
+  // 确保已登录(无账号密码时用户需在 webview 里手动登录)
+  const ok = await jmsWebEnsureLogin(s, base);
+  if (!ok) { setStatus('JumpServer 登录超时,请在堡垒机页面完成登录后重试', 'var(--red)'); return; }
+  // 到资产树页(Luna 已登录态下 /luna/ 直接显示资产树)
+  await jmsWebGo(`${base}/luna/`);
+  await jmsWebSleep(1500);
+  const r = await jmsWebOpenSftpDialog(asset);
+  if (r === 'ok') setStatus(`已打开「${asset.name}」的 JumpServer 网页文件管理`, 'var(--green)');
+  else if (r === 'no-node') setStatus(`未在 JumpServer 资产树找到「${asset.name}」,请先展开节点后重试`, 'var(--orange)');
+  else if (r === 'no-sftp') setStatus(`「${asset.name}」在 JumpServer 中未开通 SFTP 协议,无法打开网页文件管理`, 'var(--orange)');
+  else setStatus(`打开「${asset.name}」网页文件管理失败(${r}),请在堡垒机页面手动操作`, 'var(--orange)');
+}
+
+// 把已登录服务器的资产渲染进会话列表(JumpServer 区块)
+// 会话列表"工具区"节点头:小三角折叠/展开 + 右键菜单(与分组头行为一致)
+function makeSectionHead(label, collapsed, onToggle, menuItems) {
+  const head = document.createElement('div');
+  head.className = 'asset-group-head jms-head';
+  const caret = document.createElement('span');
+  caret.className = 'asset-group-caret';
+  caret.textContent = collapsed ? '▶' : '▼';
+  const name = document.createElement('span');
+  name.className = 'asset-group-name';
+  name.textContent = label;
+  head.appendChild(caret);
+  head.appendChild(name);
+  caret.addEventListener('click', (e) => { e.stopPropagation(); onToggle(); });
+  head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCtxMenu(e.clientX, e.clientY, menuItems); });
+  return head;
+}
+
+function renderJmsInSessionList(container, f) {
+  const logged = state.jmsServers.filter((s) => s.token && s.user);
+  if (!logged.length) return;
+  const kw = (f || '').toLowerCase();
+  for (const s of logged) {
+    // 搜索:按 名称/IP/账号 过滤 JMS 资产;空搜索 = 全显示;空格分隔多关键词
+    const list = s.assets.filter((a) => bastionAssetMatch(a, kw));
+    if (!list.length) continue;
+    const collapsed = state.collapsedJms.has(s.id);
+    container.appendChild(makeSectionHead(`🛡 ${s.name}(${list.length}${kw ? '/' + s.assets.length : ''})`, collapsed,
+      () => { collapsed ? state.collapsedJms.delete(s.id) : state.collapsedJms.add(s.id); renderSessionList(els.inputSessionSearch.value); },
+      [
+        { label: '🔄 刷新资产', action: () => jmsRefreshServer(s.id) },
+        { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
+      ]));
+    if (collapsed) continue;
+    for (const a of list) container.appendChild(makeJmsAssetRow(s, a));
+  }
+}
+
+function makeJmsAssetRow(s, a) {
+  const item = document.createElement('div');
+  item.className = 'asset-item jms-asset-item';
+  item.title = `双击连 SSH → ${a.address}`;
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = '🖥';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = a.name;
+  const addr = document.createElement('span');
+  addr.className = 'addr jms-a-addr';
+  addr.textContent = a.address;
+  item.appendChild(icon);
+  item.appendChild(name);
+  item.appendChild(addr);
+  item.addEventListener('dblclick', () => jmsConnect(s.id, a));
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const items = [{ label: `🔗 连接 SSH(${s.name})`, action: () => jmsConnect(s.id, a) }];
+    const accts = (a.accounts || []).map((x) => x.username).filter(Boolean);
+    if (accts.length > 1) {
+      items.push({ label: '账号', separatorLabel: true });
+      for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => jmsConnect(s.id, a, un) });
+      items.push({ separator: true });
+      for (const un of accts) items.push({ label: `🔌 断开 ${un}`, action: () => jmsDisconnectAsset(s.id, a, un) });
+    }
+    items.push({ separator: true });
+    items.push({ label: '🔌 断开连接', action: () => jmsDisconnectAsset(s.id, a) });
+    items.push({ separator: true });
+    items.push({ label: '📁 打开 SFTP', action: () => jmsOpenWebSftp(s.id, a) });
+    items.push({ separator: true });
+    items.push({ label: `🔄 刷新「${s.name}」资产`, action: () => jmsRefreshServer(s.id) });
+    items.push({ label: `🚪 退出「${s.name}」登录`, danger: true, action: () => jmsLogoutServer(s.id) });
+    showCtxMenu(e.clientX, e.clientY, items);
+  });
+  return item;
+}
+
+async function jmsRefreshServer(serverId) {
+  const s = jmsFind(serverId);
+  if (!s || !s.token) return;
+  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
+  if (r.ok) { s.assets = r.assets || []; renderSessionList(els.inputSessionSearch.value); }
+}
+
+function jmsLogoutServer(serverId) {
+  const s = jmsFind(serverId);
+  if (!s) return;
+  s.token = null; s.user = null; s.assets = [];
+  jmsPersistConfig();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+// 启动时恢复:从设置加载服务器配置,对已登录过的服务器静默重登(MFA 账号则等用户手动登录)
+async function jmsRestore() {
+  if (state.jmsRestoreDone) return;
+  state.jmsRestoreDone = true;
+  const saved = state.settings.jmsServers || [];
+  if (!saved.length) return;
+  for (const c of saved) {
+    let pw = c.password;
+    try { if (pw && pw.startsWith('enc:v1:')) pw = (await window.api.cryptoDecrypt(pw)).value || ''; } catch { /* 解密失败保留原值 */ }
+    const s = { id: c.id || `jms-server-${++state.jmsSeq}`, name: c.name || 'JumpServer', baseUrl: c.baseUrl, sshHost: c.sshHost, sshPort: c.sshPort || 2222, account: c.account, password: pw, token: null, user: null, assets: [] };
+    state.jmsServers.push(s);
+    state.jmsActiveId = state.jmsActiveId || s.id;
+  }
+  jmsRenderServerSelect();
+  for (const s of state.jmsServers) {
+    if (!s.password) continue;
+    try {
+      const r = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
+      if (r.ok && r.token) {
+        s.token = r.token; s.user = r.user;
+        const ar = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
+        if (ar.ok) s.assets = ar.assets || [];
+      }
+      // MFA 账号:静默登录返回 mfa_required,不打扰用户,等手动登录
+    } catch { /* 网络/超时,忽略 */ }
+  }
+  renderSessionList(els.inputSessionSearch.value);
+}
+
+// =====================================================================
+// 堡垒机客户端:右侧停靠面板 + 内置浏览器登录,拦截 accessclient://,解码后用 Polaris 连 SSH
+// =====================================================================
+// 面板默认宽度:未手动拖过(无持久化宽度)时默认占屏一半,保证堡垒机完整页面不被右侧遮挡
+function applyBastionDefaultWidth() {
+  const saved = Number(state.settings.bastionWidth) || 0;
+  if (saved >= 300) els.bastionPanel.style.width = `${saved}px`;
+  else els.bastionPanel.style.width = `${Math.max(420, Math.round(window.innerWidth * 0.5))}px`;
+}
+function openBastionPanel() {
+  els.bastionSlot.classList.remove('hidden');
+  els.bastionMini.classList.add('hidden');
+  applyBastionDefaultWidth();
+  bastionRenderServerSelect();
+  const saved = state.settings.bastionUrl || '';
+  if (saved) els.bastionUrl.value = saved;
+  if (!els.bastionWebview.src && saved) loadBastion(saved);
+  else els.bastionUrl.focus();
+  refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
+}
+// 最小化(收起面板,在会话列表显示入口;webview 会话保留,展开不用重登)
+function minimizeBastion() {
+  els.bastionSlot.classList.add('hidden');
+  updateBastionMini();
+  els.bastionMini.classList.remove('hidden');
+  refitAll(); // 面板收起后终端区恢复全宽,重排 xterm
+}
+function closeBastionPanel() { minimizeBastion(); }
+function restoreBastion() { openBastionPanel(); }
+
+// 更新最小化入口:显示从堡垒机连了几台终端
+function updateBastionMini() {
+  const n = [...state.tabs.values()].filter((t) => t.session && String(t.session.id).startsWith('bastion-')).length;
+  els.bastionMini.textContent = n ? `🌐 堡垒机(${n})` : '🌐 堡垒机';
+}
+
+// ---- 堡垒机(H3C)配置:保存/管理常用 Web 地址 ----
+function bastionServers() { return state.settings.bastionServers || (state.settings.bastionServers = []); }
+
+// 渲染地址栏的服务器下拉
+function bastionRenderServerSelect() {
+  const sel = els.bastionServerSelect;
+  sel.innerHTML = '';
+  for (const s of bastionServers()) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name || s.url;
+    sel.appendChild(opt);
+  }
+  if (bastionServers().length) {
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = '(手动输入地址)';
+    sel.appendChild(empty);
+  }
+}
+
+// 选择保存的服务器 → 填地址并加载(页面加载完自动填充账号密码)
+let bastionPendingFill = null;
+function bastionSelectServer(id) {
+  const s = bastionServers().find((x) => x.id === id);
+  if (!s) return;
+  els.bastionUrl.value = s.url;
+  loadBastion(s.url);
+  bastionPendingFill = (s.account || s.password) ? s : null; // 有凭据则加载后自动填充
+  closeBastionCfg();
+}
+
+// 工具栏「加载」:加载当前选中的已保存堡垒机并自动填充账号密码;无选中则加载地址栏输入的地址
+function bastionLoadSelected() {
+  const id = els.bastionServerSelect.value;
+  if (id) { bastionSelectServer(id); return; }
+  const url = els.bastionUrl.value.trim();
+  if (url) loadBastion(url);
+  else alert('请先选一个已保存的堡垒机,或输入 Web 地址');
+}
+
+// 在堡垒机登录页自动填充账号密码(尽力而为:H3C 等浏览器登录)
+function bastionAutoFill(s) {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  try {
+    wv.executeJavaScript(`(function(){
+      try {
+        const pwList = document.querySelectorAll('input[type=password]');
+        if (!pwList.length) return false;
+        const pw = pwList[0];
+        let user = null;
+        const cands = document.querySelectorAll('input[type=text], input:not([type])');
+        for (const u of cands) {
+          const n = (u.name + ' ' + u.id).toLowerCase();
+          if (n.includes('user') || n.includes('account') || n.includes('login')) { user = u; break; }
+        }
+        if (!user && cands.length) user = cands[0]; // 退而求其次:第一个文本框
+        if (user) { user.value = ${JSON.stringify(s.account || '')}; user.dispatchEvent(new Event('input', {bubbles:true})); }
+        pw.value = ${JSON.stringify(s.password || '')};
+        pw.dispatchEvent(new Event('input', {bubbles:true}));
+        return true;
+      } catch(e) { return false; }
+    })()`).then((r) => { if (r && r.result && r.result.value) console.log('[堡垒机] 已自动填充账号密码'); }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+function openBastionCfg() {
+  bastionRenderCfgList();
+  els.bastionCfgName.value = '';
+  els.bastionCfgUrl.value = '';
+  els.bastionCfgAccount.value = '';
+  els.bastionCfgPass.value = '';
+  els.bastionCfgMsg.classList.add('hidden');
+  els.bastionCfgModal.classList.remove('hidden');
+}
+function closeBastionCfg() { els.bastionCfgModal.classList.add('hidden'); }
+
+// 配置弹窗里的服务器列表
+function bastionRenderCfgList() {
+  const box = els.bastionCfgList;
+  box.innerHTML = '';
+  const list = bastionServers();
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'jms-empty';
+    empty.textContent = '还没有保存的堡垒机,下面添加一个';
+    box.appendChild(empty);
+    return;
+  }
+  for (const s of list) {
+    const row = document.createElement('div');
+    row.className = 'jms-asset';
+    const name = document.createElement('span');
+    name.className = 'jms-a-name';
+    name.textContent = s.name || s.url;
+    const addr = document.createElement('span');
+    addr.className = 'jms-a-comment';
+    addr.textContent = s.url;
+    const del = document.createElement('button');
+    del.className = 'btn-mini danger';
+    del.textContent = '🗑';
+    del.title = '删除';
+    del.addEventListener('click', () => bastionCfgDelete(s.id));
+    row.appendChild(name);
+    row.appendChild(addr);
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
+function bastionCfgAdd() {
+  const name = els.bastionCfgName.value.trim();
+  let url = els.bastionCfgUrl.value.trim();
+  const account = els.bastionCfgAccount.value.trim();
+  const password = els.bastionCfgPass.value;
+  if (!url) { showBastionCfgMsg('请填 Web 地址'); return; }
+  if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+  bastionServers().push({ id: `bastion-cfg-${++state.jmsSeq}`, name: name || url, url, account, password });
+  state.settings.bastionServers = bastionServers();
+  saveSettings();
+  bastionRenderCfgList();
+  bastionRenderServerSelect();
+  showBastionCfgMsg(`✅ 已保存「${name || url}」${account ? '(含账号密码)' : ''}`);
+}
+function bastionCfgDelete(id) {
+  state.settings.bastionServers = bastionServers().filter((x) => x.id !== id);
+  saveSettings();
+  bastionRenderCfgList();
+  bastionRenderServerSelect();
+}
+function showBastionCfgMsg(text) {
+  els.bastionCfgMsg.textContent = text;
+  els.bastionCfgMsg.classList.toggle('hidden', !text);
+}
+
+// ---- H3C 堡垒机资产捕获:在 webview 里钩住资产 API(fetch/XHR),把响应存到 window.__bastionAssets ----
+function injectBastionAssetHook() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  try {
+    wv.executeJavaScript(`(function(){
+      if (window.__bastionHookInjected) return;
+      window.__bastionHookInjected = true;
+      window.__bastionAssets = [];
+      window.__bastionDiag = [{ ts: Date.now(), ev: 'hook-injected' }];
+      function capture(url, text, body) {
+        if (!url || !text) return;
+        const matched = /getAccessViewDevs|getAccessViewTree/.test(url);
+        // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
+        const broad = /accessView|device|tree|asset|host|group/i.test(url);
+        if (!matched && !broad) return;
+        const rec = { ts: Date.now(), url: url.slice(0, 250), len: text.length, matched };
+        let j = null;
+        try { j = JSON.parse(text); } catch (e) {}
+        if (j && typeof j === 'object') {
+          const page = {};
+          ['total','totalCount','count','pageSize','pageNum','pageNo','page','size','current','pages','records']
+            .forEach(function(k){ if (k in j) page[k] = j[k]; });
+          if (Object.keys(page).length) rec.page = page;
+          rec.devs = Array.isArray(j.content) ? j.content.length
+            : (j.children ? (function countIp(ns){ var c2 = 0; (ns || []).forEach(function(n){ if (n.ip) c2++; if (n.children) c2 += countIp(n.children); }); return c2; })(j.children) : -1);
+        }
+        rec.preview = text.slice(0, 300);
+        const diag = window.__bastionDiag || [];
+        diag.push(rec);
+        if (diag.length > 200) diag.shift();
+        window.__bastionDiag = diag;
+        if (!matched || !j) return; // 没匹配到已知资产 API:只记录(供判断真实接口名),不并入资产
+        // 分页拉全量:H3C 前端默认只请求 page=0(size=20),totalPages>1 时按原请求体主动翻页补齐
+        // (真实堡垒机 totalElements=870 / 44 页,只捕获第 0 页 20 台 = "资产不完整"根因)
+        if (j.last === false && Array.isArray(j.content) && j.totalPages && j.totalPages > 1 && !window.__bastionAllLoading) {
+          window.__bastionAllLoading = true;
+          window.__bastionFetchedPages = window.__bastionFetchedPages || {};
+          let pb = null;
+          try { pb = body ? JSON.parse(body) : null; } catch (e) {}
+          const tp = j.totalPages;
+          const size = (pb && pb.size) || 20;
+          const baseUrl = url.split('?')[0];
+          const pathsKey = (pb && pb.paths && pb.paths.join(',')) || '';
+          // 递归串行翻页(一次只发一个请求,完成后隔 150ms 发下一页,避免 44 并发打爆堡垒机)
+          (function fetchPage(pg) {
+            if (pg >= tp) { window.__bastionAllLoading = false; return; }
+            const key = pathsKey + '|p' + pg;
+            const next = () => setTimeout(() => fetchPage(pg + 1), 150);
+            if (window.__bastionFetchedPages[key]) { next(); return; }
+            window.__bastionFetchedPages[key] = true;
+            try {
+              const nb = pb ? JSON.parse(body) : { page: pg, size: size };
+              nb.page = pg;
+              window.fetch(baseUrl + '?page=' + pg + '&size=' + size, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(nb),
+              }).then(next).catch(next);
+            } catch (e) { next(); }
+          })(1);
+        }
+        try {
+          let devs = [];
+          if (j.content) { // getAccessViewDevs: { content:[{ id, dev:{id,name,ip,services,accounts}, recent:{account} }] }
+            devs = j.content.map(function(c){
+              const d = c.dev || {};
+              const srv = (d.services && d.services.services) || {};
+              const accts = ((d.accounts && d.accounts.accounts) || []).map(function(a){ return a.name; }).filter(Boolean);
+              return {
+                name: d.name || c.name,
+                ip: d.ip || '',
+                id: d.id || c.id || '',
+                devId: d.id || c.id || '',
+                port: (srv.ssh && srv.ssh.port) || 22,
+                proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
+                accounts: accts,
+                recentAccount: (c.recent && c.recent.account) || '',
+              };
+            }).filter(function(d){ return d.name; });
+          } else if (j.children) { // 树结构:递归收集设备(有 ip 的节点)
+            (function walk(nodes){
+              for (const n of nodes || []) {
+                if (n.ip) devs.push({ name: n.name, ip: n.ip, id: n.id, devId: n.id, port: 22, proto: 'ssh', accounts: [], recentAccount: '' });
+                if (n.children) walk(n.children);
+              }
+            })(j.children);
+          }
+          if (devs.length) {
+            const prev = window.__bastionAssets || [];
+            const map = new Map(prev.map(d => [d.name+d.ip, d]));
+            devs.forEach(d => map.set(d.name+d.ip, d));
+            window.__bastionAssets = [...map.values()];
+          }
+        } catch(e) {}
+      }
+      // 钩 XMLHttpRequest
+      const oOpen = XMLHttpRequest.prototype.open;
+      const oSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(m, u) { this.__u = u; return oOpen.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function() {
+        try { this.__body = arguments[0]; this.addEventListener('load', function(){ capture(this.__u, this.responseText, this.__body); }); } catch(e) {}
+        return oSend.apply(this, arguments);
+      };
+      // 钩 fetch(保存原始 fetch,翻页请求也用被 hook 的 window.fetch,响应自动走 capture 合并+记录)
+      const oFetch = window.fetch;
+      window.fetch = function() {
+        const _init = arguments[1] || {};
+        return oFetch.apply(this, arguments).then(function(r){
+          try { r.clone().text().then(function(t){ capture(r.url, t, _init.body || ''); }); } catch(e) {}
+          return r;
+        });
+      };
+    })()`).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+// 从 webview 读取捕获的资产,刷新会话列表
+function pollBastionAssets() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  if (els.bastionSlot.classList.contains('hidden')) return; // 面板已收起:不打扰后台 webview,恢复展开后再轮询
+  try {
+    // webview.executeJavaScript 直接 resolve 为脚本结果(数组)
+    wv.executeJavaScript(`window.__bastionAssets || []`).then((list) => {
+      list = list || [];
+      console.log('[堡垒机] pollBastionAssets 读到资产数:', list.length, JSON.stringify(list).slice(0,120));
+      if (list.length && JSON.stringify(list) !== JSON.stringify(state.bastionAssets)) {
+        state.bastionAssets = list;
+        renderSessionList(els.inputSessionSearch.value);
+        console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
+      }
+    }).catch((e) => console.log('[堡垒机] pollBastionAssets 异常:', e && e.message));
+  } catch { /* ignore */ }
+}
+
+// 堡垒机连接链路诊断(主渲染进程;webview 的资产请求记录在 __bastionDiag,连接在 __bastionConnLog)
+window.__bastionConnLog = [];
+function bastionLog(evt) {
+  window.__bastionConnLog.push(Object.assign({ ts: Date.now() }, evt));
+  if (window.__bastionConnLog.length > 50) window.__bastionConnLog.shift();
+}
+
+// 导出堡垒机资产诊断包:把捕获到的所有资产请求记录 + 当前资产列表打包成 JSON 文件,拷贝给开发者排查"资产不完整"
+function exportBastionDiag() {
+  const wv = els.bastionWebview;
+  // diag 记录存在 webview(隔离的 guest 页面)的 window 里,必须从 webview 读,不是主窗口
+  const readDiag = (wv && wv.executeJavaScript)
+    ? wv.executeJavaScript(`window.__bastionDiag || []`).catch(() => [])
+    : Promise.resolve([]);
+  readDiag.then((diag) => {
+    const data = {
+      app: 'Polaris',
+      time: new Date().toISOString(),
+      ua: navigator.userAgent,
+      webviewUrl: els.bastionCurrent ? els.bastionCurrent.textContent : '',
+      assetCount: (state.bastionAssets || []).length,
+      assets: state.bastionAssets,
+      diag: diag || [],
+      connLog: window.__bastionConnLog || [],
+    };
+    window.api.exportBastionDiag(data).then((r) => {
+      alert(r && r.ok
+        ? '✅ 堡垒机诊断包已导出:\n' + r.path + '\n\n请把该文件拷贝/发给我。'
+        : '❌ 导出失败: ' + ((r && r.error) || '未知错误'));
+    }).catch((e) => alert('❌ 导出异常: ' + e.message));
+  });
+}
+
+// 会话列表里的"🌐 H3C 堡垒机"资产区(双击连 SSH;右键:连接/账号/SFTP/断开)
+function renderBastionInSessionList(container, f) {
+  const all = state.bastionAssets;
+  const kw = (f || '').toLowerCase();
+  // 搜索:按 名称/IP/账号 过滤;空搜索 = 全显示;空格分隔多关键词
+  const list = all.filter((a) => bastionAssetMatch(a, kw));
+  if (!list.length) return;
+  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${list.length}${kw ? '/' + all.length : ''})`, state.bastionCollapsed,
+    () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
+    [
+      { label: '🔄 刷新资产', action: () => { injectBastionAssetHook(); setTimeout(pollBastionAssets, 600); } },
+      { label: '📤 导出诊断包', action: () => exportBastionDiag() },
+      { label: '🔌 断开全部堡垒机连接', action: () => disconnectBastionAll() },
+    ]));
+  if (state.bastionCollapsed) return;
+  for (const a of list) {
+    const item = document.createElement('div');
+    item.className = 'asset-item jms-asset-item';
+    const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
+    item.title = `双击连 SSH → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}`;
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = '🖥';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = a.name;
+    const addr = document.createElement('span');
+    addr.className = 'addr jms-a-addr';
+    addr.textContent = a.ip || '';
+    item.appendChild(icon);
+    item.appendChild(name);
+    item.appendChild(addr);
+    item.addEventListener('dblclick', () => bastionConnect(a));
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const items = [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }];
+      const accts = (a.accounts || []).filter(Boolean);
+      if (accts.length > 1) {
+        items.push({ label: '账号', separatorLabel: true });
+        for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => bastionConnect(a, un) });
+      }
+      items.push({ separator: true });
+      items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
+      items.push({ separator: true });
+      items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+      items.push({ separator: true });
+      items.push({ label: '🔄 刷新资产', action: () => { injectBastionAssetHook(); setTimeout(pollBastionAssets, 600); } });
+      showCtxMenu(e.clientX, e.clientY, items);
+    });
+    container.appendChild(item);
+  }
+}
+
+// 通过堡垒机 web 控制台发起连接:POST /shterm/api/deviceAccess/accessUrl
+// (真实 H3C:请求 { misc, sessRemark, account, proto, dev } → 响应 { url: accessclient://... })
+// 拿到 accessclient:// 后走和网页点击完全相同的解码+SSH 路径。
+function bastionConnect(asset, accountName, proto, openSftp) {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.src) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)'); openBastionPanel(); return; }
+  const dev = asset.devId || asset.id || '';
+  if (!dev) { alert('该资产缺少设备 ID,无法发起连接'); return; }
+  const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
+  // 与真实 HAR(-2.har 成功请求)完全一致:misc 不带 appclient,H3C 前端从不发送该字段
+  const body = { misc: { resolution: '80x24', tab: true, isDualAuth: false }, sessRemark: '', account, proto: proto || 'ssh', dev };
+  bastionLog({ ev: 'accessUrl-req', asset: asset.name, dev, account, body });
+  const bodyStr = JSON.stringify(body).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
+  wv.executeJavaScript(
+    `fetch('/shterm/api/deviceAccess/accessUrl',{method:'POST',headers:{'Content-Type':'application/json'},body:'${bodyStr}'}).then(function(r){return r.text()})`
+  ).then((txt) => {
+    let url = '';
+    try { url = (JSON.parse(txt).url) || ''; } catch { /* 非 JSON */ }
+    if (!url || url.indexOf('accessclient://') !== 0) {
+      bastionLog({ ev: 'accessUrl-fail', asset: asset.name, dev, resp: txt.slice(0, 300) });
+      alert('堡垒机未返回连接凭证(可能已退出登录),请先在控制台重新登录');
+      return;
+    }
+    bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, token: url.slice(0, 60) + '…' });
+    handleAccessClientUrl(url, openSftp, dev);
+  }).catch((e) => { bastionLog({ ev: 'accessUrl-throw', error: e && e.message }); alert('请求堡垒机连接失败: ' + (e && e.message)); });
+}
+
+// 断开该 H3C 资产已打开的连接(标签保留,显示"已断开")
+function bastionDisconnect(asset) {
+  const key = 'h3c-' + (asset.devId || asset.id || '');
+  let n = 0;
+  for (const t of state.tabs.values()) {
+    if (t.session && t.session.bastionKey === key && (t.status === 'connected' || t.status === 'connecting')) {
+      disconnectTab(t.sessionId); n++;
+    }
+  }
+  setStatus(n ? `已断开「${asset.name}」的连接` : `「${asset.name}」无进行中的连接`, n ? 'var(--green)' : 'var(--orange)');
+}
+
+// 断开所有堡垒机(accessclient://)发起的连接(会话 id 以 bastion- 开头)
+function disconnectBastionAll() {
+  for (const sid of [...state.tabs.keys()]) {
+    if (String(sid).startsWith('bastion-')) closeTab(sid);
+  }
+}
+
+function loadBastion(url) {
+  if (!url) { alert('请填堡垒机 Web 地址'); return; }
+  if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+  state.settings.bastionUrl = url;
+  saveSettings();
+  els.bastionEmpty.classList.remove('hidden');
+  els.bastionEmpty.textContent = '加载中…';
+  els.bastionLoading.classList.remove('hidden');
+  els.bastionCurrent.textContent = url;
+  els.bastionWebview.src = url;
+  applyBastionZoom(); // 新页面同样套用已保存的缩放
+}
+
+// 画面缩放:webview 内容整体放大/缩小(0.5~2.5),状态持久化
+function applyBastionZoom() {
+  const wv = els.bastionWebview;
+  try { if (wv.setZoomFactor) wv.setZoomFactor(state.bastionZoom); } catch { /* ignore */ }
+  if (els.bastionZoomLabel) els.bastionZoomLabel.textContent = `${Math.round(state.bastionZoom * 100)}%`;
+}
+// 页面自动适配面板宽度(fit-to-width):整页加载后按 面板宽/页面内容宽 等比缩放(只缩不放,0.4~1),
+// 保证堡垒机完整页面不被右侧遮挡。手动 A−/A+ 调整过则本会话内不再自动适配。
+let bastionManualZoom = false;
+function bastionFitToWidth() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  const panelW = (els.bastionPanel ? els.bastionPanel.offsetWidth : 0) - 24;
+  if (panelW <= 0) return;
+  wv.executeJavaScript('document.documentElement.scrollWidth || document.body.scrollWidth || 0')
+    .then((sw) => {
+      if (!sw || sw <= 0) return;
+      const z = Math.min(1, Math.max(0.4, panelW / sw));
+      state.bastionZoom = Math.round(z * 100) / 100;
+      applyBastionZoom();
+    }).catch(() => {});
+}
+function setBastionZoom(delta) {
+  bastionManualZoom = true; // 手动调整过 → 不再自动适配
+  state.bastionZoom = Math.min(2.5, Math.max(0.5, Math.round((state.bastionZoom + delta) * 10) / 10));
+  applyBastionZoom();
+  saveSettings();
+}
+
+// 处理 accessclient:// —— 解码 token(H3C 单点登录凭证) → 用 Polaris 终端连 SSH
+// openSftp:连上后顺带打开 SFTP 面板;devId:标记来源资产(供会话列表按资产断开)
+async function handleAccessClientUrl(acUrl, openSftp, devId) {
+  bastionLog({ ev: 'token-decode', token: acUrl.slice(0, 60) + '…' });
+  const r = await window.api.bastionDecode(acUrl);
+  if (!r.ok) { bastionLog({ ev: 'token-decode-fail', error: r.error }); alert('解码堡垒机连接失败: ' + r.error); return; }
+  const info = r.info;
+  // hn = 堡垒机 SSH 网关(TERM-SSHD,实测监听 hn:pn;probe 证实目标机 sh 被防火墙丢弃不可直连)。
+  // 无论 direct/代理模式,SSH 都经网关:连 hn:pn,用户名=目标账号 sa,密码=一次性密码 OTP,网关按 OTP 路由到目标。
+  const gw = info.hn && String(info.hn).trim();
+  const host = gw ? gw : ((info.mode === 'direct' && info.sh) ? info.sh : (info.hn || info.sh || ''));
+  const port = Number(info.pn) || 22;
+  const account = info.sa || '';
+  const password = info.pw || '';
+  bastionLog({ ev: 'token-decode-ok', mode: info.mode, viaGateway: !!gw, host, port, account, sn: info.sn, st: info.st, cp: info.cp, hasPw: !!password });
+  if (!host || !password) { bastionLog({ ev: 'ssh-abort', reason: 'host/pw 缺失', host, hasPw: !!password }); alert('堡垒机连接信息不完整'); return; }
+  // 编码按 token 里的 cp 字段(如 UTF-8 / GBK)映射
+  const cp = String(info.cp || 'UTF-8').toLowerCase();
+  const encoding = (cp.includes('gbk') || cp.includes('gb2312')) ? 'gbk' : (cp.includes('utf-8') ? 'utf8' : 'utf8');
+  const session = {
+    id: `bastion-${++state.jmsSeq}`,
+    name: info.sn || info.st || `${account}@${host}`,
+    host,
+    port,
+    username: account,
+    password, // 一次性密码(OTP:xxx),堡垒机 SSH 代理据此路由到目标主机
+    encoding,
+    tag_color: '',
+    bastionKey: devId ? `h3c-${devId}` : null, // 会话列表按资产断开用
+  };
+  bastionLog({ ev: 'ssh-connect-start', sessionId: session.id, host, port, account, name: session.name });
+  // 并行探测实际连接目标(TCP+banner),不阻塞连接,结果进诊断包
+  if (window.api.bastionProbe) {
+    window.api.bastionProbe({ host, port, timeoutMs: 6000 })
+      .then((r) => bastionLog({ ev: 'net-probe', host, port, ...r }))
+      .catch((e) => bastionLog({ ev: 'net-probe-throw', error: e.message }));
+  }
+  connectToServer(session);
+  setStatus(`堡垒机直连: ${session.name}`, 'var(--green)');
+  // 连接成功 → 最小化到会话列表,终端在前台(SSH 连接独立,不受页面收起影响)
+  minimizeBastion();
+  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+}
+
+// 拦截堡垒机触发的 accessclient://(外部工具/单点登录)
+function initBastionWebview() {
+  const wv = els.bastionWebview;
+  if (!wv) return;
+  wv.addEventListener('will-navigate', (e) => {
+    if (e.url && e.url.startsWith('accessclient://')) { e.preventDefault(); handleAccessClientUrl(e.url); }
+  });
+  wv.addEventListener('new-window', (e) => {
+    // accessclient:// → 接管连接;其他新窗口链接 → 留在同一 webview 打开(避免弹窗)
+    e.preventDefault();
+    if (e.url && e.url.startsWith('accessclient://')) handleAccessClientUrl(e.url);
+    else if (e.url && !e.url.startsWith('about:')) { try { wv.src = e.url; } catch { /* ignore */ } }
+  });
+  // 加载状态:开始显示"加载中"转圈,成功隐藏,失败显示错误
+  wv.addEventListener('did-start-loading', () => {
+    els.bastionLoading.classList.remove('hidden');
+    els.bastionEmpty.classList.remove('hidden');
+    els.bastionEmpty.textContent = '加载中…';
+  });
+  wv.addEventListener('did-stop-loading', () => {
+    els.bastionLoading.classList.add('hidden');
+    els.bastionEmpty.classList.add('hidden');
+    try { if (wv.getURL && wv.getURL()) els.bastionCurrent.textContent = wv.getURL(); } catch { /* ignore */ }
+    // 页面加载完:注入资产捕获钩子 + 自动适配面板宽度(完整页面不遮挡) + 若有待填充账号密码则自动填充
+    injectBastionAssetHook();
+    if (!bastionManualZoom) setTimeout(bastionFitToWidth, 250);
+    setTimeout(pollBastionAssets, 1200);
+    if (bastionPendingFill) {
+      const s = bastionPendingFill;
+      setTimeout(() => { bastionAutoFill(s); }, 800);
+      bastionPendingFill = null;
+    }
+  });
+  // 地址栏显示当前地址 + 页面标题(诊断空白页:能看到加载到哪个地址/标题)
+  wv.addEventListener('did-navigate', (e) => { try { if (e.url && e.url !== 'about:blank') els.bastionCurrent.textContent = e.url; } catch { /* ignore */ } });
+  wv.addEventListener('page-title-updated', (e) => {
+    try {
+      const title = (e.title || '').trim();
+      if (title) els.bastionCurrent.textContent = `${title} — ${els.bastionCurrent.textContent.split(' — ').pop()}`;
+    } catch { /* ignore */ }
+  });
+  wv.addEventListener('did-fail-load', (e) => {
+    if (e && e.isMainFrame === false) return; // 子资源失败不提示
+    els.bastionLoading.classList.add('hidden');
+    els.bastionEmpty.classList.remove('hidden');
+    const code = e.errorCode || '未知';
+    const desc = (e.errorDescription || '').replace(/^ERR_/, '');
+    els.bastionEmpty.textContent = `⚠️ 加载失败(${code}${desc ? ' ' + desc : ''})\n请检查堡垒机地址或网络,可点右上角 ↻ 重试`;
+  });
+}
+
+async function openTunnelModal() {
+  // 填充会话下拉(全部打开连接,未连的置灰提示)
+  const sel = els.tunnelSession;
+  sel.innerHTML = '';
+  for (const t of state.tabs.values()) {
+    const opt = document.createElement('option');
+    opt.value = t.sessionId;
+    const connected = t.status === 'connected';
+    opt.textContent = `${t.session.name} (${t.session.host})${connected ? '' : ' · 未连接'}`;
+    opt.disabled = !connected;
+    sel.appendChild(opt);
+  }
+  if (!els.tunnelForm.classList.contains('hidden')) { els.tunnelForm.classList.add('hidden'); updateTunnelTypeFields(); }
+  await refreshTunnels();
+  els.tunnelModal.classList.remove('hidden');
+}
+
+async function refreshTunnels() {
+  const res = await window.api.tunnelList();
+  const list = res && res.ok ? res.tunnels : [];
+  const box = els.tunnelList;
+  box.innerHTML = '';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'tunnel-empty dim';
+    empty.textContent = '还没有隧道。点「＋ 新建隧道」创建。';
+    box.appendChild(empty);
+    return;
+  }
+  for (const t of list) {
+    const row = document.createElement('div');
+    row.className = 'tunnel-item';
+    const main = document.createElement('div');
+    main.className = 'tunnel-main';
+    const title = document.createElement('div');
+    title.className = 'tunnel-title';
+    title.textContent = `${t.name} · ${t.type.toUpperCase()} · ${t.status === 'active' ? '运行中' : '已停'}`;
+    const meta = document.createElement('div');
+    meta.className = 'tunnel-meta dim';
+    if (t.type === 'remote') meta.textContent = `本地 ${t.localHost}:${t.localPort} ← 远程 ${t.remotePort}`;
+    else meta.textContent = `${t.localHost}:${t.localPort} → ${t.remoteHost || ''}:${t.remotePort}`;
+    main.appendChild(title);
+    main.appendChild(meta);
+    const del = document.createElement('button');
+    del.className = 'btn-mini danger';
+    del.textContent = '停用';
+    del.title = '停用并删除这条隧道';
+    del.addEventListener('click', async () => {
+      await window.api.tunnelDelete(t.id);
+      refreshTunnels();
+    });
+    row.appendChild(main);
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
+function toggleTunnelForm() {
+  els.tunnelForm.classList.toggle('hidden');
+  updateTunnelTypeFields();
+}
+
+// 类型切换:动态代理不需要"远程主机/端口"
+function updateTunnelTypeFields() {
+  const isDynamic = els.tunnelType.value === 'dynamic';
+  els.tunnelRemoteRow.classList.toggle('hidden', isDynamic);
+}
+
+async function createTunnel() {
+  const res = await window.api.tunnelCreate({
+    sessionId: els.tunnelSession.value,
+    type: els.tunnelType.value,
+    localPort: Number(els.tunnelLocalport.value),
+    name: els.tunnelName.value.trim(),
+    remoteHost: els.tunnelRemotehost.value.trim(),
+    remotePort: Number(els.tunnelRemoteport.value),
+  });
+  if (res && res.ok) {
+    els.tunnelForm.classList.add('hidden');
+    await refreshTunnels();
+    setStatus(`隧道已创建: ${res.tunnel.name}`, 'var(--green)');
+  } else {
+    alert(res && res.error ? res.error : '创建失败');
+  }
+}
+
+// 渲染结果:每台主机一张卡片(状态 + 输出)
+function renderBatchResults(results) {
+  const box = els.batchResults;
+  box.innerHTML = '';
+  const okCount = results.filter((r) => r.ok).length;
+  const head = document.createElement('div');
+  head.className = 'batch-res-head';
+  head.textContent = `共 ${results.length} 台 · 成功 ${okCount} · 失败 ${results.length - okCount}`;
+  box.appendChild(head);
+  for (const r of results) {
+    const card = document.createElement('div');
+    card.className = `batch-res-item ${r.ok ? 'ok' : 'err'}`;
+    const title = document.createElement('div');
+    title.className = 'batch-res-title';
+    title.textContent = `${r.name || r.host} · ${r.ok ? '成功' : '失败'} · 退出码 ${r.code ?? '-'} · ${r.durationMs}ms`;
+    const pre = document.createElement('pre');
+    pre.className = 'batch-res-output';
+    pre.textContent = r.error ? `执行失败: ${r.error}` : r.output;
+    card.appendChild(title);
+    card.appendChild(pre);
+    box.appendChild(card);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+// 横向工具栏开关按钮的激活态:面板打开 → 按钮高亮
+function syncPanelButtons() {
+  els.btnSftpToggle.classList.toggle('active', state.sftp.visible);
+  els.btnAi.classList.toggle('active', !els.aiPanel.classList.contains('hidden'));
+  els.btnCmd.classList.toggle('active', !els.cmdPanel.classList.contains('hidden'));
+  els.btnBatch.classList.toggle('active', !els.batchPanel.classList.contains('hidden'));
+}
+
+// 刷新命令记录开关按钮的显示(● 记录中 / ○ 已暂停)
+function updateCmdRecordBtn() {
+  const on = state.settings.cmdRecord !== false;
+  els.cmdRecordToggle.textContent = on ? '● 记录中' : '○ 已暂停';
+  els.cmdRecordToggle.classList.toggle('active', on);
+  els.cmdRecordToggle.title = on ? '点击暂停命令记录' : '点击开启命令记录';
+}
+
+// 切换命令记录开关(设置面板复选框 / 面板头部按钮共用)
+function toggleCmdRecord() {
+  state.settings.cmdRecord = state.settings.cmdRecord === false;
+  saveSettings();
+  updateCmdRecordBtn();
+  setStatus(state.settings.cmdRecord ? '命令记录已开启' : '命令记录已暂停', state.settings.cmdRecord ? 'var(--green)' : 'var(--orange)');
+}
+
+// =====================================================================
+// 会话录制与回放
+// 原理:录制 = 主进程在数据流里把"输出字节 + 输入命令"按时间戳写进 JSONL 文件,
+//       回放 = 渲染层按时间轴把录好的内容再写一遍到独立的 xterm 里。
+// =====================================================================
+
+// 毫秒 → mm:ss(回放时间显示用)
+function fmtDur(ms) {
+  const s = Math.max(0, Math.floor((ms || 0) / 1000));
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+// 字节数 → 人类可读(录制列表显示大小)
+function fmtSize(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// 当前激活的标签(没有连接时返回 null)
+function currentTab() { return state.tabs.get(state.activeSessionId) || null; }
+
+// 刷新工具栏录制按钮 + 下拉菜单:跟随"当前激活标签"的录制状态(红点 + 文案)
+function updateRecordBtn() {
+  const t = currentTab();
+  const on = !!(t && state.recording.has(t.sessionId));
+  els.btnRec.classList.toggle('recording', on);
+  els.btnRec.classList.toggle('active', on);
+  els.btnRec.textContent = on ? '⏺ 录制中' : '⏺ 录制';
+  els.btnRec.title = on ? '正在录制当前会话,点开后选「停止录制」' : '录制 / 回放(点开后选「开始录制」或「回放列表」)';
+  // 下拉菜单第一项:跟随录制状态(未录=开始,录中=停止)
+  const toggleItem = els.recMenu.querySelector('[data-rec-act="toggle"]');
+  if (toggleItem) toggleItem.textContent = on ? '■ 停止录制' : '● 开始录制';
+}
+
+// 录制/回放下拉菜单:点按钮弹出(定位在按钮下方),选完或点外面收起
+function toggleRecMenu() {
+  if (!els.recMenu.classList.contains('hidden')) { els.recMenu.classList.add('hidden'); return; }
+  const rect = els.btnRec.getBoundingClientRect();
+  els.recMenu.style.left = `${rect.left}px`;
+  els.recMenu.style.top = `${rect.bottom + 4}px`;
+  els.recMenu.classList.remove('hidden');
+}
+function closeRecMenu() { els.recMenu.classList.add('hidden'); }
+
+// 下拉菜单点击:toggle=开始/停止录制,list=打开回放列表
+function onRecMenuClick(e) {
+  const act = e.target.closest('.ctx-item');
+  if (!act) return;
+  closeRecMenu();
+  const name = act.dataset.recAct;
+  if (name === 'toggle') toggleRecord();
+  else if (name === 'list') openRecordingsModal();
+}
+
+// 录制开关:当前标签没录 → 开始;在录 → 停止
+async function toggleRecord() {
+  const t = currentTab();
+  if (!t) { setStatus('请先连接一个会话再录制', 'var(--orange)'); return; }
+  const sid = t.sessionId;
+  if (state.recording.has(sid)) {
+    // ---- 停止录制 ----
+    const res = await window.api.recStop(sid);
+    state.recording.delete(sid);
+    updateRecordBtn();
+    if (res && res.ok) setStatus('录制已保存', 'var(--green)');
+    else setStatus(res && res.error ? `停止失败: ${res.error}` : '停止失败', 'var(--red)');
+  } else {
+    // ---- 开始录制:把会话信息(名称/主机/编码/窗口尺寸)传给主进程,回放时才能还原 ----
+    const meta = {
+      sessionName: t.session ? t.session.name : t.title,
+      host: t.session ? t.session.host : '',
+      port: t.session ? (t.session.port || 22) : 22,
+      username: t.session ? (t.session.username || '') : '',
+      encoding: t.session ? (t.session.encoding || 'utf8') : 'utf8',
+      cols: t.term.cols || 120,
+      rows: t.term.rows || 32,
+    };
+    const res = await window.api.recStart(sid, meta);
+    if (res && res.ok) { state.recording.set(sid, true); setStatus('开始录制', 'var(--red)'); }
+    else setStatus(res && res.error ? `录制失败: ${res.error}` : '录制失败', 'var(--red)');
+    updateRecordBtn();
+  }
+}
+
+// 打开录制列表弹窗
+async function openRecordingsModal() {
+  const res = await window.api.recList();
+  renderRecordings(res && res.ok ? res.recordings : []);
+  els.recordingsModal.classList.remove('hidden');
+}
+function closeRecordingsModal() { els.recordingsModal.classList.add('hidden'); }
+
+// 渲染录制列表(全部用 textContent,不拼 HTML,防止会话名里的特殊字符注入)
+function renderRecordings(list) {
+  const box = els.recordingsList;
+  box.innerHTML = '';
+  els.recordingsEmpty.classList.toggle('hidden', (list || []).length > 0);
+  for (const r of list || []) {
+    const item = document.createElement('div');
+    item.className = 'rec-item';
+    const main = document.createElement('div');
+    main.className = 'rec-main';
+    const title = document.createElement('div');
+    title.className = 'rec-title';
+    title.textContent = r.session_name || '未知会话';
+    const meta = document.createElement('div');
+    meta.className = 'rec-meta';
+    meta.textContent = `${r.username || ''}@${r.host}:${r.port} · ${r.started_at || ''} · ${fmtDur(r.duration_ms)} · ${fmtSize(r.size)}`;
+    main.appendChild(title);
+    main.appendChild(meta);
+    const actions = document.createElement('div');
+    actions.className = 'rec-actions';
+    const btnPlay = document.createElement('button');
+    btnPlay.className = 'btn-mini';
+    btnPlay.textContent = '▶ 回放';
+    btnPlay.title = '回放这段录制';
+    btnPlay.addEventListener('click', () => openReplay(r.id));
+    const btnDel = document.createElement('button');
+    btnDel.className = 'btn-mini danger';
+    btnDel.textContent = '删除';
+    btnDel.title = '删除这段录制';
+    btnDel.addEventListener('click', () => deleteRecording(r.id));
+    actions.appendChild(btnPlay);
+    actions.appendChild(btnDel);
+    item.appendChild(main);
+    item.appendChild(actions);
+    box.appendChild(item);
+  }
+}
+
+async function deleteRecording(id) {
+  if (!confirm('确定删除这条录制?JSONL 文件也会一并删除。')) return;
+  const res = await window.api.recDelete(id);
+  if (res && res.ok) {
+    const listRes = await window.api.recList();
+    renderRecordings(listRes && listRes.ok ? listRes.recordings : []);
+  } else {
+    alert(res && res.error ? res.error : '删除失败');
+  }
+}
+
+// ---------- 回放播放器 ----------
+// replay 对象只在回放弹窗打开期间存在:
+//   events:  [{ t, kind, text }] 已按时间排好
+//   cursor:  下一个待播放事件的下标
+//   clock:   虚拟时钟(毫秒,相对录制开始)——按"真实时间 × 倍速"推进
+//   speed / playing / timer / term / inputItems / totalMs / dragging / wasPlaying
+let replay = null;
+
+// 从输入事件还原命令行列表:
+//   回车(\r\n)提交一行;退格(\x7f/\b)删掉末尾;Ctrl+C/U 清空当前行;
+//   两次按键间隔超过 1 秒,视为上一条命令结束、新命令开始
+function reconstructInputs(events) {
+  const items = [];
+  let buf = '';
+  let lastT = -Infinity;
+  const commit = (t) => { const s = buf.trim(); if (s) items.push({ t, text: s }); buf = ''; };
+  for (const evt of events) {
+    if (evt.kind !== 'i') continue;
+    const d = String(evt.text || '');
+    if (evt.t - lastT > 1000 && buf) commit(evt.t); // 停顿超 1s:上一条算结束
+    for (const ch of d) {
+      if (ch === '\r' || ch === '\n') commit(evt.t);
+      else if (ch === '\x7f' || ch === '\b') buf = buf.slice(0, -1);
+      else if (ch === '\x03' || ch === '\x15') buf = '';
+      else if (ch >= ' ' && ch !== '\x1b') buf += ch;
+    }
+    lastT = evt.t;
+  }
+  if (buf.trim()) items.push({ t: lastT === -Infinity ? 0 : lastT, text: buf.trim() });
+  return items;
+}
+
+// 渲染输入侧栏;playingIndex 为当前高亮行(-1 = 不高亮)
+function renderReplayInputs(items, playingIndex) {
+  const box = els.replayInputList;
+  box.innerHTML = '';
+  items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'replay-input-item' + (i === playingIndex ? ' playing' : '');
+    row.title = '点击跳转到这个时刻';
+    const time = document.createElement('span');
+    time.className = 'ri-time';
+    time.textContent = fmtDur(it.t);
+    const text = document.createElement('span');
+    text.className = 'ri-text';
+    text.textContent = it.text;
+    row.appendChild(time);
+    row.appendChild(text);
+    row.addEventListener('click', () => { seekReplay(it.t); });
+    box.appendChild(row);
+  });
+}
+
+// 打开回放弹窗:读录制文件 → 建独立 xterm → 铺好播放器状态
+async function openReplay(recordId) {
+  const res = await window.api.recReplay(recordId);
+  if (!res || !res.ok) { alert(res && res.error ? res.error : '回放加载失败'); return; }
+  const { meta, events } = res;
+  const inputItems = reconstructInputs(events);
+
+  // 回放终端:尺寸按录制时的来,画面跟直播一致;不进 state.tabs,只在弹窗里
+  const termEl = els.replayTerm;
+  termEl.innerHTML = ''; // 清掉上一次回放留下的终端
+  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const term = new XTermClass({
+    fontFamily: state.settings.fontFamily,
+    fontSize: state.settings.fontSize,
+    cursorBlink: false,
+    scrollback: 5000,
+    cols: meta.cols || 120,
+    rows: meta.rows || 32,
+    theme: { ...curTheme.term },
+  });
+  term.open(termEl);
+
+  const totalMs = events.length ? events[events.length - 1].t : 0;
+  replay = {
+    meta, events, inputItems, cursor: 0, clock: 0,
+    playing: false, speed: 1, timer: null, term, totalMs,
+    lastActiveIdx: -1, dragging: false, wasPlaying: false,
+  };
+  els.replayTitle.textContent = `${meta.session_name || ''} · ${meta.host || ''}`;
+  // 没有输入事件时把侧栏收起来(纯输出回放)
+  els.replayInputSide.classList.toggle('hidden', inputItems.length === 0);
+  renderReplayInputs(inputItems, -1);
+  els.replayPlay.textContent = '▶ 播放';
+  els.replaySpeed.textContent = '1x';
+  els.replayProgress.min = 0;
+  els.replayProgress.max = Math.max(1, totalMs || 1);
+  els.replayProgress.value = 0;
+  els.replayTime.textContent = `00:00 / ${fmtDur(totalMs)}`;
+  els.replayModal.classList.remove('hidden');
+  // 等 xterm 渲染完成后再聚焦,否则焦点抢不过去
+  setTimeout(() => { try { term.focus(); } catch { /* ignore */ } }, 30);
+}
+
+// 播放循环:按"真实时间 × 倍速"推进虚拟时钟,把到点的输出/输入都执行掉
+function replayLoop() {
+  const p = replay;
+  if (!p || !p.playing) return;
+  const now = Date.now();
+  p.clock += (now - p.lastReal) * p.speed;
+  p.lastReal = now;
+  let guard = 0;
+  while (p.cursor < p.events.length && p.events[p.cursor].t <= p.clock) {
+    const evt = p.events[p.cursor];
+    if (evt.kind === 'o') { try { p.term.write(evt.text); } catch { /* ignore */ } }
+    p.cursor++;
+    if (++guard > 10000) break; // 安全阀:防止极端情况卡死
+  }
+  if (!p.dragging) updateReplayProgress();
+  updateReplayActiveInput();
+  if (p.cursor >= p.events.length) {
+    // 播完了:停住,按钮变"重放"(再点会从头再来)
+    p.playing = false;
+    if (p.timer) { clearInterval(p.timer); p.timer = null; }
+    els.replayPlay.textContent = '▶ 重放';
+    updateReplayProgress();
+  }
+}
+
+function playReplay() {
+  const p = replay;
+  if (!p || p.playing) return;
+  if (p.cursor >= p.events.length) seekReplay(0); // 播完了 → 从头再来
+  p.playing = true;
+  p.lastReal = Date.now();
+  p.timer = setInterval(replayLoop, 50); // 每 50ms 推进一步,流畅且开销小
+  els.replayPlay.textContent = '⏸ 暂停';
+}
+
+function pauseReplay() {
+  const p = replay;
+  if (!p) return;
+  p.playing = false;
+  if (p.timer) { clearInterval(p.timer); p.timer = null; }
+  els.replayPlay.textContent = '▶ 播放';
+}
+
+function replayPlayPause() {
+  const p = replay;
+  if (!p) return;
+  if (p.playing) pauseReplay(); else playReplay();
+}
+
+// 循环切换倍速:1x → 2x → 4x → 0.5x
+function replaySpeed() {
+  const p = replay;
+  if (!p) return;
+  const speeds = [1, 2, 4, 0.5];
+  p.speed = speeds[(speeds.indexOf(p.speed) + 1) % speeds.length];
+  els.replaySpeed.textContent = (p.speed === 0.5 ? '0.5x' : p.speed + 'x');
+}
+
+// 跳到某个时间点:清屏 → 把 <= 目标时刻的所有输出瞬间写完(输入侧栏同步高亮)
+function seekReplay(targetT) {
+  const p = replay;
+  if (!p) return;
+  p.clock = targetT;
+  p.cursor = 0;
+  try { p.term.reset(); } catch { /* ignore */ }
+  for (const evt of p.events) {
+    if (evt.t > targetT) break;
+    if (evt.kind === 'o') { try { p.term.write(evt.text); } catch { /* ignore */ } }
+    p.cursor++;
+  }
+  updateReplayProgress();
+  updateReplayActiveInput();
+}
+
+function updateReplayProgress() {
+  const p = replay;
+  if (!p) return;
+  const t = Math.min(p.clock, p.totalMs);
+  els.replayProgress.value = t;
+  els.replayTime.textContent = `${fmtDur(t)} / ${fmtDur(p.totalMs)}`;
+}
+
+// 输入侧栏高亮:跟着时钟定位到"正在进行"的那条命令
+function updateReplayActiveInput() {
+  const p = replay;
+  if (!p || !p.inputItems.length) return;
+  let idx = -1;
+  for (let i = 0; i < p.inputItems.length; i++) {
+    if (p.inputItems[i].t <= p.clock) idx = i; else break;
+  }
+  if (idx !== p.lastActiveIdx) {
+    p.lastActiveIdx = idx;
+    renderReplayInputs(p.inputItems, idx);
+  }
+}
+
+// 显示全部:不播了,一次性把内容全部渲染出来(相当于跳到末尾)
+function replayShowAll() {
+  const p = replay;
+  if (!p) return;
+  pauseReplay();
+  seekReplay(p.totalMs);
+  els.replayPlay.textContent = '▶ 重放';
+}
+
+function closeReplay() {
+  pauseReplay();
+  if (replay && replay.term) { try { replay.term.dispose(); } catch { /* ignore */ } }
+  replay = null;
+  els.replayModal.classList.add('hidden');
+  els.replayTerm.innerHTML = '';
+}
+
+// 收起输入侧栏(纯看终端画面)
+function closeReplaySide() { els.replayInputSide.classList.add('hidden'); }
+
+function connectToServer(session) {
+  const sessionId = `sess-${++sessionSeq}`;
+  const title = session.name; // 标签只显示名称,去掉 username@host,更紧凑
+
+  // ---- 标签头 ----
+  const tabEl = document.createElement('div');
+  tabEl.className = 'tab';
+  if (session.tag_color) tabEl.classList.add(`tab-color-${session.tag_color}`); // 标签颜色标记
+  // 标签只显示名称(悬停时显示 ✕ 关闭按钮);状态点和 OS 徽标已去掉
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'tab-title';
+  titleSpan.textContent = title;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'tab-close';
+  closeBtn.textContent = '✕';
+  tabEl.appendChild(titleSpan);
+  tabEl.appendChild(closeBtn);
+  tabEl.addEventListener('click', (e) => {
+    if (e.target !== closeBtn) activateTab(sessionId);
+  });
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(sessionId);
+  });
+  // 右键标签:关闭/复制/重命名/定位 菜单
+  tabEl.addEventListener('contextmenu', (e) => {
+    e.stopPropagation(); // 不触发会话列表的右键
+    showTabMenu(e, sessionId);
+  });
+  // 注意:标签不直接塞进标签栏,由 renderTabs() 按分屏布局统一渲染
+
+  // ---- 终端面板 ----
+  // 注意:paneEl 不直接塞进容器,而是由 renderLayout 挂到分屏布局的某个面板槽里
+  const paneEl = document.createElement('div');
+  paneEl.className = 'term-pane';
+  // 分屏时点击终端面板 = 选中该会话:否则快捷命令/AI 执行/搜索/录制等走
+  // state.activeSessionId 的操作,都发到上一次激活的标签(通常是最后一个/最右)。
+  paneEl.addEventListener('mousedown', () => {
+    if (state.activeSessionId !== sessionId) activateTab(sessionId);
+  });
+  // 终端面板右键菜单:选择/复制/粘贴(与 Xshell 一致)。xterm 鼠标拖选默认开启,
+  // 但右键若无菜单,选中后没有明确的复制入口 —— 这里补上。
+  paneEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const sel = term.getSelection();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '📋 复制', action: () => { const s = term.getSelection(); if (s) window.api.copyText(s); } },
+      { label: '📥 粘贴', action: () => { const t = window.api.readClipboard(); if (t) term.paste(t); } },
+      { label: '全选', action: () => { try { term.selectAll(); } catch { /* xterm 某些版本无 selectAll */ } } },
+    ]);
+  });
+
+  // ---- xterm 终端 ----
+  // 直接用当前主题配色创建(否则新终端永远用写死的深色)
+  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const term = new XTermClass({
+    fontFamily: state.settings.fontFamily || '"SF Mono", Menlo, Consolas, "Courier New", monospace',
+    fontSize: state.settings.fontSize || 13,
+    cursorBlink: true,
+    cursorStyle: 'block',
+    scrollback: 5000,
+    theme: { ...curTheme.term },
+  });
+  const fit = new FitAddonClass();
+  term.loadAddon(fit);
+  const searchAddon = new SearchAddonClass();
+  term.loadAddon(searchAddon);
+  term.open(paneEl);
+  fit.fit();
+
+  // 键盘输入 → SSH(term.onData 会在每个按键/粘贴时触发)
+  term.onData((data) => {
+    // 始终跟踪输入行:①记录命令历史 ②生产环境危险命令确认
+    let lineOnEnter = null;
+    // 转义序列(方向键/Home/End 等)或 Tab(补全)→ 行内容可能被服务器改写
+    // (历史回显 / 自动补全),本地输入镜像不再可信,标记 dirty,回车时从缓冲区还原真实命令
+    if (String(data).includes('\x1b') || String(data).includes('\t')) {
+      tab.inputDirty = true;
+      tab.inputBuf = '';
+    }
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        lineOnEnter = tab.inputBuf.trim();
+        tab.inputBuf = '';
+      } else if (ch === '\x7f' || ch === '\b') {
+        tab.inputBuf = tab.inputBuf.slice(0, -1); // 退格
+      } else if (ch === '\x03' || ch === '\x15') {
+        tab.inputBuf = ''; // Ctrl+C / Ctrl+U 清空当前行
+      } else if (ch >= ' ' && ch !== '\x1b') {
+        // 开始输入第一个字符时,快照当前缓冲区行作为提示符(此刻行里只有提示符)。
+        // 这样即使是第一条命令、还没"学习过提示符",Tab 补全/历史回显也能正确还原命令。
+        if (tab.inputBuf === '' && !tab.inputDirty) {
+          try {
+            const l = term.buffer.active.getLine(term.buffer.active.cursorY);
+            const t = l ? l.translateToString(true).trimEnd() : '';
+            if (t) tab.promptText = t;
+          } catch { /* ignore */ }
+        }
+        tab.inputBuf += ch;
+      }
+    }
+    // 命令记录:开关开启时才记。
+    if (lineOnEnter != null && state.settings.cmdRecord !== false) {
+      if (tab.inputDirty) {
+        // 行被服务器改写(↑↓ 历史回显):从终端缓冲区还原真实命令(去掉提示符)
+        tab.inputDirty = false;
+        const real = recoverRecalledCommand(tab, term);
+        if (real) recordCommand(session.host, real);
+      } else if (lineOnEnter) {
+        recordCommand(session.host, lineOnEnter);
+        // 学习提示符:提示符 = 缓冲区当前行去掉"刚输入的命令"
+        try {
+          const buf = term.buffer.active;
+          const line = buf.getLine(buf.cursorY);
+          const txt = line ? line.translateToString(true).trim() : '';
+          if (txt.endsWith(lineOnEnter)) {
+            tab.promptText = txt.slice(0, txt.length - lineOnEnter.length).trimEnd();
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    // 生产环境保护:危险命令先弹确认
+    if (lineOnEnter != null && (state.broadcast ? hasProdSession() : isSessionProd(session)) && isDangerousCommand(lineOnEnter)) {
+      const ok = confirm(
+        `⚠️ 危险命令!\n确定要在生产环境执行吗?\n\n${lineOnEnter}\n\n` +
+        (state.broadcast ? '(广播模式:会发到所有已连接会话)' : `目标: ${session.host}`)
+      );
+      if (!ok) return; // 拒绝则吞掉(命令不执行)
+    }
+    sendInput(sessionId, data); // 普通输入照发(广播模式也走这里)
+  });
+  // 窗口尺寸变化 → 同步给服务器(否则 vim 全屏会错位)
+  term.onResize(({ cols, rows }) => window.api.sshResize(sessionId, cols, rows));
+
+  // ---- 复制 / 粘贴(第 5 课) ----
+  // xterm 自带鼠标拖选;这里用 attachCustomKeyEventHandler 精确控制快捷键:
+  //   复制: Cmd/Ctrl + C(有选中内容时)或 Cmd/Ctrl + Shift + C
+  //   粘贴: Cmd/Ctrl + Shift + V(原生 Cmd/Ctrl+V 由 xterm 自己处理)
+  // 关键点:终端里 Ctrl+C 是"中断信号",所以只有"有选中文字"才拦截做复制,
+  //         没选中就放行给服务器当 ^C。
+  const isMac = navigator.platform.toUpperCase().includes('MAC');
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const mod = isMac ? e.metaKey : e.ctrlKey; // Mac 用 Cmd,其他用 Ctrl
+
+    // 搜索:Cmd/Ctrl + F 打开终端内搜索
+    if (mod && (e.key === 'f' || e.key === 'F')) {
+      openTermSearch();
+      return false;
+    }
+
+    // 复制(有选中内容 或 Shift+C 时拦截)
+    if (mod && (e.key === 'c' || e.key === 'C') && (e.shiftKey || term.getSelection())) {
+      const sel = term.getSelection();
+      if (sel) window.api.copyText(sel);
+      return false; // 吃下这个按键,不发给服务器
+    }
+    // 粘贴
+    if (mod && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+      const text = window.api.readClipboard();
+      if (text) term.paste(text);
+      return false;
+    }
+    return true;
+  });
+
+  const tab = {
+    sessionId, session, title, el: tabEl, paneEl, term, fit,
+    titleSpan,               // 标签上的标题元素(重命名标签时改它)
+    customTitle: null,       // 用户改的标签名(null=用会话名)
+    status: 'connecting',
+    reconnectAttempts: 0,   // 已自动重连次数
+    reconnectTimer: null,   // 重连定时器
+    userClosed: false,      // 是否用户主动关闭(主动关闭不重连)
+    decoder: new TextDecoder(), // 流式 UTF-8 解码(用于关键字高亮)
+    inputBuf: '',           // 当前输入行缓冲(生产环境危险命令检测用)
+    inputDirty: false,      // 行是否被服务器改写(方向键历史等)→ 本地镜像不可信
+    promptText: '',         // 学习到的 shell 提示符(用于从缓冲区还原被历史回显的命令)
+    searchAddon,            // 终端内搜索插件
+  };
+  state.tabs.set(sessionId, tab);
+  saveRestoreList(); // 记录打开列表,用于启动恢复
+  recordRecent(sessionId); // 记入"最近连接"
+
+  renderLayout();
+  activateTab(sessionId);
+  scheduleRefit(tab, 200); // 连接后延迟重适配:等布局/字体稳定,确保终端填满(防止只占上半部分)
+
+  // ---- 发起 SSH 直连 ----
+  connectInto(tab, session);
+}
+
+// 延迟重新适配终端尺寸(连接/切换标签/字体加载后调用,避免终端只占容器上半部分)
+function scheduleRefit(tab, delay) {
+  setTimeout(() => {
+    try {
+      tab.fit.fit();
+      window.api.sshResize(tab.sessionId, tab.term.cols, tab.term.rows);
+      tab.term.refresh(0, tab.term.rows - 1); // 强制全量重绘:清掉布局切换后 canvas 残留的重影
+    } catch { /* ignore */ }
+  }, delay || 150);
+}
+
+// 把会话连进指定标签(首次连接 和 断线重连 共用)
+function connectInto(tab, session, isReconnect) {
+  setTabStatus(tab.sessionId, 'connecting');
+  if (isReconnect) {
+    try { tab.term.reset(); } catch { /* ignore */ } // 重连前清屏:避免新旧输出叠在一起(字符重影/重复)
+    tab.term.write('\r\n\x1b[36m[正在尝试重连...]\x1b[0m\r\n');
+  }
+  tab.encoding = session.encoding || 'utf8'; // 终端编码(GBK 时主进程会转码)
+  window.api.sshConnect(tab.sessionId, {
+    host: session.host,
+    port: session.port || 22,
+    username: session.username,
+    password: session.password,
+    privateKey: session.private_key || '', // 密钥认证:私钥文件路径
+    passphrase: session.passphrase || '',
+    cols: tab.term.cols,
+    rows: tab.term.rows,
+    verifyHostKey: state.settings.verifyHostKey !== false, // 指纹校验开关
+    sessionName: session.name || '', // 会话日志文件名用它
+    sessionLog: state.settings.sessionLog !== false, // 会话日志开关
+    jump: session.jump && session.jump.host ? session.jump : null, // 跳板机(SSH 代理),直连则为 null
+  }).then((res) => {
+    if (res && !res.ok) {
+      // 连接失败:写入真实原因;若是重连失败,继续安排下一次
+      setTabStatus(tab.sessionId, 'closed');
+      tab.term.write(`\r\n\x1b[31m[连接失败] ${res.error}\x1b[0m\r\n`);
+      setStatus('连接失败', 'var(--red)');
+      // 堡垒机直连会话失败:记入诊断包(同步失败走这里,不经过 onSshStatus)
+      if (session && session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId: tab.sessionId, bastionKey: session.bastionKey, host: session.host, port: session.port, account: session.username, error: res.error });
+      if (isReconnect) scheduleReconnect(tab);
+    }
+  });
+}
+
+// ---- 断线自动重连(参考 Netcatty 的长驻工作流) ----
+// 意外断开后按 2/4/8/16/30 秒退避重连,最多 MAX_RECONNECT 次
+const MAX_RECONNECT = 5;
+function scheduleReconnect(t) {
+  if (state.settings.autoReconnect === false) return; // 设置里关闭了自动重连
+  if (t.userClosed || !state.tabs.has(t.sessionId)) return;
+  if (t.reconnectTimer) return; // 已有定时器,不重复安排
+  if (t.reconnectAttempts >= MAX_RECONNECT) {
+    t.term.write(`\r\n\x1b[31m[自动重连 ${MAX_RECONNECT} 次仍失败,已停止;可关闭标签后重新连接]\x1b[0m\r\n`);
+    setTabStatus(t.sessionId, 'closed');
+    return;
+  }
+  const delay = Math.min(30, 2 * Math.pow(2, t.reconnectAttempts)); // 2,4,8,16,30
+  t.reconnectAttempts++;
+  t.term.write(`\r\n\x1b[33m[连接断开, ${delay} 秒后自动重连(第 ${t.reconnectAttempts} 次)]\x1b[0m\r\n`);
+  setStatus(`自动重连中(${t.reconnectAttempts}/${MAX_RECONNECT})...`, 'var(--orange)');
+  t.reconnectTimer = setTimeout(() => {
+    t.reconnectTimer = null;
+    if (t.userClosed || !state.tabs.has(t.sessionId)) return;
+    connectInto(t, t.session, true);
+  }, delay * 1000);
+}
+
+function activateTab(sessionId) {
+  state.activeSessionId = sessionId;
+  updateRecordBtn(); // 录制按钮跟随新标签的录制状态
+  updateConnectBtn(); // 连接/断开按钮跟随新激活标签的状态
+
+  // 标签高亮 + 聚焦
+  for (const [id, t] of state.tabs) {
+    t.el.classList.toggle('active', id === sessionId);
+    if (id === sessionId) {
+      try { t.fit.fit(); } catch { /* ignore */ }
+      scheduleRefit(t, 150); // 切换后延迟重适配,确保填满
+      t.term.focus();
+    }
+  }
+
+  if (state.splitMode) {
+    highlightActiveSlot(); // 分屏:所有面板都在,只更新高亮
+  } else {
+    renderLayout();        // 单面板:切换显示哪个连接
+  }
+
+  // 切换标签时,若 SFTP 面板开着,跟着切到新连接的目录
+  if (state.sftp.visible) {
+    state.sftp.sessionId = sessionId;
+    state.sftp.path = '.';
+    state.sftp.selected = null;
+    loadSftpList();
+  }
+}
+
+// 断开当前终端连接,但保留标签(显示"已断开",可右键重新连接);不像关闭标签那样移除
+function disconnectTab(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session) return;
+  if (t.status !== 'connected' && t.status !== 'connecting') return; // 已断开则忽略
+  t.manualDisconnect = true; // 防止断开后自动重连
+  if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
+  state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
+  updateRecordBtn();
+  window.api.sshClose(sessionId); // 主进程结束连接 → 会广播 closed 状态,标签保留
+}
+
+// 重新连接已断开的标签:关掉旧标签,用同一会话开新标签
+function reconnectTab(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t || !t.session) return;
+  const s = t.session;
+  closeTab(sessionId);
+  connectToServer(s);
+}
+
+function closeTab(sessionId) {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  t.userClosed = true; // 用户主动关闭 → 不触发自动重连
+  if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
+  state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
+  updateRecordBtn();
+  window.api.sshClose(sessionId);
+  t.el.remove();
+  try { t.term.dispose(); } catch { /* ignore */ }
+  t.paneEl.remove();
+  state.tabs.delete(sessionId);
+  saveRestoreList(); // 更新打开列表
+  updateConnectBtn(); // 关闭标签 → 刷新"连接/中断"二合一按钮
+
+  if (state.tabs.size === 0) {
+    state.activeSessionId = null;
+    state.splitMode = null;
+    state.splitZoom = null;
+    setStatus('就绪');
+  } else if (state.activeSessionId === sessionId) {
+    const keys = [...state.tabs.keys()];
+    activateTab(keys[keys.length - 1]);
+  }
+  renderLayout();
+
+  // 若 SFTP 面板正浏览被关闭的连接,切到新连接或清空提示
+  if (state.sftp.visible) {
+    const sid = state.activeSessionId;
+    if (sid) {
+      state.sftp.sessionId = sid;
+      state.sftp.path = '.';
+      state.sftp.selected = null;
+      loadSftpList();
+    } else {
+      state.sftp.sessionId = null;
+      state.sftp.selected = null;
+      els.sftpPath.textContent = '/';
+      els.sftpList.innerHTML = '<div class="sftp-empty">当前没有连接</div>';
+    }
+  }
+}
+
+function setTabStatus(sessionId, status) {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  t.status = status;
+  updateConnectBtn(); // 连接状态变化 → 刷新工具栏"连接/中断"二合一按钮
+  const dot = t.el.querySelector('.tab-status-dot');
+  if (!dot) return; // 标签已精简为只显示名称,没有状态点了
+  dot.className = `tab-status-dot ${status}`;
+}
+
+// =====================================================================
+// 分屏(参考 Xshell)
+//   splitMode=null → 单视图(只显示当前活动连接,点标签切换)
+//   splitMode='v'  → 所有打开连接均分为等宽列
+//   splitMode='h'  → 所有打开连接均分为等高行
+// =====================================================================
+
+// 渲染终端容器:
+//   splitMode=null → 单视图(只显示当前活动连接,点标签切换)
+//   splitMode='v'  → 所有连接均分为等宽列
+//   splitMode='h'  → 所有连接均分为等高行
+// 无打开的连接时隐藏整个终端区域,会话列表占满;有连接时恢复(#79)
+function updateTerminalVisibility() {
+  const noTerm = state.tabs.size === 0;
+  document.querySelector('.main-body').classList.toggle('no-term', noTerm);
+  els.welcomeHintSession.classList.toggle('hidden', !noTerm);
+}
+
+function renderLayout() {
+  updateTerminalVisibility();
+  const container = els.terminalContainer;
+  if (state.tabs.size === 0) {
+    container.innerHTML = '';
+    updateSplitButtons();
+    return;
+  }
+  container.innerHTML = '';
+
+  const list = [...state.tabs.values()]; // 所有打开连接
+  // 放大中的面板被关掉时,自动还原网格(否则会渲染出空面板)
+  if (state.splitZoom && !list.some((t) => t.sessionId === state.splitZoom)) state.splitZoom = null;
+  if (state.splitMode === 'v' || state.splitMode === 'h') {
+    const wrap = document.createElement('div');
+    wrap.className = `split-${state.splitMode}`;
+    // 放大态:只显示被放大的那一个面板(其余连接还开着,只是不占屏幕)
+    const visible = state.splitZoom ? list.filter((t) => t.sessionId === state.splitZoom) : list;
+    for (const t of visible) wrap.appendChild(makeSlot(t));
+    // 正常网格:面板之间插可拖动分隔条(放大时单面板,不插)
+    if (!state.splitZoom) addSplitDividers(wrap, state.splitMode);
+    container.appendChild(wrap);
+  } else {
+    // 默认单视图:只显示当前活动连接
+    const active = state.tabs.get(state.activeSessionId) || list[0];
+    if (active) container.appendChild(active.paneEl);
+  }
+
+  renderTabs();
+  refitAll();
+  updateSplitButtons();
+}
+
+// 在分屏面板之间插入"可拖动分隔条",让用户把某个面板拖大拖小(不再全是均分)
+function addSplitDividers(wrap, axis) {
+  // axis:'v' = 左右列,分隔条竖直,拖它改"左边面板"的宽度
+  //      'h' = 上下行,分隔条水平,拖它改"上面面板"的高度
+  const slots = [...wrap.querySelectorAll('.pane-slot')];
+  wrap.style.gap = '0'; // 有分隔条时不再用 gap 当分割线,由分隔条承担
+  for (let i = 0; i < slots.length - 1; i++) {
+    const div = document.createElement('div');
+    div.className = `split-divider split-divider-${axis}`;
+    div.title = '拖动调整面板大小(双击恢复均分)';
+    slots[i].after(div); // 分隔条插在左右/上下两个面板之间
+    makeSplitDivider(div, axis, slots[i], wrap);
+    div.addEventListener('dblclick', () => {
+      // 双击:恢复该面板为均分(清掉记住的大小)
+      delete state.splitSizes[slots[i].dataset.sessionId];
+      slots[i].style.flex = '';
+      refitAll();
+    });
+  }
+}
+
+// 分隔条拖动:改"分隔条之前那个面板"的尺寸,其余面板均分剩余空间
+function makeSplitDivider(divider, axis, slot, wrap) {
+  divider.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startPos = axis === 'x' || axis === 'v' ? e.clientX : e.clientY;
+    const startSize = axis === 'x' || axis === 'v' ? slot.offsetWidth : slot.offsetHeight;
+    const onMove = (ev) => {
+      const pos = axis === 'x' || axis === 'v' ? ev.clientX : ev.clientY;
+      const delta = pos - startPos; // 分隔条在面板"后面":往右/往下拉 = 面板变大
+      const min = 80;
+      const max = (axis === 'x' || axis === 'v' ? wrap.offsetWidth : wrap.offsetHeight) - 80;
+      const size = Math.min(max, Math.max(min, startSize + delta));
+      slot.style.flex = `0 0 ${size}px`; // 固定这个面板大小,其余均分
+      // 记住大小:重新渲染(开面板/关标签)后不丢
+      state.splitSizes[slot.dataset.sessionId] = state.splitSizes[slot.dataset.sessionId] || {};
+      state.splitSizes[slot.dataset.sessionId][axis] = size;
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      refitAll(); // 拖完重新适配终端
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+// 工具栏自适应:先压缩按钮间距、压到底(4px)还放不下才换行。
+// 间距默认 14px;窗口变窄时按"内容单行自然宽度"精确计算恰好放一行的 gap
+// (上限 14px / 下限 4px),避免 clamp(1vw) 那种比例式 gap 在还能压缩时就提前换行。
+function packToolbar() {
+  const tb = document.querySelector('.toolbar');
+  if (!tb) return;
+  const items = tb.children.length;
+  const MAXG = 14, MING = 4;
+  const prevWrap = tb.style.flexWrap, prevGap = tb.style.gap;
+  const prevFlex = [];
+  try {
+    // 逐项置 flex 0 0 auto 量固有宽度(spacer 为 0,sep 为 1px,按钮为内容宽)
+    tb.style.flexWrap = 'nowrap'; tb.style.gap = '0px';
+    for (const ch of tb.children) { prevFlex.push(ch.style.flex); ch.style.flex = '0 0 auto'; }
+    let natural = 0;
+    for (const ch of tb.children) natural += ch.offsetWidth;
+    // 内容盒宽度 = clientWidth 减水平 padding(否则算出的 gap 偏大、实际仍换行)
+    const cs = getComputedStyle(tb);
+    const avail = tb.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const fitGap = (avail - natural) / items; // 恰好放下整行时的间距
+    tb.style.setProperty('--toolbar-gap', Math.max(MING, Math.min(MAXG, fitGap)) + 'px');
+  } finally {
+    for (let i = 0; i < tb.children.length; i++) tb.children[i].style.flex = prevFlex[i];
+    tb.style.flexWrap = prevWrap; tb.style.gap = prevGap;
+  }
+}
+
+// 重新适配所有终端的尺寸(面板开关/分隔条拖动后调用,避免输出超出边界)
+function refitAll() {
+  for (const t of state.tabs.values()) {
+    try {
+      t.fit.fit();
+      window.api.sshResize(t.sessionId, t.term.cols, t.term.rows);
+      t.term.refresh(0, t.term.rows - 1); // 强制全量重绘:清掉分屏/切换标签后 canvas 残留的重影
+    } catch { /* ignore */ }
+  }
+}
+
+// 构造一个分屏面板:顶部内嵌该连接的标签条(含放大按钮),下方是终端
+function makeSlot(t) {
+  const slot = document.createElement('div');
+  slot.className = 'pane-slot';
+  slot.dataset.sessionId = t.sessionId;
+  const active = t.sessionId === state.activeSessionId;
+  const zoomed = state.splitZoom === t.sessionId;
+  slot.classList.toggle('active', active);
+
+  // 用户拖过分隔条的话,恢复记住的面板大小(否则均分)。
+  // 放大态下只有单个面板,必须撑满,所以不套用记住的大小。
+  const saved = !state.splitZoom && state.splitSizes[t.sessionId] && state.splitSizes[t.sessionId][state.splitMode];
+  if (saved) slot.style.flex = `0 0 ${saved}px`;
+
+  // 面板自己的标签条(标签放在分屏后的终端里)
+  const tabs = document.createElement('div');
+  tabs.className = 'pane-tabs';
+  tabs.appendChild(t.el);
+  t.el.classList.toggle('active', active);
+
+  // 放大/还原按钮(tmux 的 zoom-pane):放大当前面板占满终端区,再点还原
+  const zoomBtn = document.createElement('button');
+  zoomBtn.className = 'btn-mini pane-zoom-btn';
+  zoomBtn.textContent = zoomed ? '⤡ 还原' : '⤢ 放大';
+  zoomBtn.title = zoomed ? '还原到分屏网格' : '放大此面板(快捷键 Cmd+Enter)';
+  zoomBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (state.splitZoom) {
+      state.splitZoom = null; // 已放大 → 还原
+    } else {
+      activateTab(t.sessionId);
+      state.splitZoom = t.sessionId; // 未放大 → 放大当前面板
+    }
+    renderLayout();
+    setStatus(state.splitZoom ? `已放大:${t.title} (Cmd+Enter 还原)` : '已还原分屏', 'var(--green)');
+  });
+  tabs.appendChild(zoomBtn);
+
+  slot.appendChild(tabs);
+  slot.appendChild(t.paneEl);
+  return slot;
+}
+
+// 分屏模式下切换标签时,高亮活动面板 + 面板内嵌标签
+function highlightActiveSlot() {
+  for (const slot of els.terminalContainer.querySelectorAll('.pane-slot')) {
+    const active = slot.dataset.sessionId === state.activeSessionId;
+    slot.classList.toggle('active', active);
+    const tab = slot.querySelector('.pane-tabs .tab');
+    if (tab) tab.classList.toggle('active', active);
+  }
+}
+
+// 分屏按钮 = 布局开关:
+//   点"垂直分屏" → 所有连接均分为等宽列
+//   点"横向分屏" → 所有连接均分为等高行
+//   再点当前模式 → 回到自动网格
+function splitActivePane(dir) {
+  if (state.tabs.size === 0) { alert('请先打开至少一个连接再分屏'); return; }
+  state.splitMode = state.splitMode === dir ? null : dir;
+  renderLayout();
+  setStatus(
+    state.splitMode === null
+      ? '自动网格布局'
+      : `${dir === 'v' ? '垂直' : '横向'}均分:${state.tabs.size} 个连接`,
+    'var(--green)'
+  );
+}
+
+// ---------- 分屏增强:面板切换快捷键 + 放大/还原 ----------
+// 聚焦到第 n 个面板/标签(Cmd+数字)
+function focusPaneByIndex(n) {
+  const list = [...state.tabs.values()];
+  if (n >= 1 && n <= list.length) activateTab(list[n - 1].sessionId);
+}
+
+// 前后切换面板焦点(Cmd+Alt+方向键);分屏时切面板,单视图时等同切标签
+function focusPaneRelative(dir) {
+  const list = [...state.tabs.values()];
+  if (!list.length) return;
+  const cur = list.findIndex((t) => t.sessionId === state.activeSessionId);
+  const next = dir < 0 ? (cur - 1 + list.length) % list.length : (cur + 1) % list.length;
+  activateTab(list[next].sessionId);
+}
+
+// 放大当前面板占满终端区 / 还原(tmux 的 zoom-pane)
+function toggleSplitZoom() {
+  if (!state.splitMode) return;
+  const t = state.tabs.get(state.activeSessionId);
+  if (!t) return;
+  state.splitZoom = state.splitZoom ? null : t.sessionId;
+  renderLayout();
+  setStatus(state.splitZoom ? `已放大:${t.title} (Cmd+Enter 还原)` : '已还原分屏', 'var(--green)');
+}
+
+// 分屏快捷键:Cmd+Enter=放大/还原,Cmd+Alt+方向键=前后切面板,Cmd+数字=直达第 N 个
+// 终端聚焦时 xterm 用隐藏 textarea 接收输入,它的 class 是 xterm-helper-textarea,
+// 所以只有"真正的输入框"里才跳过快捷键,终端里照样生效。
+document.addEventListener('keydown', (e) => {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  const t = e.target;
+  if (t && t.tagName === 'TEXTAREA' && !t.classList.contains('xterm-helper-textarea')) return;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT')) return;
+
+  if (e.key === 'Enter' && !e.altKey && !e.shiftKey) {
+    if (state.splitMode) { e.preventDefault(); toggleSplitZoom(); } // Cmd+Enter:放大/还原
+    return;
+  }
+  if (e.altKey && ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    focusPaneRelative((e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 1);
+    return;
+  }
+  if (!e.altKey && /^[1-9]$/.test(e.key)) {
+    e.preventDefault();
+    focusPaneByIndex(Number(e.key)); // Cmd+数字:直达第 N 个
+  }
+});
+
+// 同步"视图"按钮和下拉菜单:只点亮"实际分屏方向"对应的项
+function updateSplitButtons() {
+  const onV = state.splitMode === 'v';
+  const onH = state.splitMode === 'h';
+  els.btnView.classList.toggle('active', !!state.splitMode);
+  els.btnView.textContent = onV ? '⫿ 垂直分屏' : onH ? '⬒ 横向分屏' : '▦ 视图';
+  els.btnView.title = onV ? '垂直分屏中(再点可取消)' : onH ? '横向分屏中(再点可取消)' : '视图:垂直/横向分屏';
+  const vItem = els.viewMenu.querySelector('[data-split="v"]');
+  const hItem = els.viewMenu.querySelector('[data-split="h"]');
+  if (vItem) vItem.classList.toggle('active', onV);
+  if (hItem) hItem.classList.toggle('active', onH);
+}
+
+// 视图下拉菜单:点按钮弹出(定位在按钮下方),选完或点外面收起
+function toggleViewMenu() {
+  if (!els.viewMenu.classList.contains('hidden')) { els.viewMenu.classList.add('hidden'); return; }
+  const rect = els.btnView.getBoundingClientRect();
+  els.viewMenu.style.left = `${rect.left}px`;
+  els.viewMenu.style.top = `${rect.bottom + 4}px`;
+  els.viewMenu.classList.remove('hidden');
+}
+function closeViewMenu() { els.viewMenu.classList.add('hidden'); }
+
+// 下拉菜单点击:v=垂直分屏,h=横向分屏(再点同项=取消分屏)
+function onViewMenuClick(e) {
+  const item = e.target.closest('.ctx-item');
+  if (!item) return;
+  closeViewMenu();
+  const dir = item.dataset.split;
+  if (dir === 'v' || dir === 'h') splitActivePane(dir);
+}
+
+// ---------- 标签栏 ----------
+// 单视图:全局标签栏平铺显示所有连接标签,点标签切换显示哪个
+// 分屏:全局标签栏隐藏,每个面板顶部内嵌自己的标签(在终端里)
+function renderTabs() {
+  els.tabBar.innerHTML = '';
+  if (state.splitMode) {
+    els.tabBar.classList.add('hidden');
+    updateTabScroll();
+    return;
+  }
+  els.tabBar.classList.remove('hidden');
+  for (const t of state.tabs.values()) {
+    els.tabBar.appendChild(t.el);
+    t.el.classList.toggle('active', t.sessionId === state.activeSessionId);
+  }
+  updateTabScroll();     // 标签增删/切换后刷新滚动按钮
+  scrollActiveTabIntoView(); // 把当前标签滚进可视区
+}
+
+// 刷新 ◀▶ 滚动按钮:标签溢出时才显示;到头/到尾时禁用对应按钮
+function updateTabScroll() {
+  const bar = els.tabBar;
+  const left = els.tabScrollLeft;
+  const right = els.tabScrollRight;
+  // 分屏模式标签栏隐藏,按钮也一起藏(否则会在空栏旁边出现)
+  if (state.splitMode || bar.classList.contains('hidden')) {
+    left.classList.add('hidden');
+    right.classList.add('hidden');
+    return;
+  }
+  const hasOverflow = bar.scrollWidth > bar.clientWidth + 2; // +2 容错
+  left.classList.toggle('hidden', !hasOverflow);
+  right.classList.toggle('hidden', !hasOverflow);
+  if (hasOverflow) {
+    // 没到最左时左边可用;没到最右时右边可用
+    left.disabled = bar.scrollLeft <= 2;
+    right.disabled = bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 2;
+  }
+}
+
+// 点 ◀ ▶:把标签栏左右滚动一格(约一个标签宽度)
+function scrollTabs(dir) {
+  const bar = els.tabBar;
+  const step = Math.max(120, Math.round(bar.clientWidth * 0.4)); // 一次滚 40% 或至少 120px
+  bar.scrollBy({ left: dir * step, behavior: 'smooth' });
+  // 滚动结束后再刷新一次按钮状态(平滑滚动完再判定)
+  setTimeout(updateTabScroll, 150);
+}
+
+// 把当前激活标签滚动到可见区域(切换标签时用)
+function scrollActiveTabIntoView() {
+  if (state.splitMode) return;
+  const bar = els.tabBar;
+  const t = state.tabs.get(state.activeSessionId);
+  if (!t) return;
+  const el = t.el;
+  const left = el.offsetLeft - 6;
+  const right = left + el.offsetWidth + 6;
+  if (left < bar.scrollLeft) bar.scrollLeft = left;
+  else if (right > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = right - bar.clientWidth;
+  updateTabScroll();
+}
+
+// =====================================================================
+// SFTP 文件面板
+// =====================================================================
+// ---- 工具函数 ----
+
+// 面板当前对应的会话 id(面板跟着活动标签走)
+function sftpSession() {
+  if (state.sftp.sessionId && state.tabs.has(state.sftp.sessionId)) return state.sftp.sessionId;
+  return state.activeSessionId;
+}
+
+// 把名字拼进当前目录,得到完整远程路径
+function sftpJoin(name) {
+  return state.sftp.path === '/' ? `/${name}` : `${state.sftp.path}/${name}`;
+}
+
+// 多选集合 → 当前目录里真正选中的条目列表(按 remotePath 匹配)
+function sftpSelectedEntries() {
+  return state.sftp.entries.filter((e) => state.sftp.selectedSet.has(sftpJoin(e.name)));
+}
+
+// 刷新选中高亮 + 底部"已选 N 项"提示(不重绘整列,快)
+function updateSftpSelection() {
+  for (const row of els.sftpList.querySelectorAll('.sftp-row')) {
+    row.classList.toggle('selected', state.sftp.selectedSet.has(row.dataset.path));
+  }
+  const n = state.sftp.selectedSet.size;
+  els.sftpFooter.classList.toggle('dim', n === 0);
+  els.sftpFooter.textContent = n > 0
+    ? `已选 ${n} 项(再点可取消) · 点「下载/删除」批量操作 · 点「全选」取消全选`
+    : `双击进入目录 · 单击选中(可多选,再点取消) · 点「全选」一次选完后下载/删除`;
+}
+
+// 「全选」按钮:全部选中 ↔ 全部取消(开关)
+function sftpToggleSelectAll() {
+  if (state.sftp.entries.length === 0) return;
+  const all = state.sftp.entries.map((e) => sftpJoin(e.name));
+  const allSelected = all.every((p) => state.sftp.selectedSet.has(p));
+  if (allSelected) state.sftp.selectedSet.clear();
+  else all.forEach((p) => state.sftp.selectedSet.add(p));
+  state.sftp.selected = null;
+  renderSftpList(); // 重绘会顺带刷新高亮和底部提示
+}
+
+// 计算上一级路径:/a/b/c → /a ; /a → /
+function sftpParent(p) {
+  const clean = p.replace(/\/+$/, '');
+  const idx = clean.lastIndexOf('/');
+  if (idx <= 0) return '/';
+  return clean.slice(0, idx);
+}
+
+// 字节数 → 人类可读(1024 → 1.0 KB)
+function formatSize(n) {
+  if (!n) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// 毫秒时间戳 → "YYYY-MM-DD HH:mm"
+function formatTime(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// SFTP 工具栏按钮操作完,把焦点还给终端:原生 <button> 点击后一直占着焦点,
+// 用户接着敲空格会被按钮当"激活键"吞掉(打不出空格 / 误触发按钮)。先 blur 按钮再聚焦终端。
+function sftpRefocusTerminal() {
+  const el = document.activeElement;
+  if (el && el.tagName === 'BUTTON') el.blur();
+  const t = state.tabs.get(state.activeSessionId);
+  if (t) { try { t.term.focus(); } catch { /* ignore */ } }
+}
+
+// ---- 加载 & 渲染 ----
+async function loadSftpList() {
+  const sessionId = sftpSession();
+  if (!sessionId) return;
+  const reqPath = state.sftp.path; // 请求时的目录;响应回来若会话/路径已变 → 过期结果丢弃(防快速切换目录串台)
+  const res = await window.api.sftpList(sessionId, reqPath);
+  if (state.sftp.sessionId !== sessionId || state.sftp.path !== reqPath) return;
+  if (!res.ok) {
+    els.sftpList.innerHTML = `<div class="sftp-empty">读取失败: ${res.error}</div>`;
+    return;
+  }
+  state.sftp.path = res.cwd || state.sftp.path; // 用 realpath 解析出的绝对路径替换路径栏
+  state.sftp.entries = res.entries;
+  state.sftp.selected = null;
+  state.sftp.selectedSet.clear(); // 换了目录,之前的选中作废
+  renderSftpList();
+}
+
+function renderSftpList() {
+  els.sftpPath.textContent = state.sftp.path;
+  els.sftpList.innerHTML = '';
+  if (state.sftp.entries.length === 0) {
+    els.sftpList.innerHTML = '<div class="sftp-empty">(空目录)</div>';
+    return;
+  }
+  // 目录排在前面,各自按名称排序
+  const sorted = [...state.sftp.entries].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const e of sorted) {
+    const row = document.createElement('div');
+    row.className = 'sftp-row';
+    row.title = e.name;
+    const remotePath = sftpJoin(e.name);
+    row.dataset.path = remotePath; // 记住路径,多选高亮/查找都靠它
+    if (state.sftp.selectedSet.has(remotePath)) row.classList.add('selected');
+
+    const icon = document.createElement('span');
+    icon.className = `sftp-icon ${e.isDir ? 'dir' : 'file'}`;
+    icon.textContent = e.isDir ? '📁' : '📄';
+
+    const name = document.createElement('span');
+    name.className = 'sftp-name';
+    name.textContent = e.isDir ? `${e.name}/` : e.name;
+
+    const size = document.createElement('span');
+    size.className = 'sftp-size';
+    size.textContent = e.isDir ? '' : formatSize(e.size);
+
+    const mtime = document.createElement('span');
+    mtime.className = 'sftp-mtime';
+    mtime.textContent = formatTime(e.mtime);
+
+    row.append(icon, name, size, mtime);
+
+    // 单击 = 选中/取消选中(多选:点几个选几个,再点一下取消)
+    row.addEventListener('click', () => {
+      const p = remotePath;
+      if (state.sftp.selectedSet.has(p)) state.sftp.selectedSet.delete(p);
+      else state.sftp.selectedSet.add(p);
+      state.sftp.selected = { name: e.name, isDir: e.isDir, remotePath: p };
+      updateSftpSelection(); // 只刷新高亮和底部提示,不用整列重绘
+    });
+    // 双击:目录 → 进入;文件 → 打开远程编辑器(直接改,保存即上传)
+    row.addEventListener('dblclick', () => {
+      if (e.isDir) {
+        state.sftp.path = remotePath;
+        loadSftpList();
+      } else {
+        openRemoteEditor(remotePath);
+      }
+    });
+
+    els.sftpList.appendChild(row);
+  }
+  updateSftpSelection(); // 渲染完统一刷新选中高亮 + 底部已选数量提示
+}
+
+// ---- 传输记录(第 5 课)----
+// 每次上传/下载/新建/删除都留一行记录,让用户看得见"刚才发生了什么"。
+function addLog(text, isError) {
+  const now = new Date();
+  const p = (x) => String(x).padStart(2, '0');
+  const time = `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+  state.sftp.log.push({ time, text, isError: !!isError });
+  if (state.sftp.log.length > 50) state.sftp.log.shift(); // 最多留 50 条
+  renderSftpLog();
+}
+
+// ---------- SFTP 远程文件编辑(双击文件 / 点"✏ 编辑") ----------
+let editRemotePath = null; // 正在编辑的远程文件路径
+
+// 打开远程文件到编辑弹窗(读内容 → 显示 → 保存写回)
+async function openRemoteEditor(remotePath) {
+  const sid = state.sftp.sessionId;
+  if (!sid) return;
+  const res = await window.api.sftpReadFile(sid, remotePath);
+  if (!res || !res.ok) { alert(res && res.error ? res.error : '读取失败'); return; }
+  editRemotePath = remotePath;
+  els.editPath.textContent = remotePath;
+  els.editContent.value = res.content;
+  els.editModal.classList.remove('hidden');
+  els.editContent.focus();
+}
+
+function closeEditor() {
+  editRemotePath = null;
+  els.editModal.classList.add('hidden');
+}
+
+// 保存:把编辑框内容写回远程文件 → 刷新 SFTP 列表
+async function saveRemoteFile() {
+  if (!editRemotePath) return;
+  const sid = state.sftp.sessionId;
+  if (!sid) return;
+  const target = editRemotePath; // 先存下路径(closeEditor 会把 editRemotePath 清空,别让提示信息显示成 null)
+  const res = await window.api.sftpWriteFile(sid, target, els.editContent.value);
+  if (res && res.ok) {
+    closeEditor();
+    addLog(`已保存远程文件: ${target}`, false);
+    loadSftpList(); // 文件大小/时间变了,刷新
+    setStatus(`已保存: ${target}`, 'var(--green)');
+  } else {
+    alert(res && res.error ? `保存失败: ${res.error}` : '保存失败');
+  }
+}
+
+// 工具栏"✏ 编辑"按钮:编辑当前选中的那个文件(选了目录/没选则提示)
+function editSelectedFile() {
+  const sel = state.sftp.selected;
+  if (!sel || !sel.remotePath) { alert('先在文件列表里选中一个文件(单击)'); return; }
+  if (sel.isDir) { alert('这是目录,只能编辑文件'); return; }
+  openRemoteEditor(sel.remotePath);
+}
+
+function renderSftpLog() {
+  if (state.sftp.log.length === 0) {
+    els.sftpLog.classList.add('hidden');
+    return;
+  }
+  els.sftpLog.classList.remove('hidden');
+  els.sftpLog.innerHTML = state.sftp.log
+    .map((l) => `<div class="sftp-log-item ${l.isError ? 'err' : ''}"><span class="sftp-log-time">${l.time}</span>${l.text}</div>`)
+    .join('');
+  els.sftpLog.scrollTop = els.sftpLog.scrollHeight; // 滚动到底,看最新一条
+}
+
+// ---- 面板开关 ----
+function toggleSftpPanel() {
+  state.sftp.visible = !state.sftp.visible;
+  els.sftpPanel.classList.toggle('hidden', !state.sftp.visible);
+  els.dividerH.classList.toggle('hidden', !state.sftp.visible); // 分隔条跟着面板一起显示/隐藏
+  refitAll(); // 终端区域高度变了,重新适配
+  syncPanelButtons();
+  if (!state.sftp.visible) return;
+
+  if (!state.activeSessionId) {
+    els.sftpPath.textContent = '/';
+    els.sftpList.innerHTML = '<div class="sftp-empty">先连接一台服务器,再打开文件面板</div>';
+    return;
+  }
+  state.sftp.sessionId = state.activeSessionId;
+  state.sftp.path = '.';
+  state.sftp.selected = null;
+  loadSftpList();
+}
+
+// ---- 工具按钮 ----
+async function sftpGoUp() {
+  state.sftp.path = sftpParent(state.sftp.path);
+  loadSftpList();
+}
+
+function sftpMakeDir() {
+  // 用自定义输入弹窗代替 window.prompt(新版 Chromium 不支持 prompt)
+  showPrompt({
+    title: '新建目录',
+    label: '目录名',
+    value: 'new-folder',
+    onOk: async (name) => {
+      if (!name) return;
+      const target = sftpJoin(name);
+      const res = await window.api.sftpMkdir(sftpSession(), target);
+      if (!res.ok) { addLog(`➕ 新建目录失败 ${target}: ${res.error}`, true); alert(`新建失败: ${res.error}`); return; }
+      addLog(`➕ 新建目录 ${target} ✅`);
+      loadSftpList();
+      sftpRefocusTerminal(); // 弹窗确认按钮也别占焦点,还回终端(否则敲空格被吞)
+    },
+  });
+}
+
+async function sftpDeleteSelected() {
+  const list = sftpSelectedEntries();
+  if (list.length === 0) { alert('先选中要删除的文件/目录(可点「全选」一次选完)'); return; }
+  const hasDir = list.some((e) => e.isDir);
+  const tip = hasDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
+  const names = list.map((e) => `${e.isDir ? '📁' : '📄'} ${sftpJoin(e.name)}`).join('\n');
+  if (!confirm(`确定删除以下 ${list.length} 项吗?${tip}\n\n${names}`)) return;
+  for (const e of list) {
+    const path = sftpJoin(e.name); // 条目没有 remotePath,用 sftpJoin(name) 拼出完整路径
+    const res = await window.api[e.isDir ? 'sftpRmdir' : 'sftpDelete'](sftpSession(), path);
+    if (!res.ok) { addLog(`🗑 删除失败 ${path}: ${res.error}`, true); alert(`删除失败 ${path}: ${res.error}`); continue; }
+    addLog(`🗑 删除 ${path} ✅`);
+  }
+  loadSftpList();
+  sftpRefocusTerminal(); // 删除完焦点还给终端(按钮占焦点会吞空格)
+}
+
+async function sftpUpload() {
+  const res = await window.api.sftpUpload(sftpSession(), state.sftp.path);
+  sftpTransferFinish(res.ok ? new Set((res.failed || []).map((f) => f.rp)) : new Set(), res.error === '已取消'); // 行留在历史里
+  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
+  if (!res.ok) {
+    if (res.error !== '已取消') { addLog(`⬆ 上传失败: ${res.error}`, true); alert(`上传失败: ${res.error}`); }
+    return;
+  }
+  const done = res.isDir ? `文件夹 ${res.remotePath}(${res.count} 个文件)` : res.remotePath;
+  setStatus(`已上传 → ${done}`, 'var(--green)');
+  addLog(`⬆ 上传 ${done} ✅`);
+  if (res.failed && res.failed.length) {
+    for (const f of res.failed) addLog(`⬆ 上传失败 ${f.rp}: ${f.error}`, true);
+    alert(`有 ${res.failed.length} 个文件上传失败:\n${res.failed.map((f) => f.rp).join('\n')}`);
+  }
+  loadSftpList();
+}
+
+async function sftpDownload() {
+  // 文件 + 目录都能选:目录递归下载到本地同名子文件夹
+  const selected = sftpSelectedEntries();
+  if (selected.length === 0) { alert('先选中要下载的文件/目录(可点「全选」一次选完)'); return; }
+
+  // 只选了一个文件 → 沿用旧流程:弹"保存到哪"对话框
+  if (selected.length === 1 && !selected[0].isDir) {
+    const remote = sftpJoin(selected[0].name); // 条目没有 remotePath,拼出完整路径
+    const res = await window.api.sftpDownload(sftpSession(), remote);
+    sftpTransferFinish(res.ok ? new Set() : new Set([remote]), res.error === '已取消'); // 行留在历史里
+    sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
+    if (!res.ok) {
+      if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remote}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+      return;
+    }
+    setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
+    addLog(`⬇ 下载 ${remote} → ${res.localPath} ✅`);
+    return;
+  }
+
+  // 多个(或单个目录)→ 只弹一次"选文件夹";目录在 main 递归下载,进度统一走 sftp:progress
+  const entries = selected.map((f) => ({ remotePath: sftpJoin(f.name), isDir: !!f.isDir }));
+  const res = await window.api.sftpDownloadMany(sftpSession(), entries);
+  sftpTransferFinish(res.ok ? new Set(res.results.filter((r) => !r.ok).map((r) => r.remotePath)) : new Set(), res.error === '已取消'); // 行留在历史里
+  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
+  if (!res.ok) {
+    if (res.error !== '已取消') { addLog(`⬇ 下载失败: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+    return;
+  }
+  const ok = res.results.filter((r) => r.ok).length;
+  const fail = res.results.filter((r) => !r.ok);
+  setStatus(`已下载 ${ok} 个文件 → ${res.dir}`, 'var(--green)');
+  if (ok) addLog(`⬇ 下载 ${ok} 个文件 → ${res.dir} ✅`);
+  fail.forEach((r) => addLog(`⬇ 下载失败 ${r.remotePath}: ${r.error}`, true));
+  if (fail.length) alert(`${fail.length} 个文件下载失败,见下方传输记录`);
+}
+
+// =====================================================================
+// 窗口尺寸变化 → 所有终端重新适配
+// =====================================================================
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  packToolbar(); // 工具栏间距压缩/换行,不防抖(只一次布局读取,拖拽窗口时实时响应)
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    for (const t of state.tabs.values()) {
+      try {
+        t.fit.fit();
+        window.api.sshResize(t.sessionId, t.term.cols, t.term.rows);
+      } catch { /* ignore */ }
+    }
+    updateTabScroll(); // 窗口变窄/变宽后刷新滚动按钮
+  }, 120);
+});
+
+// ---- 标签栏滚动:◀▶ 按钮 + 滚轮横滚 ----
+els.tabScrollLeft.addEventListener('click', () => scrollTabs(-1));
+els.tabScrollRight.addEventListener('click', () => scrollTabs(1));
+// 在标签栏上滚鼠标滚轮 → 水平滚动(不需要鼠标悬停在滚动条上)
+els.tabBar.addEventListener('wheel', (e) => {
+  if (e.deltaY !== 0) {
+    e.preventDefault(); // 阻止垂直滚动(标签栏本来也不该垂直滚)
+    els.tabBar.scrollLeft += e.deltaY;
+    updateTabScroll();
+  }
+}, { passive: false });
+
+// =====================================================================
+// 可拖动分隔条(第 5 课)
+// =====================================================================
+// 通用"拖动改变尺寸"逻辑:
+//   divider   分隔条元素
+//   axis      'x' 横向拖动 / 'y' 纵向拖动
+//   getSize   读取当前尺寸    setSize 设置新尺寸
+//   min, max  允许的最小/最大尺寸
+// 原理:mousedown 记下起点和当前尺寸 → mousemove 算差值 → setSize 更新 → mouseup 收工。
+function makeResizer(divider, axis, getSize, setSize, min, max, reverse, onDone, onDown) {
+  divider.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    if (onDown) onDown();
+    const startPos = axis === 'x' ? e.clientX : e.clientY;
+    const startSize = getSize();
+    const onMove = (ev) => {
+      const pos = axis === 'x' ? ev.clientX : ev.clientY;
+      // 默认:往拖拽方向 = 面板变大(面板在分隔条左侧);
+      // reverse=true:面板在分隔条右侧,往拖拽反方向 = 变大(往左拖右面板变宽)
+      let delta = axis === 'x' ? pos - startPos : startPos - pos;
+      if (reverse) delta = -delta;
+      setSize(Math.min(max, Math.max(min, startSize + delta)));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      refitAll(); // 拖完重新适配终端,避免输出超出边界
+      if (onDone) onDone();
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+// 折叠/展开左侧会话列表(状态持久化)
+function toggleSessionPanel() {
+  state.settings.panelCollapsed = !state.settings.panelCollapsed;
+  applyPanelCollapsed();
+  saveSettings();
+  refitAll(); // 终端宽度变了,重新适配
+}
+function applyPanelCollapsed() {
+  const hidden = !!state.settings.panelCollapsed;
+  els.sessionPanel.classList.toggle('hidden', hidden);
+  els.dividerV.classList.toggle('hidden', hidden);
+}
+
+// 左右分隔条:调会话列表宽度(范围 160~500px)
+makeResizer(els.dividerV, 'x',
+  () => els.sessionPanel.offsetWidth,
+  (w) => { els.sessionPanel.style.width = `${w}px`; },
+  160, 500);
+
+// 上下分隔条:调 SFTP 面板高度(范围 120~450px)
+makeResizer(els.dividerH, 'y',
+  () => els.sftpPanel.offsetHeight,
+  (h) => { els.sftpPanel.style.height = `${h}px`; },
+  120, 450);
+
+// 堡垒机 webview 的 guest view 会盖住相邻分隔条,并吞掉进入其矩形内的鼠标事件(宿主 CSS 无法干预):
+// 拖拽期间临时 visibility:hidden(不重载画面),松开恢复 —— 否则横分隔条收不到 mousedown、拖动进入 webview 区域时 mousemove 断流。
+const wvHideWhileDrag = () => { els.bastionWebview.style.visibility = 'hidden'; };
+const wvShowAfterDrag = () => { els.bastionWebview.style.visibility = ''; };
+
+// 堡垒机面板分隔条:拖动左右调面板宽度(范围 300~1200px),宽度持久化
+// reverse=true:面板在分隔条右侧 → 往左拖 = 面板变宽(符合直觉)
+applyBastionDefaultWidth();
+makeResizer(els.dividerBastion, 'x',
+  () => els.bastionPanel.offsetWidth,
+  (w) => { els.bastionPanel.style.width = `${w}px`; },
+  300, 1200, true,
+  () => { wvShowAfterDrag(); state.settings.bastionWidth = els.bastionPanel.offsetWidth; saveSettings(); },
+  wvHideWhileDrag);
+
+// 堡垒机面板高度:固定撑满整个区域(不再提供横分隔条上下拖动)
+
+// =====================================================================
+// 广播模式(第 5 课,参考 Xshell 的"发送到所有会话")
+// =====================================================================
+// 开启后:在任意一个终端里输入,会把按键同步转发给所有已连接的终端,
+// 每台服务器各自实时响应。适合"给所有机器同时下发同一命令"。
+function toggleBroadcast() {
+  state.broadcast = !state.broadcast;
+  els.btnBroadcast.classList.toggle('active', state.broadcast); // 高亮表示已开启
+  if (state.broadcast) {
+    const n = [...state.tabs.values()].filter((t) => t.status === 'connected').length;
+    setStatus(`⚡ 广播模式:输入将同步到 ${n} 个已连接会话`, 'var(--orange)');
+  } else {
+    setStatus('就绪');
+  }
+}
+
+// =====================================================================
+// 自定义输入弹窗(替代 window.prompt,新版 Chromium 已不支持 prompt)
+// =====================================================================
+let promptCallback = null; // 点"确定"后要执行的回调
+
+function showPrompt({ title, label, value, onOk, password }) {
+  els.promptTitle.textContent = title || '输入';
+  els.promptLabel.textContent = label || '内容';
+  els.promptInput.value = value || '';
+  els.promptInput.type = password ? 'password' : 'text'; // 快捷连接问密码时隐藏明文
+  promptCallback = onOk;
+  els.promptModal.classList.remove('hidden');
+  els.promptInput.focus();
+  els.promptInput.select();
+}
+
+function closePrompt() {
+  promptCallback = null;
+  els.promptModal.classList.add('hidden');
+}
+
+els.promptOk.addEventListener('click', () => {
+  const v = els.promptInput.value.trim();
+  const cb = promptCallback;
+  closePrompt();
+  if (cb) cb(v); // 把输入值交给调用方
+});
+els.promptCancel.addEventListener('click', closePrompt);
+els.promptInput.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) els.promptOk.click(); });
+
+// =====================================================================
+// 右键菜单:菜单项各自绑定 action;点别处 / 失焦 关闭
+// =====================================================================
+window.addEventListener('click', closeCtxMenu);
+window.addEventListener('blur', closeCtxMenu);
+
+// =====================================================================
+// 终端内搜索(Cmd/Ctrl+F)
+// =====================================================================
+let searchTarget = null; // 当前搜索的终端标签
+
+function openTermSearch() {
+  const t = state.tabs.get(state.activeSessionId);
+  if (!t || !t.searchAddon) return;
+  searchTarget = t;
+  els.termSearch.classList.remove('hidden');
+  els.termSearchInput.value = '';
+  els.termSearchCount.textContent = '';
+  try {
+    // 实时显示 "第几个/总数"
+    t.searchAddon.onDidChangeResults(({ resultCount, resultIndex }) => {
+      els.termSearchCount.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : '0/0';
+    });
+  } catch { /* 兼容旧版 */ }
+  els.termSearchInput.focus();
+}
+
+// 把空格分隔的多个关键词转成"匹配任意一个"的正则: "error failed" → /(error|failed)/i
+function buildBatchRegex(text) {
+  const terms = text.trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return null;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(terms.map(esc).join('|'), 'i');
+}
+
+function doTermSearch(dir) {
+  const t = searchTarget || state.tabs.get(state.activeSessionId);
+  if (!t || !t.searchAddon) return;
+  const text = els.termSearchInput.value;
+  if (!text) { els.termSearchCount.textContent = ''; return; }
+  const opts = { decorations: { matchBackground: '#264f78', activeMatchBackground: '#2d7dd2' } };
+  const terms = text.trim().split(/\s+/).filter(Boolean);
+  const query = terms.length > 1 ? buildBatchRegex(text) : text; // 多词 → 批量正则
+  if (query === null) return;
+  const options = terms.length > 1 ? { ...opts, regex: true } : opts;
+  try {
+    if (dir === 'prev') t.searchAddon.findPrevious(query, options);
+    else t.searchAddon.findNext(query, options);
+  } catch { /* 渲染时序问题偶发,忽略 */ }
+}
+
+function closeTermSearch() {
+  els.termSearch.classList.add('hidden');
+  if (searchTarget) {
+    try { searchTarget.searchAddon.clearDecorations(); } catch { /* ignore */ }
+  }
+  searchTarget = null;
+  const t = state.tabs.get(state.activeSessionId);
+  if (t) t.term.focus();
+}
+
+// =====================================================================
+// 应用菜单(文件/视图/帮助)触发的事件
+// =====================================================================
+window.api.onMenu((ch) => {
+  if (ch === 'menu:new-session') openSessionModal(null);
+  else if (ch === 'menu:new-group') newGroup();
+  else if (ch === 'menu:import') openImportModal();
+  else if (ch === 'menu:export') exportSessions();
+  else if (ch === 'menu:toggle-panel') toggleSessionPanel();
+  else if (ch === 'menu:settings') openSettingsModal();
+  else if (ch === 'menu:split-v') splitActivePane('v');
+  else if (ch === 'menu:split-h') splitActivePane('h');
+  else if (ch === 'menu:sftp') toggleSftpPanel();
+  else if (ch === 'menu:tunnel') openTunnelModal();
+  else if (ch === 'menu:batch') toggleBatchPanel();
+  else if (ch === 'menu:quick') openQuickModal();
+  else if (ch === 'menu:cmd') toggleCmdPanel();
+  else if (ch === 'menu:record-toggle') toggleRecord();
+  else if (ch === 'menu:record-list') openRecordingsModal();
+  else if (ch === 'menu:log-open') window.api.logOpenDir();
+  else if (ch === 'menu:ai') toggleAiPanel();
+  else if (ch === 'menu:connect') menuConnect();
+  else if (ch === 'menu:disconnect') menuDisconnect();
+  else if (ch === 'menu:lock') requestLock();
+  else if (ch === 'menu:jms') openJmsModal();
+  else if (ch === 'menu:about') {
+    alert('Polaris\n类 Xshell 的 SSH/SFTP 终端\n\nElectron + xterm.js + ssh2 + SQLite\n纯本地,无服务器');
+  }
+});
+
+// =====================================================================
+// 事件绑定
+// =====================================================================
+els.btnNewSession.addEventListener('click', () => openSessionModal(null));
+// ---- 快捷连接(临时直连,不保存会话) ----
+function toggleQuickConnect() {
+  const hidden = els.quickConnect.classList.toggle('hidden');
+  if (!hidden) { els.qcInput.focus(); els.qcInput.select(); }
+}
+function quickConnect() {
+  const raw = els.qcInput.value.trim();
+  if (!raw) return;
+  // 解析 user@host[:port];缺用户名默认 root(纯主机/域名也能直连)
+  const m = raw.match(/^(?:([^@\s]+)@)?([^@:\s]+)(?::(\d+))?$/);
+  if (!m || !m[2]) { setStatus('快捷连接格式: user@host[:port]', 'var(--red)'); return; }
+  const user = m[1] || 'root';
+  const host = m[2];
+  const port = m[3] ? parseInt(m[3], 10) : 22;
+  // 已保存会话里同 host+user 且带密码/密钥 → 直接复用凭证
+  const hit = state.sessions.find((s) => s.host === host && s.username === user && (s.password || s.private_key));
+  if (hit) doQuickConnect({ user, host, port, password: hit.password || '', privateKey: hit.private_key || '', passphrase: hit.passphrase || '' });
+  else showPrompt({ title: '快捷连接', label: `${user}@${host}:${port} 的登录密码`, password: true, onOk: (pw) => doQuickConnect({ user, host, port, password: pw }) });
+}
+function doQuickConnect(s) {
+  connectToServer({ name: `${s.user}@${s.host}`, host: s.host, port: s.port, username: s.user, password: s.password || '', privateKey: s.privateKey || '', passphrase: s.passphrase || '', encoding: 'utf8' });
+  els.quickConnect.classList.add('hidden');
+}
+els.btnQuickConnect.addEventListener('click', toggleQuickConnect);
+els.qcGo.addEventListener('click', quickConnect);
+els.qcClose.addEventListener('click', () => els.quickConnect.classList.add('hidden'));
+els.qcInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) quickConnect(); });
+
+els.btnNewGroup.addEventListener('click', newGroup); // 新建分组
+els.btnTogglePanel.addEventListener('click', toggleSessionPanel); // 折叠/展开会话列表
+els.vsGrid.addEventListener('click', () => setSessionView('grid')); // 网格视图
+els.vsList.addEventListener('click', () => setSessionView('list')); // 列表视图
+els.vsTree.addEventListener('click', () => setSessionView('tree')); // 树形视图
+
+// 批量操作
+els.batchConnect.addEventListener('click', batchConnect);
+els.batchClose.addEventListener('click', batchClose);
+els.batchUpload.addEventListener('click', batchUpload);
+els.batchDownload.addEventListener('click', batchDownload);
+els.batchDelete.addEventListener('click', batchDelete);
+els.batchClear.addEventListener('click', batchClear);
+
+// 终端内搜索
+els.termSearchInput.addEventListener('keydown', (e) => {
+  if (isEnterSubmit(e)) { e.preventDefault(); doTermSearch(e.shiftKey ? 'prev' : 'next'); }
+  else if (e.key === 'Escape') closeTermSearch();
+});
+els.termSearchInput.addEventListener('input', () => doTermSearch('next'));
+els.termSearchNext.addEventListener('click', () => doTermSearch('next'));
+els.termSearchPrev.addEventListener('click', () => doTermSearch('prev'));
+els.termSearchClose.addEventListener('click', closeTermSearch);
+els.modalSave.addEventListener('click', saveSession);
+els.modalCancel.addEventListener('click', closeSessionModal);
+// 「浏览…」选私钥文件:弹原生文件对话框,把路径填进输入框
+els.fPrivateKeyPick.addEventListener('click', async () => {
+  const res = await window.api.pickKeyFile();
+  if (res && res.ok) els.fPrivateKey.value = res.path;
+});
+// 导入/导出已移到"文件"菜单(menu:import / menu:export)
+// 修改密码
+els.setPwd.addEventListener('click', openPwdModal);
+els.pwdSave.addEventListener('click', changePassword);
+els.pwdCancel.addEventListener('click', closePwdModal);
+els.ansiReset.addEventListener('click', resetAnsi);
+// 密码确认弹窗(删除有主机的分组等危险操作)
+els.confirmPwdOk.addEventListener('click', confirmPwdOk);
+els.confirmPwdCancel.addEventListener('click', confirmPwdCancel);
+els.importSave.addEventListener('click', doImport);
+// 手动改了粘贴文本 → 之前选文件解析的"待导入"作废(导入按钮改走文本)
+els.importText.addEventListener('input', () => { pendingImport = null; });
+els.importCancel.addEventListener('click', closeImportModal);
+els.importExcel.addEventListener('click', () => els.importFile.click()); // 按钮 → 触发隐藏的文件选择框
+els.importFile.addEventListener('change', importFromExcel); // 选中文件后解析导入
+// 从加密备份(.polaris)导入
+els.importBackup.addEventListener('click', () => els.importBackupFile.click());
+els.importBackupFile.addEventListener('change', importBackupSelected);
+// 从 Xshell/iTerm2 导入
+els.importExternal.addEventListener('click', () => els.importExternalFile.click());
+els.importExternalFile.addEventListener('change', importExternalSelected);
+// 备份文件密码弹窗
+els.filePwdOk.addEventListener('click', confirmFilePwd);
+els.filePwdCancel.addEventListener('click', closeFilePwd);
+els.importTemplate.addEventListener('click', saveTemplate); // 下载导入模板
+els.btnBroadcast.addEventListener('click', toggleBroadcast); // 广播模式开关
+els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中断二合一
+els.btnLock.addEventListener('click', requestLock); // 锁定
+// 堡垒机按钮:弹出 JumpServer / H3C 选择菜单
+els.btnBastion2.addEventListener('click', (e) => {
+  e.stopPropagation(); // 阻止冒泡到 window 的 closeCtxMenu,否则菜单刚弹出就被收起
+  const r = e.currentTarget.getBoundingClientRect();
+  showCtxMenu(r.left, r.bottom, [
+    { label: '🛡 JumpServer(API 对接)', action: openJmsModal },
+    { label: '🌐 JumpServer Web 界面', action: openJmsWeb },
+    { separator: true },
+    { label: '🌐 H3C(浏览器登录)', action: openBastionPanel },
+  ]);
+});
+els.bastionMini.addEventListener('click', restoreBastion);
+els.bastionCfg.addEventListener('click', openBastionCfg);
+els.bastionLoad.addEventListener('click', bastionLoadSelected);
+els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
+els.bastionCfgClose.addEventListener('click', closeBastionCfg);
+els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
+els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
+els.bastionGo.addEventListener('click', () => loadBastion(els.bastionUrl.value.trim()));
+els.bastionMin.addEventListener('click', minimizeBastion);
+els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });
+els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
+els.bastionForward.addEventListener('click', () => { try { els.bastionWebview.goForward(); } catch { /* ignore */ } });
+els.bastionReload.addEventListener('click', () => { try { els.bastionWebview.reload(); } catch { /* ignore */ } });
+els.bastionClose.addEventListener('click', minimizeBastion);
+// 画面缩放(支持 0.5~2.5,按住可连续缩放)
+els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
+els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
+applyBastionZoom(); // 应用持久化的缩放级别
+initBastionWebview();
+setInterval(pollBastionAssets, 4000); // 定时刷新 H3C 资产(用户登录/进资产页后捕获)
+updateBastionMini();
+els.jmsServerSelect.addEventListener('change', () => jmsSelectServer(els.jmsServerSelect.value));
+els.jmsServerAdd.addEventListener('click', jmsAddServer);
+els.jmsServerDel.addEventListener('click', jmsDeleteServer);
+// 登录按钮:OTP 输入框可见时 = 提交双因素验证码;否则普通登录
+// (注意:触发 MFA 时 display 被置空串恢复显示,空串是 falsy,不能再用 ! 判断隐藏态)
+els.jmsLoginBtn.addEventListener('click', () => {
+  if (els.jmsOtpWrap.style.display !== 'none') jmsDoMfa();
+  else jmsDoLogin();
+});
+els.jmsSaveBtn.addEventListener('click', jmsDoSave);
+els.jmsLogoutBtn.addEventListener('click', jmsLogout);
+els.jmsRefreshBtn.addEventListener('click', jmsRefreshActive);
+els.jmsClose.addEventListener('click', closeJmsModal);
+els.jmsPass.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) jmsDoLogin(); });
+els.jmsOtp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) jmsDoMfa(); });
+// 高级设置区展开/收起
+els.jmsAdvToggle.addEventListener('click', () => {
+  const hidden = els.jmsAdvBody.style.display === 'none';
+  els.jmsAdvBody.style.display = hidden ? '' : 'none';
+  els.jmsAdvToggle.textContent = hidden ? '高级(SSH 网关留空自动检测) ▴' : '高级(SSH 网关留空自动检测) ▾';
+});
+els.loBtn.addEventListener('click', submitLock); // 锁定覆盖层:解锁按钮
+els.loPw.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) submitLock(); });
+// 视图下拉菜单:垂直/横向分屏
+els.btnView.addEventListener('click', toggleViewMenu);
+els.viewMenu.addEventListener('click', onViewMenuClick);
+// 点菜单外任意处收起(和录制菜单同一个套路)
+document.addEventListener('click', (e) => {
+  if (!els.viewMenu.contains(e.target) && !els.btnView.contains(e.target)) els.viewMenu.classList.add('hidden');
+});
+
+// 设置
+els.btnSettings.addEventListener('click', openSettingsModal);
+els.setClose.addEventListener('click', closeSettingsModal);
+els.setTheme.addEventListener('change', () => {
+  state.settings.theme = els.setTheme.value;
+  saveSettings();
+  applyTheme();
+});
+els.setHighlight.addEventListener('change', () => {
+  state.settings.highlight = els.setHighlight.checked;
+  saveSettings();
+});
+els.setFontSize.addEventListener('change', () => {
+  state.settings.fontSize = parseInt(els.setFontSize.value, 10) || 13;
+  saveSettings();
+  applyFontSettings();
+});
+els.setFontFamily.addEventListener('change', () => {
+  state.settings.fontFamily = els.setFontFamily.value;
+  saveSettings();
+  applyFontSettings();
+});
+els.setAutoReconnect.addEventListener('change', () => {
+  state.settings.autoReconnect = els.setAutoReconnect.checked;
+  saveSettings();
+});
+els.setVerify.addEventListener('change', () => {
+  state.settings.verifyHostKey = els.setVerify.checked;
+  saveSettings();
+});
+els.setRestore.addEventListener('change', () => {
+  state.settings.restoreOnStartup = els.setRestore.checked;
+  saveSettings();
+});
+els.setCmdRecord.addEventListener('change', () => {
+  state.settings.cmdRecord = els.setCmdRecord.checked;
+  saveSettings();
+  updateCmdRecordBtn();
+});
+els.setSessionLog.addEventListener('change', () => {
+  state.settings.sessionLog = els.setSessionLog.checked;
+  saveSettings();
+});
+els.setLockIdle.addEventListener('change', () => {
+  state.settings.lockIdleMin = Math.max(0, parseInt(els.setLockIdle.value, 10) || 0);
+  saveSettings();
+  resetIdleLock(); // 改完立即按新间隔重新计时
+});
+// 字段 blur 自动保存 → 写进"当前厂商"的配置(每家独立)
+els.aiKey.addEventListener('change', () => {
+  const v = activeAiVendor();
+  if (v) { v.key = els.aiKey.value.trim(); saveSettings(); }
+});
+els.aiUrl.addEventListener('change', () => {
+  const v = activeAiVendor();
+  if (v) { v.url = els.aiUrl.value.trim(); saveSettings(); }
+});
+els.aiModel.addEventListener('change', () => {
+  const v = activeAiVendor();
+  if (v) { v.model = els.aiModel.value; saveSettings(); }
+});
+els.aiModelAdd.addEventListener('click', addAiModel); // ＋ 添加模型
+els.aiModelDel.addEventListener('click', delAiModel); // 🗑 删除当前模型
+els.aiFormat.addEventListener('change', () => {
+  const v = activeAiVendor();
+  if (v) { v.format = els.aiFormat.value; saveSettings(); }
+});
+// 头部厂商下拉框:切换激活厂商
+els.aiVendorSelect.addEventListener('change', () => selectAiVendor(els.aiVendorSelect.value));
+
+// 「保存配置」:编辑的是"当前激活厂商"。
+// 改厂商名 = 给当前厂商改名(配置跟着走,不产生孤儿);新增用「＋ 新增厂商」。
+els.aiConfigSave.addEventListener('click', () => {
+  const vendors = state.settings.aiVendors || (state.settings.aiVendors = {});
+  const oldName = state.settings.aiActiveVendor;
+  const name = els.aiVendor.value.trim();
+  if (!name) { alert('厂商名称不能为空'); return; }
+  const v = vendors[oldName] || {};
+  if (name !== oldName) {
+    if (vendors[name] && !confirm(`「${name}」已存在,要覆盖它的配置吗?`)) return;
+    delete vendors[oldName]; // 改名:旧名字的配置挪到新名字
+  }
+  v.url = els.aiUrl.value.trim();
+  v.key = els.aiKey.value.trim();
+  v.format = els.aiFormat.value;
+  if (!Array.isArray(v.models)) v.models = [];
+  const mdl = els.aiModel.value;
+  if (mdl && !v.models.includes(mdl)) v.models.push(mdl);
+  v.model = mdl || v.models[0] || '';
+  vendors[name] = v;
+  state.settings.aiActiveVendor = name;
+  saveSettings();
+  fillVendorSelect();
+  fillAiConfig();
+  const btn = els.aiConfigSave;
+  btn.textContent = '已保存 ✓';
+  btn.classList.add('active');
+  setTimeout(() => { btn.textContent = '保存配置'; btn.classList.remove('active'); }, 1200);
+});
+
+// 「＋ 新增厂商」:先起个名字,立刻建一家空配置并切过去编辑
+els.aiVendorNew.addEventListener('click', () => {
+  showPrompt({
+    title: '新增模型厂商',
+    label: '厂商名称(如 OpenAI / 通义千问 / 智谱)', value: '',
+    onOk: (name) => {
+      name = (name || '').trim();
+      if (!name) return;
+      const vendors = state.settings.aiVendors || (state.settings.aiVendors = {});
+      if (vendors[name]) { alert('该厂商已存在,直接编辑即可'); selectAiVendor(name); return; }
+      vendors[name] = { url: '', key: '', format: 'anthropic', model: '', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] };
+      state.settings.aiActiveVendor = name;
+      saveSettings();
+      fillVendorSelect();
+      fillAiConfig();
+    },
+  });
+});
+
+// 「🗑 删除厂商」:删掉当前厂商,切到剩下第一家
+els.aiVendorDel.addEventListener('click', () => {
+  const name = state.settings.aiActiveVendor;
+  if (!name) return;
+  if (!confirm(`删除厂商「${name}」的全部配置?`)) return;
+  delete state.settings.aiVendors[name];
+  const keys = Object.keys(state.settings.aiVendors || {});
+  state.settings.aiActiveVendor = keys[0] || '';
+  saveSettings();
+  fillVendorSelect();
+  fillAiConfig();
+});
+
+// AI 助手
+els.btnAi.addEventListener('click', toggleAiPanel);
+// 主机多选下拉:点按钮展开/收起,点外部收起
+els.aiHostToggle.addEventListener('click', (e) => { e.stopPropagation(); els.aiHostPanel.classList.toggle('hidden'); });
+document.addEventListener('click', (e) => {
+  if (els.aiHostDrop && !els.aiHostDrop.contains(e.target)) els.aiHostPanel.classList.add('hidden');
+});
+els.aiClose.addEventListener('click', () => { els.aiPanel.classList.add('hidden'); syncPanelButtons(); });
+// 命令记录面板:开关 / 清空 / 导出 / 关闭
+els.btnCmd.addEventListener('click', toggleCmdPanel);
+els.cmdClose.addEventListener('click', () => { els.cmdPanel.classList.add('hidden'); syncPanelButtons(); });
+els.cmdClear.addEventListener('click', clearCmdHistory);
+els.cmdArchive.addEventListener('click', archiveAndView);
+els.cmdRecordToggle.addEventListener('click', toggleCmdRecord);
+// 会话录制与回放(合并到一个按钮 + 下拉菜单)
+els.btnRec.addEventListener('click', toggleRecMenu);
+els.recMenu.addEventListener('click', onRecMenuClick);
+// 点菜单外任意处收起(和 AI 主机下拉同一个套路)
+document.addEventListener('click', (e) => {
+  if (!els.recMenu.contains(e.target) && !els.btnRec.contains(e.target)) els.recMenu.classList.add('hidden');
+});
+els.recordingsClose.addEventListener('click', closeRecordingsModal);
+els.recordingsOpenDir.addEventListener('click', () => window.api.recOpenDir());
+els.replayPlay.addEventListener('click', replayPlayPause);
+els.replaySpeed.addEventListener('click', replaySpeed);
+els.replayAllsync.addEventListener('click', replayShowAll);
+els.replayClose.addEventListener('click', closeReplay);
+els.replaySideToggle.addEventListener('click', closeReplaySide);
+// 进度条拖拽:按住时暂停、松手恢复(避免播放循环和拖动打架)
+els.replayProgress.addEventListener('pointerdown', () => {
+  const p = replay;
+  if (!p) return;
+  p.dragging = true;
+  p.wasPlaying = p.playing;
+  pauseReplay();
+});
+els.replayProgress.addEventListener('input', (e) => {
+  if (replay) seekReplay(Number(e.target.value));
+});
+els.replayProgress.addEventListener('pointerup', () => {
+  const p = replay;
+  if (!p) return;
+  p.dragging = false;
+  if (p.wasPlaying) playReplay();
+});
+els.aiSend.addEventListener('click', aiSend);
+// AI 输入是多行 textarea:
+//   回车发送(含输入法判断)、Shift+回车换行、↑↓ 调出历史提问
+els.aiInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && isEnterSubmit(e)) { e.preventDefault(); aiSend(); return; }
+  // 输入法组合中不拦截方向键(否则拼音选字会乱)
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!aiSentHistory.length) return;
+    if (aiHistoryIndex === -1) aiHistoryIndex = aiSentHistory.length;
+    aiHistoryIndex = Math.max(0, aiHistoryIndex - 1);
+    els.aiInput.value = aiSentHistory[aiHistoryIndex];
+    els.aiInput.setSelectionRange(els.aiInput.value.length, els.aiInput.value.length);
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (aiHistoryIndex === -1) return;
+    aiHistoryIndex++;
+    if (aiHistoryIndex >= aiSentHistory.length) {
+      aiHistoryIndex = -1;
+      els.aiInput.value = ''; // 到末尾 → 清空
+    } else {
+      els.aiInput.value = aiSentHistory[aiHistoryIndex];
+      els.aiInput.setSelectionRange(els.aiInput.value.length, els.aiInput.value.length);
+    }
+  }
+});
+// ⚙ 展开/收起模型配置
+els.aiConfigToggle.addEventListener('click', () => {
+  const show = els.aiConfig.classList.contains('hidden');
+  els.aiConfig.classList.toggle('hidden', !show);
+  if (show) fillAiConfig();
+});
+els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
+els.btnSftpUp.addEventListener('click', sftpGoUp);
+// 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
+els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
+els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
+els.btnSftpUpload.addEventListener('click', sftpUpload);
+els.btnSftpDownload.addEventListener('click', sftpDownload);
+els.btnSftpDelete.addEventListener('click', sftpDeleteSelected);
+els.btnSftpSelectAll.addEventListener('click', sftpToggleSelectAll);
+els.btnSftpTransfersClear.addEventListener('click', clearSftpTransfers); // 清空传输历史(本次会话)
+// SFTP 远程编辑
+els.btnSftpEdit.addEventListener('click', editSelectedFile);
+els.editSave.addEventListener('click', saveRemoteFile);
+els.editCancel.addEventListener('click', closeEditor);
+// 批量执行面板
+els.btnBatch.addEventListener('click', toggleBatchPanel);
+els.batchPanelClose.addEventListener('click', () => { els.batchPanel.classList.add('hidden'); syncPanelButtons(); refitAll(); });
+els.batchRun.addEventListener('click', runBatchExec);
+els.batchPanelClear.addEventListener('click', () => { els.batchResults.innerHTML = ''; });
+els.batchCmd.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && isEnterSubmit(e)) { e.preventDefault(); runBatchExec(); }
+});
+// 快速命令
+els.btnQuick.addEventListener('click', openQuickModal);
+els.quickClose.addEventListener('click', closeQuickModal);
+els.quickAddBtn.addEventListener('click', addQuickCommand);
+els.quickCancelBtn.addEventListener('click', cancelEditQuick);
+els.quickName.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e.preventDefault(); addQuickCommand(); } });
+els.quickCommand.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && isEnterSubmit(e)) { e.preventDefault(); addQuickCommand(); }
+});
+// SSH 隧道
+els.btnTunnel.addEventListener('click', openTunnelModal);
+els.tunnelClose.addEventListener('click', () => els.tunnelModal.classList.add('hidden'));
+els.tunnelNew.addEventListener('click', toggleTunnelForm);
+els.tunnelFormCancel.addEventListener('click', () => els.tunnelForm.classList.add('hidden'));
+els.tunnelType.addEventListener('change', updateTunnelTypeFields);
+els.tunnelCreate.addEventListener('click', createTunnel);
+// 搜索输入防抖:停顿 80ms 才重渲染列表,避免每敲一个字母就全量重建(性能优化)
+let sessionSearchTimer = null;
+els.inputSessionSearch.addEventListener('input', () => {
+  state.activeGroupId = null; // 搜索时全选回到"按搜索结果",清掉分组选中
+  clearTimeout(sessionSearchTimer);
+  sessionSearchTimer = setTimeout(() => renderSessionList(els.inputSessionSearch.value), 80);
+});
+els.btnSelectAllFiltered.addEventListener('click', toggleSelectAllFiltered);
+// 点会话列表"空白处"(容器本身,不是分组头/会话行)→ 取消分组选中,之后全选=所有分组的主机
+els.sessionTree.addEventListener('click', (e) => {
+  if (e.target === els.sessionTree && state.activeGroupId != null) {
+    state.activeGroupId = null;
+    renderSessionList(els.inputSessionSearch.value);
+  }
+});
+// 密码/私钥口令 显示/隐藏切换(点眼睛按钮)
+function togglePwdEye(inputId, btnId) {
+  const inp = document.getElementById(inputId);
+  const btn = document.getElementById(btnId);
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '🙈'; btn.title = '隐藏'; }
+  else { inp.type = 'password'; btn.textContent = '👁'; btn.title = '显示'; }
+}
+els.fPasswordToggle.addEventListener('click', () => togglePwdEye('f-password', 'f-password-toggle'));
+els.fPassphraseToggle.addEventListener('click', () => togglePwdEye('f-passphrase', 'f-passphrase-toggle'));
+els.fJumpPasswordToggle.addEventListener('click', () => togglePwdEye('f-jump-password', 'f-jump-password-toggle'));
+// 弹窗回车即保存
+for (const f of [els.fName, els.fHost, els.fPassword]) {
+  f.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) saveSession(); });
+}
+
+// =====================================================================
+// 主进程事件:终端数据 / 连接状态
+// =====================================================================
+// ---- OS 系统识别(参考 Netcatty):连接成功后探测,结果给 AI 助手用 ----
+async function detectOsForTab(t) {
+  const res = await window.api.detectOs({
+    host: t.session.host,
+    port: t.session.port || 22,
+    username: t.session.username,
+    password: t.session.password,
+  });
+  if (!res || !res.ok) return;
+  // 只把系统类型记在标签对象里(给 AI 助手用),不再往标签上画徽标
+  t.os = res.name;
+}
+
+window.api.onSshData((sessionId, data) => {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  if (typeof data === 'string') {
+    // 主进程已把 GBK/GB2312 转成 UTF-8 字符串,直接写
+    t.term.write(state.settings.highlight ? highlightString(data) : data);
+  } else {
+    // UTF-8 原始字节
+    if (state.settings.highlight) t.term.write(highlightText(t, new Uint8Array(data)));
+    else t.term.write(new Uint8Array(data));
+  }
+});
+
+// ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
+// 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
+const sftpTransfer = { rows: new Map(), active: new Set() }; // path → { el, fill, meta }; active = 当前批次里出现过的文件
+function makeSftpTransferRow(p) {
+  const el = document.createElement('div');
+  el.className = 'sftp-transfer-row active';
+  const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
+  const name = document.createElement('span'); name.className = 'st-name'; name.textContent = p.file.split('/').filter(Boolean).pop() || p.file; name.title = p.file;
+  const track = document.createElement('div'); track.className = 'st-track';
+  const fill = document.createElement('div'); fill.className = 'st-fill';
+  track.appendChild(fill);
+  const meta = document.createElement('span'); meta.className = 'st-meta'; meta.textContent = '0B';
+  const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
+  del.addEventListener('click', () => { sftpTransfer.rows.delete(p.file); el.remove(); });
+  el.append(dir, name, track, meta, del);
+  return { el, fill, meta };
+}
+window.api.onSftpProgress((p) => {
+  if (!p || !els.sftpProgress) return;
+  const list = document.getElementById('sftp-transfers-list');
+  if (!list) return;
+  els.sftpProgress.classList.remove('hidden');
+  let row = sftpTransfer.rows.get(p.file);
+  if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(p.file, row); list.prepend(row.el); } // 新的在最上面
+  sftpTransfer.active.add(p.file);
+  const fpct = p.fileTotal > 0 ? Math.min(100, Math.round((p.fileDone / p.fileTotal) * 100)) : 100;
+  row.fill.style.width = fpct + '%';
+  row.meta.textContent = `${formatSize(p.fileDone)}/${formatSize(p.fileTotal)} · ${fpct}%`;
+  const bpct = p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 100;
+  const dir = p.op === 'upload' ? '⬆ 上传' : '⬇ 下载';
+  els.sftpProgressLabel.textContent = `${dir} ${p.filesDone}/${p.filesTotal} 个文件 · ${bpct}%`;
+});
+// 批次结束:把当前批次的行从"进行中"标成 完成/失败/已取消(行保留在历史里)
+function sftpTransferFinish(failedPaths, cancelled) {
+  for (const path of sftpTransfer.active) {
+    const row = sftpTransfer.rows.get(path);
+    if (!row) continue;
+    row.el.classList.remove('active');
+    if (cancelled) { row.el.classList.add('fail'); row.meta.textContent = '已取消'; }
+    else if (failedPaths && failedPaths.has(path)) { row.el.classList.add('fail'); row.meta.textContent = '✗ 失败'; }
+    else { row.el.classList.add('done'); row.meta.textContent = (row.meta.textContent || '') + ' ✓'; }
+  }
+  sftpTransfer.active.clear();
+}
+function clearSftpTransfers() {
+  sftpTransfer.rows.clear();
+  sftpTransfer.active.clear();
+  const list = document.getElementById('sftp-transfers-list');
+  if (list) list.innerHTML = '';
+  if (els.sftpProgress) els.sftpProgress.classList.add('hidden');
+}
+
+window.api.onSshStatus((sessionId, status) => {
+  const t = state.tabs.get(sessionId);
+  if (!t) return;
+  const dot = t.el.querySelector('.tab-status-dot');
+  if (status.status === 'connected') {
+    setTabStatus(sessionId, 'connected');
+    t.manualDisconnect = false; // 已重新连接上,清掉手动断开标记
+    t.reconnectAttempts = 0; // 连接成功,清零重连计数
+    if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
+    if (dot) dot.title = '已连接';
+    setStatus(`已连接: ${t.title}`, 'var(--green)');
+    detectOsForTab(t); // 探测系统类型(结果给 AI 助手用,标签上不显示徽标)
+    updateAiHostList(); // AI 主机选择器刷新
+    // 登录宏:连接成功后逐条发送会话里配置的 on_connect 命令(每行一条)
+    if (t.session && t.session.on_connect) {
+      const cmds = t.session.on_connect.split('\n').map((l) => l.trim()).filter(Boolean);
+      cmds.forEach((cmd, i) => {
+        setTimeout(() => {
+          const tt = state.tabs.get(sessionId);
+          if (tt && tt.status === 'connected') window.api.sshWrite(sessionId, cmd + '\r');
+        }, 400 + i * 600);
+      });
+    }
+  } else if (status.status === 'closed') {
+    setTabStatus(sessionId, 'closed');
+    t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
+    setStatus('连接已断开', 'var(--red)');
+    state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
+    updateRecordBtn();
+    // 非用户主动关闭、非手动断开 → 自动重连
+    if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
+  } else if (status.status === 'error') {
+    setTabStatus(sessionId, 'closed');
+    t.term.write(`\r\n\x1b[31m[连接错误] ${status.error}\x1b[0m\r\n`);
+    setStatus('连接错误', 'var(--red)');
+    // 堡垒机直连会话(H3C token 解析出的 SSH 代理)连接失败 → 记入诊断包,定位"无法连接"根因
+    if (t.session && t.session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId, bastionKey: t.session.bastionKey, host: t.session.host, port: t.session.port, account: t.session.username, error: status.error });
+    state.recording.delete(sessionId);
+    updateRecordBtn();
+    if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
+  }
+});
+
+// =====================================================================
+// keyboard-interactive 认证弹窗(域认证 / 双密码 / OTP 挑战)
+// =====================================================================
+let kbdWaiter = null; // { id, sessionId }
+window.api.onSshKbd((sessionId, data) => {
+  const t = state.tabs.get(sessionId);
+  if (!t) { window.api.sshKbdRespond(data.id, [], true); return; }
+  kbdWaiter = { id: data.id, sessionId };
+  const desc = (data.instructions || '').trim() || (data.name || '服务器要求额外的验证信息');
+  els.kbdDesc.textContent = desc;
+  els.kbdFields.innerHTML = '';
+  const prompts = data.prompts || [];
+  prompts.forEach((p, i) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'field';
+    const span = document.createElement('span');
+    span.textContent = (p.prompt || '').trim() || `第 ${i + 1} 项验证信息`;
+    const input = document.createElement('input');
+    input.type = p.echo ? 'text' : 'password'; // echo=false → 密码框
+    input.autocomplete = 'off';
+    input.placeholder = p.echo ? '输入内容' : '输入密码';
+    wrap.appendChild(span);
+    wrap.appendChild(input);
+    els.kbdFields.appendChild(wrap);
+  });
+  els.kbdModal.classList.remove('hidden');
+  const first = els.kbdFields.querySelector('input');
+  if (first) first.focus();
+});
+function kbdSubmit(cancelled) {
+  if (!kbdWaiter) return;
+  const w = kbdWaiter;
+  kbdWaiter = null;
+  const answers = cancelled ? [] : [...els.kbdFields.querySelectorAll('input')].map((i) => i.value);
+  window.api.sshKbdRespond(w.id, answers, cancelled);
+  els.kbdModal.classList.add('hidden');
+}
+els.kbdOk.addEventListener('click', () => kbdSubmit(false));
+els.kbdCancel.addEventListener('click', () => kbdSubmit(true));
+// 回车提交;取消时保持关闭
+els.kbdFields.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); kbdSubmit(false); }
+});
+
+// =====================================================================
+// 启动:加载设置 + 会话列表
+// =====================================================================
+// 全局错误兜底:xterm 内部偶发异步报错,不打断 UI(记录但不影响使用)
+window.addEventListener('error', (e) => console.warn('[渲染层]', e.message));
+
+loadSettings();
+resetIdleLock(); // 启动即开始闲置自动锁定计时
+jmsRestore();     // 启动恢复 JumpServer 登录(静默重登已登录过的服务器)
+updateConnectBtn(); // 初始化"连接/中断"二合一按钮状态
+applyTheme();
+applyPanelCollapsed();
+syncViewButtons();
+fillVendorSelect(); // 填充 AI 厂商下拉框(启动时刷一次)
+fillAiConfig();     // 把当前厂商配置填进 ⚙ 面板
+updateCmdRecordBtn(); // 命令记录开关按钮状态
+updateRecordBtn();    // 会话录制按钮状态(初始=未录制)
+syncPanelButtons();   // 面板开关按钮激活态
+loadCmdHistory();   // 加载持久化的命令记录
+loadRecent();       // 加载最近连接
+// 终端字体(如 SF Mono)加载完后再重适配一次,避免字体未就绪时算错行高、终端只占一半
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { refitAll(); packToolbar(); });
+packToolbar(); // 初始按当前窗口宽度算好工具栏间距(字体就绪后再算一次)
+loadSessions();
+updateTerminalVisibility();
+setStatus('就绪');

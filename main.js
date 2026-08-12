@@ -1,0 +1,1957 @@
+'use strict';
+/**
+ * main.js — Electron 主进程(纯 SSH/SFTP 终端版)
+ * 职责:
+ *   1. 创建主窗口(会话列表 → 多标签终端)
+ *   2. 用 SQLite 保存会话配置(增删改查)
+ *   3. 持有 SSH 连接池(ssh2 在主进程运行)
+ *   4. --dev 模式下自动拉起本地 mock SSH 服务器(方便没有真实服务器时测试)
+ */
+
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, session } = require('electron');
+const path = require('path');
+const fs = require('fs'); // 读私钥、写导出文件等
+const net = require('net'); // 堡垒机连通性探测(bastion:probe)
+
+const sshClient = require('./lib/ssh-client');
+const { createStore } = require('./lib/session-store');
+const crypto = require('./lib/crypto'); // safeStorage 密码加密
+const knownHosts = require('./lib/known-hosts'); // 主机指纹校验
+const iconv = require('iconv-lite'); // 终端编码转换(GBK/GB2312 → UTF-8)
+const { isDangerousCommand } = require('./lib/dangerous'); // 危险命令识别(AI 审批用)
+const { callAiStream, normalizeAiUrl } = require('./lib/ai-stream'); // AI 流式调用(SSE 解析)
+const dbCrypto = require('./lib/db-crypto'); // 数据库整库加密(AES-256-GCM)
+const appLock = require('./lib/app-lock'); // App 打开密码锁
+const recorder = require('./lib/recorder'); // 会话录制与回放数据层(JSONL)
+const sessionLog = require('./lib/session-log'); // 会话日志落盘(可读纯文本)
+const tunnelLib = require('./lib/tunnel'); // SSH 隧道/端口转发(本地/远程/动态 SOCKS)
+const jmsApi = require('./lib/jms-api'); // JumpServer v4 REST API(登录/资产列表)
+const XLSX = require('xlsx'); // SheetJS:生成导入模板 Excel(和导入同一套库)
+
+// ---------- 安全日志 ----------
+// 当 stdout/stderr 管道被关闭(如从终端启动后终端被关、后台运行、日志重定向断开)时,
+// console.log 可能抛 EPIPE 未捕获异常,导致主进程流程中断(如 ssh 连接失败后 return 不执行,
+// 渲染层 invoke 永远挂起,标签卡在"连接中")。统一让日志写失败时静默忽略。
+const __log = console.log, __err = console.error;
+function __safeLog(fn) {
+  return function () { try { return fn.apply(console, arguments); } catch { /* stdout 已关闭,忽略 */ } };
+}
+console.log = __safeLog(__log);
+console.error = __safeLog(__err);
+// 兜底:其他 EPIPE 未捕获异常忽略,非 EPIPE 打印到 stderr 继续运行(桌面应用不因日志崩溃退出)
+process.on('uncaughtException', (e) => {
+  if (e && e.code === 'EPIPE') return;
+  try { __err.call(console, '[MAIN] 未捕获异常:', e); } catch { /* ignore */ }
+});
+
+// 堡垒机常用自签名证书/内网 CA,放行证书错误(否则内置浏览器打不开堡垒机 Web)
+// 与 jms-api 的 rejectUnauthorized:false、PuTTY/Xshell 的行为一致:内网工具不校验 CA
+app.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
+  event.preventDefault();
+  callback(true);
+});
+
+// ---------- 数据目录 ----------
+// 便携版(PORTABLE_EXECUTABLE_DIR 由 electron-builder portable 运行时注入,= exe 所在目录):
+// 所有数据(userData 设置/AI 配置 + 加密库/密码锁/指纹/录制/归档)统一放 exe 同目录的 .Polaris 文件夹,
+// 第一次运行自动创建,真正做到"数据随 exe 走",拷走文件夹即带全部数据。
+// 安装版:固定 userData 目录(改产品名/包名不会丢设置和 AI 配置)。
+const POLARIS_DATA_DIR = process.env.PORTABLE_EXECUTABLE_DIR
+  ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, '.Polaris')
+  : null;
+if (POLARIS_DATA_DIR) {
+  fs.mkdirSync(POLARIS_DATA_DIR, { recursive: true }); // 第一次运行自动创建
+  app.setPath('userData', POLARIS_DATA_DIR);
+  process.env.POLARIS_LOCK_DIR = POLARIS_DATA_DIR; // 数据库/密码锁/指纹/录制/归档 走同一目录(app-lock 读取)
+} else {
+  // 测试环境(POLARIS_LOCK_DIR 已注入临时目录)→ userData 跟随,避免共享的真实配置/设置污染测试
+  const testDir = process.env.POLARIS_LOCK_DIR;
+  app.setPath('userData', testDir ? path.join(testDir, 'userdata') : path.join(app.getPath('appData'), 'polaris'));
+}
+
+// Windows 上部分显卡/虚拟机(Win11 测试环境常见)的 GPU 合成器命中测试有 bug:
+// 弹窗等"新合成层"能渲染出来但点击坐标定位失效(点了完全没反应)→ 关掉硬件加速。
+// 不影响任何功能,只影响渲染性能。必须在 app ready 前调用。
+if (process.platform === 'win32') app.disableHardwareAcceleration();
+
+const DEV_MODE = process.argv.includes('--dev') || process.env.POLARIS_DEV === '1';
+let mainWindow = null;
+
+// ---------- 会话存储(SQLite,内存运行 + 整库加密落盘) ----------
+// 密码解锁后才创建(sessionStore = createStore(解密后的字节))。
+// 持久化:每次变更 schedulePersist() → serialize() → 加密 → 写 data.bin
+let sessionStore = null;
+let dbPassword = null;   // 解锁后保存的密码(用于加密落盘)
+let lockWindow = null;   // 锁屏窗口(仅启动解锁用;临时锁定用主窗口内覆盖层)
+let persistTimer = null;
+
+function persistDb() {
+  if (!sessionStore || !dbPassword) return;
+  try {
+    const bytes = Buffer.from(sessionStore.serialize());
+    const blob = dbCrypto.encryptBytes(bytes, dbPassword);
+    fs.mkdirSync(appLock.lockDir(), { recursive: true });
+    fs.writeFileSync(path.join(appLock.lockDir(), 'data.bin'), blob);
+  } catch (err) {
+    console.warn('[MAIN] 保存数据库失败:', err.message);
+  }
+}
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(persistDb, 400); // 防抖:变更后 400ms 落盘
+}
+
+// ---------- SSH 连接池 ----------
+// sessionId -> { conn, stream }
+const sshSessions = new Map();
+// 已广播过 closed 的 sessionId:stream close 与 conn close 同一次断开可能都触发,只广播一次
+// (不能放在 sshSessions 记录上——ssh:close 会先删记录再触发 close 事件;重连时在 ssh:connect 清掉)
+const closedBroadcast = new Set();
+let sshSeq = 0;
+// 跳板机连接:sessionId -> 已连的跳板 conn(经它 forwardOut 隧道到目标)
+const jumpConns = new Map();
+// 录制状态:sessionId -> { file, startTs, encoding, cols, rows, sessionName, host, port, username }
+// 同一 sessionId(同一个标签页)同时只允许一个录制,存这里方便在打点处快速查
+const recSessions = new Map();
+
+function broadcast(channel, ...args) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, ...args);
+  }
+}
+
+// ---------- SSH 终端数据批量转发(性能优化) ----------
+// 高吞吐输出(top / cat 大文件 / yes 等)时,SSH 会瞬间产生海量小块数据。
+// 原来每块都立即过一遍 IPC,消息数爆炸。现在按 session 攒一批:
+//   攒够 64KB 立即发;否则最多等 16ms 发一次(肉眼无感,但 IPC 消息数降一个量级)。
+const dataBuffer = new Map(); // sessionId -> { chunks: Buffer[], total: number, timer }
+const sshDecoders = new Map(); // sessionId -> iconv 流式解码器(仅非 utf8 会话,GBK/GB2312)
+
+function pushSshData(sessionId, chunk) {
+  let b = dataBuffer.get(sessionId);
+  if (!b) { b = { chunks: [], total: 0, timer: null }; dataBuffer.set(sessionId, b); }
+  b.chunks.push(chunk);
+  b.total += chunk.length;
+  if (b.total >= 64 * 1024) { flushSshData(sessionId); return; } // 攒够了立即发
+  if (!b.timer) b.timer = setTimeout(() => flushSshData(sessionId), 16); // 否则 16ms 内发
+}
+
+function flushSshData(sessionId) {
+  const b = dataBuffer.get(sessionId);
+  if (!b) return;
+  if (b.chunks.length) {
+    const buf = Buffer.concat(b.chunks, b.total); // 拼成一大块一次发
+    // 录制打点:把"原始字节"存进录制文件(保留 GBK 等编码,回放时按 encoding 再解)
+    const rec = recSessions.get(sessionId);
+    if (rec) recorder.writeOutput(rec.file, Date.now() - rec.startTs, buf);
+    writeSessionOutput(sessionId, buf); // 会话日志:解码 + 剥 ANSI 后落盘
+    const dec = sshDecoders.get(sessionId);
+    if (dec) {
+      // 非 UTF-8 会话:主进程用流式解码器转成 UTF-8 字符串(跨块的中文字符不会丢)
+      broadcast('ssh:data', sessionId, dec.write(buf));
+    } else {
+      broadcast('ssh:data', sessionId, buf); // UTF-8:直接发原始字节
+    }
+  }
+  if (b.timer) clearTimeout(b.timer);
+  dataBuffer.delete(sessionId);
+}
+
+// 清理某会话的解码器(连接关闭时调用,把没转完的尾巴冲刷掉)
+function cleanupSshDecoder(sessionId) {
+  const dec = sshDecoders.get(sessionId);
+  if (dec) {
+    try {
+      const tail = dec.end(); // 冲刷剩余的半截字符
+      if (tail) broadcast('ssh:data', sessionId, tail);
+    } catch { /* ignore */ }
+    sshDecoders.delete(sessionId);
+  }
+}
+
+// ---------- 会话录制:开始 / 收尾 ----------
+// 数据打点不在这个模块里,输出在 flushSshData、输入在 ssh:write。
+// 这里只管"开始一个录制""收尾一个录制(写元数据到 SQLite)"两件事。
+function startRecording(sessionId, meta) {
+  const m = meta || {};
+  if (recSessions.has(sessionId)) return recSessions.get(sessionId); // 已在录制,直接复用
+  const dir = recorder.recordingsDir();
+  fs.mkdirSync(dir, { recursive: true }); // 目录不存在就建
+  const file = path.join(dir, recorder.newRecordingName()); // 每个录制一个 JSONL 文件
+  const rec = {
+    file,
+    startTs: Date.now(),                  // 事件的时间戳都相对它算(毫秒)
+    encoding: m.encoding || 'utf8',
+    cols: m.cols || 120,                  // 回放窗口大小按录制时的来
+    rows: m.rows || 32,
+    sessionName: m.sessionName || '',
+    host: m.host || '',
+    port: m.port || 22,
+    username: m.username || '',
+  };
+  recSessions.set(sessionId, rec);
+  return rec;
+}
+
+// 收尾录制:写元数据到 SQLite 并清状态。重复调用无害(第二次直接返回 null)
+function finalizeRecording(sessionId) {
+  const rec = recSessions.get(sessionId);
+  if (!rec) return null;
+  recSessions.delete(sessionId); // 先摘掉,防止收尾过程中又来新数据
+  try {
+    const { size } = recorder.finishRecording(rec.file);
+    const id = sessionStore.addRecording({
+      sessionName: rec.sessionName, host: rec.host, port: rec.port,
+      username: rec.username, encoding: rec.encoding, cols: rec.cols, rows: rec.rows,
+      file: rec.file,
+      startedAt: new Date(rec.startTs).toISOString().replace('T', ' ').slice(0, 19),
+      durationMs: Date.now() - rec.startTs,
+      size,
+    });
+    schedulePersist(); // 元数据变更,防抖落盘
+    return { id, ...rec };
+  } catch (err) {
+    console.warn('[MAIN] 录制收尾失败:', err.message);
+    return null;
+  }
+}
+
+// 退出时把还没手动停的录制全部收尾(否则元数据缺失,JSONL 文件成了孤儿)
+function finalizeAllRecordings() {
+  for (const sid of Array.from(recSessions.keys())) finalizeRecording(sid);
+}
+
+// ---------- 会话日志落盘 ----------
+// 与录制不同:日志是"可读纯文本"(解码 + 剥离 ANSI),连接建立时开,断开/关标签时收尾。
+// 打点在 flushSshData(输出)和 ssh:write(输入),这里只管"开一个日志 / 收尾一个日志"。
+const logSessions = new Map(); // sessionId -> { file, decoder, stripper, lineBuf }
+
+function startSessionLog(sessionId, meta) {
+  if (logSessions.has(sessionId)) return logSessions.get(sessionId); // 已有日志,复用
+  const m = meta || {};
+  const dir = sessionLog.sessionLogsDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, sessionLog.newLogName(m.sessionName)); // 每个连接一个文件
+  const log = {
+    file,
+    decoder: iconv.getDecoder(m.encoding || 'utf8'), // 流式解码:GBK/utf8 跨块都安全
+    stripper: sessionLog.makeAnsiStripper(),
+    lineBuf: sessionLog.makeLineBuffer((line) => fs.appendFileSync(file, line, 'utf8')),
+  };
+  logSessions.set(sessionId, log);
+  const header = `===== Polaris 会话日志 | ${m.sessionName || ''} | ${m.username || ''}@${m.host || ''}:${m.port || 22} | ${new Date().toLocaleString()} =====\n`;
+  try { fs.appendFileSync(file, header, 'utf8'); } catch { /* ignore */ }
+  return log;
+}
+
+// 输出打点:解码成文本 + 剥 ANSI 后追加(写失败不阻塞主流程)
+function writeSessionOutput(sessionId, buf) {
+  const log = logSessions.get(sessionId);
+  if (!log) return;
+  try {
+    const text = log.stripper(log.decoder.write(buf));
+    if (text) fs.appendFileSync(log.file, text, 'utf8');
+  } catch { /* ignore */ }
+}
+
+// 输入打点:按行缓冲,回车后整行落盘
+function writeSessionInput(sessionId, text) {
+  const log = logSessions.get(sessionId);
+  if (!log) return;
+  try { log.lineBuf.feed(String(text)); } catch { /* ignore */ }
+}
+
+// 收尾:冲刷解码器残留字符 + 没回车的内容。重复调用无害(第二次直接返回)
+function finalizeSessionLog(sessionId) {
+  const log = logSessions.get(sessionId);
+  if (!log) return;
+  logSessions.delete(sessionId); // 先摘掉,防止收尾过程中又来新数据
+  try {
+    const tail = log.decoder.end(); // 冲刷半截字符(跨块的 utf8/GBK 尾巴)
+    if (tail) { const t = log.stripper(tail); if (t) fs.appendFileSync(log.file, t, 'utf8'); }
+    log.lineBuf.flush(); // 没回车的残留命令也写进去,不丢
+  } catch { /* ignore */ }
+}
+
+// 退出时把没关的日志全部收尾(否则解码器残留字符/未回车输入丢失)
+function finalizeAllSessionLogs() {
+  for (const sid of Array.from(logSessions.keys())) finalizeSessionLog(sid);
+}
+
+// 跳板机(SSH 代理)配置:会话里的 jump 字段存成 JSON 字符串,其中的密码/口令同样加密
+function packJump(j) {
+  if (!j || !j.host) return '';
+  return JSON.stringify({
+    host: j.host,
+    port: j.port || 22,
+    username: j.username || '',
+    password: j.password ? crypto.encrypt(j.password) : '',
+    private_key: j.private_key || '',
+    passphrase: j.passphrase ? crypto.encrypt(j.passphrase) : '',
+  });
+}
+function unpackJump(s) {
+  if (!s) return null;
+  try {
+    const j = JSON.parse(s);
+    if (!j || !j.host) return null;
+    return {
+      host: j.host, port: j.port, username: j.username,
+      password: j.password ? crypto.decrypt(j.password) : '',
+      private_key: j.private_key || '',
+      passphrase: j.passphrase ? crypto.decrypt(j.passphrase) : '',
+    };
+  } catch { return null; }
+}
+
+// ---------- IPC:会话管理(SQLite) ----------
+// 返回给渲染进程时解密(渲染进程连接要用明文);入库时加密
+ipcMain.handle('sessions:list', () => {
+  try {
+    const sessions = sessionStore.list().map((x) => ({
+      ...x,
+      password: crypto.decrypt(x.password),
+      passphrase: crypto.decrypt(x.passphrase), // 私钥口令同样加密存储
+      jump: unpackJump(x.jump),
+    }));
+    return { ok: true, sessions };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:create', (_e, s) => {
+  try {
+    const id = sessionStore.create({ ...s, password: crypto.encrypt(s.password), passphrase: crypto.encrypt(s.passphrase), jump: packJump(s.jump) });
+    schedulePersist();
+    return { ok: true, id };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:update', (_e, id, s) => {
+  try {
+    sessionStore.update(id, { ...s, password: crypto.encrypt(s.password), passphrase: crypto.encrypt(s.passphrase), jump: packJump(s.jump) });
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:remove', (_e, id) => {
+  try {
+    sessionStore.remove(id);
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:import', (_e, list) => {
+  try {
+    // 入库前逐条加密密码
+    const encrypted = (Array.isArray(list) ? list : []).map((x) => ({
+      ...x,
+      password: crypto.encrypt(x.password),
+      passphrase: crypto.encrypt(x.passphrase),
+    }));
+    const results = sessionStore.importMany(encrypted);
+    schedulePersist();
+    const okCount = results.filter((r) => r.ok).length;
+    return { ok: true, imported: okCount, total: results.length, results };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 导出会话为"加密备份文件"(保存对话框)。rows: [{name,host,port,username,password,group}]
+// 内容先生成 CSV,再用导出密码 AES-256-GCM 整体加密 → 文件不是明文,客户端工具打不开
+ipcMain.handle('sessions:export', async (_e, { rows, password }) => {
+  try {
+    if (!password || String(password).length < 4) return { ok: false, error: '导出密码至少 4 位' };
+    const save = await dialog.showSaveDialog(mainWindow, {
+      title: '导出会话(加密备份)',
+      defaultPath: `Polaris会话备份_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}.polaris`,
+      filters: [{ name: 'Polaris 加密备份', extensions: ['polaris'] }],
+    });
+    if (save.canceled || !save.filePath) return { ok: false, canceled: true };
+    // CSV 转义:含逗号/引号/换行的字段加引号包裹,内部引号翻倍
+    const esc = (v) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = ['名称,主机,端口,用户名,密码,分组'];
+    for (const r of rows || []) {
+      lines.push([esc(r.name), esc(r.host), esc(r.port || 22), esc(r.username), esc(r.password || ''), esc(r.group || '默认分组')].join(','));
+    }
+    const csv = '﻿' + lines.join('\n');
+    const blob = dbCrypto.encryptBytes(Buffer.from(csv), password); // 整包加密
+    fs.writeFileSync(save.filePath, blob);
+    return { ok: true, path: save.filePath, count: (rows || []).length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---- 从 Xshell(.xsh) / iTerm2(JSON) 导入会话配置 ----
+// Xshell .xsh 是 INI 格式: [CONNECTION] 段里有 Host/Port/UserName;密码被 Xshell 加密无法还原,需重新填
+// iTerm2 导出的 Profiles JSON: { "Profiles": [ { "Name","Host","Port","Username" } ] }
+function parseIniText(text) {
+  const map = {};
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = line.match(/^\s*([^#;=]+?)\s*=\s*(.*?)\s*$/);
+    if (m) map[m[1].trim()] = m[2].trim();
+  }
+  return map;
+}
+ipcMain.handle('sessions:importExternal', async (_e, { files }) => {
+  try {
+    const paths = Array.isArray(files) ? files : [];
+    if (!paths.length) return { ok: false, error: '没有选择文件' };
+    const rows = [];
+    for (const fp of paths) {
+      const base = path.basename(fp);
+      const lower = base.toLowerCase();
+      try {
+        if (lower.endsWith('.xsh')) {
+          const ini = parseIniText(fs.readFileSync(fp, 'utf8'));
+          const host = ini.Host || ini.host || '';
+          const username = ini.UserName || ini.username || '';
+          if (!host) continue;
+          rows.push({ name: base.replace(/\.xsh$/i, '') || host, host, port: parseInt(ini.Port || '22', 10) || 22, username, password: '', group: '默认分组' });
+        } else if (lower.endsWith('.json')) {
+          const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          const profiles = (data.Profiles || []).filter((p) => p && p.Host);
+          for (const p of profiles) {
+            rows.push({ name: p.Name || p.Host, host: p.Host, port: parseInt(p.Port || '22', 10) || 22, username: p.Username || p.User || '', password: '', group: '默认分组' });
+          }
+        }
+      } catch (err) {
+        console.warn('[MAIN] 导入外部配置失败', base, err.message);
+      }
+    }
+    if (!rows.length) return { ok: false, error: '没有解析出可用的主机(请选 .xsh 或 iTerm2 JSON 导出文件)' };
+    return { ok: true, rows };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---- 加密备份导入:读取 .polaris → 解密 → 解析 CSV → 返回行数组(供渲染层走统一导入) ----
+// 简单 CSV 行解析(支持引号包裹的逗号/引号转义)
+function parseCsvLine(line) {
+  const cells = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false;
+      } else cur += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ',') { cells.push(cur); cur = ''; }
+    else cur += c;
+  }
+  cells.push(cur);
+  return cells;
+}
+ipcMain.handle('sessions:importBackup', (_e, { buf, password }) => {
+  try {
+    if (!password) return { ok: false, error: '请输入备份文件密码' };
+    if (!buf || !buf.byteLength) return { ok: false, error: '备份文件为空' };
+    const csv = dbCrypto.decryptBytes(Buffer.from(buf), password).toString('utf8'); // 密码错会抛错
+    const rows = String(csv).replace(/^﻿/, '').split(/\r?\n/).map(parseCsvLine).filter((r) => r.some((c) => String(c).trim() !== ''));
+    return { ok: true, rows };
+  } catch (err) {
+    return { ok: false, error: '密码错误或文件已损坏: ' + err.message };
+  }
+});
+
+// 探测远程系统类型(参考 Netcatty 的 OS 识别):exec 跑 os-release / uname 解析
+ipcMain.handle('sessions:detectOs', async (_e, opts) => {
+  try {
+    const r = await sshClient.execCommand(
+      withHostVerify(resolvePrivateKey(opts)),
+      'cat /etc/os-release 2>/dev/null; uname -s'
+    );
+    const text = r.stdout || '';
+    const pretty = text.match(/PRETTY_NAME="?([^"\n]+)"?/);
+    const id = text.match(/^ID=(\S+)/m);
+    const uname = text.match(/(Darwin|Linux|FreeBSD|SunOS)/);
+    const name = pretty ? pretty[1] : (id ? id[1] : (uname ? uname[1] : 'Linux'));
+    // id 可能带引号(如 ID="centos"),去掉引号再转小写
+    const distro = id ? id[1].replace(/["']/g, '').toLowerCase() : (uname ? uname[1].toLowerCase() : 'linux');
+    return { ok: true, distro, name };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:JumpServer 资产(堡垒机) ----------
+// 密码加解密(JMS 配置存渲染层 localStorage,落盘前加密,与 SSH 会话密码一致用 safeStorage)
+ipcMain.handle('crypto:encrypt', (_e, text) => ({ ok: true, value: crypto.encrypt(text) }));
+ipcMain.handle('crypto:decrypt', (_e, text) => ({ ok: true, value: crypto.decrypt(text) }));
+
+// 登录:POST /api/v1/authentication/auth/ → { token, user } 或 { mfaRequired, cookie, choices, challengeUrl }
+ipcMain.handle('jms:login', async (_e, { baseUrl, username, password }) => {
+  try {
+    const r = await jmsApi.login(baseUrl, username, password);
+    if (r.mfaRequired) {
+      return { ok: true, mfaRequired: true, cookie: r.cookie, choices: r.choices, challengeUrl: r.challengeUrl };
+    }
+    return { ok: true, token: r.token, user: r.user };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+// 提交 MFA 验证码并完成登录(带会话 cookie)
+ipcMain.handle('jms:mfa', async (_e, { baseUrl, cookie, challengeUrl, type, code, username, password }) => {
+  try {
+    const r = await jmsApi.verifyMfaAndLogin(baseUrl, { cookie, challengeUrl, type, code, username, password });
+    return { ok: true, token: r.token, user: r.user };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+// 拉取当前用户可见资产:GET /api/v1/assets/assets/(普通用户可用 user-assets,按版本调整)
+ipcMain.handle('jms:assets', async (_e, { baseUrl, token }) => {
+  try {
+    const assets = await jmsApi.fetchAssets(baseUrl, token);
+    return { ok: true, assets };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:H3C 堡垒机(accessclient:// token 解码) ----------
+// H3C Shterm 堡垒机用 accessclient://<base64(zlib(json))> 唤起外部工具,
+// 内含目标主机/账号/一次性密码。这里在主子进程解码(zlib 只在 Node 有)。
+ipcMain.handle('bastion:decode', (_e, url) => {
+  try {
+    const zlib = require('zlib');
+    const token = String(url || '').replace(/^accessclient:\/\//, '');
+    const b64 = token.replace(/-/g, '+').replace(/_/g, '/');
+    const buf = Buffer.from(b64, 'base64');
+    const info = JSON.parse(zlib.inflateSync(buf).toString('utf8'));
+    return { ok: true, info };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 堡垒机目标连通性探测:TCP 连接 + 等待 SSH banner(区分"防火墙丢包"/"TCP通但非SSH"/"SSH可达")
+ipcMain.handle('bastion:probe', (_e, { host, port, timeoutMs }) => {
+  const t = timeoutMs || 5000;
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(r); };
+    sock.on('connect', () => { /* TCP 建立,继续等 banner */ });
+    sock.on('data', (d) => finish({ tcp: 'ok', banner: d.toString('utf8', 0, 60).replace(/\s+$/, '').trim() }));
+    sock.on('error', (e) => finish({ tcp: 'error', banner: null, error: e.code || e.message }));
+    sock.setTimeout(t, () => finish({ tcp: sock.connected ? 'ok' : 'connect-timeout', banner: null, note: 'no SSH banner within ' + t + 'ms (TCP ' + (sock.connected ? 'connected' : 'not connected') + ')' }));
+  });
+});
+
+// 导出堡垒机资产诊断包:渲染层收集的资产请求记录 → 写 JSON 到用户下载目录,返回路径供拷贝
+ipcMain.handle('diag:exportBastion', (_e, data) => {
+  try {
+    const dir = app.getPath('downloads') || app.getPath('userData');
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    const file = path.join(dir, `Polaris-bastion-diag-${ts}.json`);
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+    return { ok: true, path: file };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 批量上传:选一个本地文件,上传到每个选中主机的远程目录
+ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
+  try {
+    const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: '选择要批量上传的文件' });
+    if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
+    const localPath = pick.filePaths[0];
+    const remotePath = `${(remoteDir || '/').replace(/\/+$/, '')}/${path.basename(localPath)}`;
+    const results = [];
+    for (const s of sessions) {
+      try {
+        const conn = await sshClient.connectRaw(withHostVerify(resolvePrivateKey(s)));
+        const sftp = await sshClient.openSftp(conn);
+        await new Promise((res, rej) => sftp.fastPut(localPath, remotePath, (e) => (e ? rej(e) : res())));
+        sftp.end();
+        conn.end();
+        results.push({ ok: true, name: s.name, host: s.host });
+      } catch (err) {
+        results.push({ ok: false, name: s.name, host: s.host, error: err.message });
+      }
+    }
+    return { ok: true, results };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名区分文件名)
+ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
+  try {
+    const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: '选择保存到哪个文件夹' });
+    if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
+    const localDir = pick.filePaths[0];
+    const base = path.basename(remotePath) || 'download';
+    const results = [];
+    for (const s of sessions) {
+      const localPath = path.join(localDir, `${s.name}_${base}`);
+      try {
+        const conn = await sshClient.connectRaw(withHostVerify(resolvePrivateKey(s)));
+        const sftp = await sshClient.openSftp(conn);
+        await new Promise((res, rej) => sftp.fastGet(remotePath, localPath, (e) => (e ? rej(e) : res())));
+        sftp.end();
+        conn.end();
+        results.push({ ok: true, name: s.name, host: s.host, path: localPath });
+      } catch (err) {
+        results.push({ ok: false, name: s.name, host: s.host, error: err.message });
+      }
+    }
+    return { ok: true, results };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// ---------- IPC:AI 运维助手(参考 Netcatty 的 Catty Agent) ----------
+// 执行 AI 的一条命令并返回输出;同时同步到可见终端(让用户实时看到 AI 在干嘛)
+// 在"一台或多台"主机上执行命令,输出按 [主机名] 标注,方便 AI 区分;
+// 同时把命令同步到对应终端的可见区域(hostList 每项带 sessionId)
+async function runAiCommand(hostList, cmd, executed) {
+  const outputs = [];
+  for (const item of hostList) {
+    try {
+      const res = await sshClient.execCommand(item.hostOpts, cmd);
+      const out = (res.stdout || '') + (res.stderr ? `\n[stderr] ${res.stderr}` : '') || '(无输出)';
+      const hostLabel = item.hostOpts.host;
+      outputs.push(`[${hostLabel}] ${out}`);
+      executed.push({ command: cmd, host: hostLabel, code: res.code, output: out });
+      if (item.sessionId) {
+        const s = sshSessions.get(item.sessionId);
+        if (s && s.stream && !s.stream.destroyed) {
+          try { s.stream.write(`${cmd}\r`); } catch { /* ignore */ }
+        }
+      }
+    } catch (err) {
+      outputs.push(`[${item.hostOpts.host}] 执行失败: ${err.message}`);
+    }
+  }
+  return outputs.join('\n') || '(无输出)';
+}
+
+// ---------- IPC:批量执行结果面板 ----------
+// 一条命令在多台主机上非交互执行,返回逐台结果(主机名/退出码/输出/耗时)。
+// 复用 execCommand(每次新连接),hostVerifier 指纹校验照常生效。
+ipcMain.handle('batch:exec', async (_e, { hosts, command }) => {
+  try {
+    const cmd = String(command || '').trim();
+    if (!cmd) return { ok: false, error: '命令为空' };
+    const results = [];
+    for (const h of (Array.isArray(hosts) ? hosts : [])) {
+      const t0 = Date.now();
+      try {
+        const opts = withHostVerify(resolvePrivateKey({
+          host: h.host, port: h.port || 22, username: h.username, password: h.password,
+          privateKey: h.privateKey, passphrase: h.passphrase,
+        }));
+        const res = await sshClient.execCommand(opts, cmd);
+        const out = ((res.stdout || '') + (res.stderr ? `\n[stderr] ${res.stderr}` : '')).trim() || '(无输出)';
+        results.push({ ok: true, name: h.name || h.host, host: h.host, code: res.code, output: out.slice(0, 4000), durationMs: Date.now() - t0 });
+      } catch (err) {
+        results.push({ ok: false, name: h.name || h.host, host: h.host, error: err.message, durationMs: Date.now() - t0 });
+      }
+    }
+    return { ok: true, results };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// AI 对话 + agent 循环:AI 可调用 run_command 在连接的主机上执行命令,直到给出最终回答
+// 支持流式输出(ai:stream 事件推给界面)和"停止"请求。
+const aiStopSet = new Set(); // 被用户点"停止"的 requestId 集合
+ipcMain.on('ai:stop', (_e, requestId) => { if (requestId) aiStopSet.add(requestId); });
+
+ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hosts, requestId }) => {
+  aiStopSet.clear(); // 单聊:新一轮对话清掉遗留停止标记,防 Set 只增不减
+  if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
+  const base = normalizeAiUrl(url, format);
+  const mdl = (model && model.trim()) || 'claude-sonnet-5';
+  // 多主机:每项含连接信息 + 对应终端的 sessionId(命令会同步到这些终端)
+  const hostList = (Array.isArray(hosts) ? hosts : []).map((h) => ({
+    hostOpts: h && h.host
+      ? withHostVerify(resolvePrivateKey({ host: h.host, port: h.port || 22, username: h.username, password: h.password, privateKey: h.privateKey, passphrase: h.passphrase }))
+      : null,
+    sessionId: (h && h.sessionId) || null,
+  })).filter((x) => x.hostOpts);
+  const MAX_ROUNDS = 8;
+  const executed = []; // 记录 AI 实际执行过的命令,返回给界面展示
+  let conv = [...messages];
+  // 把事件推给渲染层(带上 requestId,防止多个流混淆)
+  const send = (evt) => broadcast('ai:stream', { requestId, ...evt });
+  // 用户是否点了"停止"
+  const shouldStop = () => { if (aiStopSet.has(requestId)) { aiStopSet.delete(requestId); return true; } return false; };
+
+  try {
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      if (shouldStop()) { send({ type: 'stopped' }); return { ok: true, text: '(已停止)', executed, stopped: true }; }
+      const r = await callAiStream(base, mdl, format, apiKey, conv, (evt) => send({ type: 'model', ...evt }));
+      if (r.error) {
+        send({ type: 'error', message: r.error }); // 流式气泡已渲染到一半也要打上错误标记
+        return { ok: false, error: r.error };
+      }
+      const toolUses = r.toolUses || [];
+      if (toolUses.length === 0) {
+        send({ type: 'done' });
+        return { ok: true, text: r.text || '(空回复)', executed };
+      }
+      // 执行 AI 要的命令,收集结果
+      const results = [];
+      for (const tu of toolUses) {
+        let output;
+        if (tu.name === 'clear_screen') {
+          // 清屏工具:通知渲染层清掉本地终端显示(不执行服务器命令)
+          send({ type: 'clear_screen' });
+          output = '(已清除本地终端屏幕)';
+        } else if (tu.name !== 'run_command') {
+          output = '(未知工具)';
+          send({ type: 'tool', command: '(未知工具)' });
+        } else if (hostList.length === 0) {
+          output = '(未连接主机,无法执行)';
+          send({ type: 'tool', command: (tu.input && tu.input.command) || '(无命令)' });
+        } else {
+          const cmd = tu.input && tu.input.command;
+          send({ type: 'tool', command: cmd || '' }); // 告诉界面 AI 要执行什么
+          // 危险命令审批(借鉴 Claude Code 的 permission 机制):
+          // AI 想执行 rm -rf / reboot 等,先弹窗让用户拍板,拒绝就把"用户拒绝"反馈给模型。
+          if (isDangerousCommand(cmd || '')) {
+            const { response } = await dialog.showMessageBox(mainWindow, {
+              type: 'warning',
+              title: 'AI 危险命令审批',
+              message: 'AI 想执行危险命令,要允许吗?',
+              detail: String(cmd || ''),
+              buttons: ['允许执行', '拒绝'],
+              defaultId: 1,
+              cancelId: 1,
+            });
+            if (response === 1) {
+              executed.push({ command: cmd, code: null, output: '用户拒绝' });
+              output = '(用户拒绝了此危险命令,请换个更安全的做法)';
+              send({ type: 'tool_rejected', command: cmd });
+            } else {
+              output = await runAiCommand(hostList, cmd, executed);
+              send({ type: 'tool_result', command: cmd, output: String(output).slice(0, 400) });
+            }
+          } else {
+            output = await runAiCommand(hostList, cmd, executed);
+            send({ type: 'tool_result', command: cmd, output: String(output).slice(0, 400) });
+          }
+        }
+        results.push({ id: tu.id, output });
+      }
+      // 原样回传 assistant(含 thinking 块)+ 工具结果
+      if (format === 'openai') {
+        conv = [...conv, r.assistantMsg, ...results.map((res) => ({ role: 'tool', tool_call_id: res.id, content: res.output }))];
+      } else {
+        conv = [
+          ...conv,
+          r.assistantMsg,
+          { role: 'user', content: results.map((res) => ({ type: 'tool_result', tool_use_id: res.id, content: res.output })) },
+        ];
+      }
+    }
+    send({ type: 'done' });
+    return { ok: true, text: '(达到最大执行轮次,请换个问法)', executed };
+  } catch (err) {
+    send({ type: 'error', message: err.message });
+    return { ok: false, error: `请求异常: ${err.message}` };
+  }
+});
+
+// ---------- IPC:分组管理 ----------
+ipcMain.handle('groups:list', () => {
+  try {
+    return { ok: true, groups: sessionStore.listGroups() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('groups:create', (_e, name, parentId) => {
+  try {
+    const id = sessionStore.createGroup(name, parentId);
+    schedulePersist();
+    return { ok: true, id };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('groups:rename', (_e, id, name) => {
+  try {
+    sessionStore.renameGroup(id, name);
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('groups:setProd', (_e, id, flag) => {
+  try {
+    sessionStore.setGroupProd(id, !!flag);
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('groups:delete', (_e, id) => {
+  try {
+    sessionStore.deleteGroup(id);
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 生成"导入模板"Excel:弹保存对话框 → SheetJS 生成带表头和示例行的 xlsx → 写盘
+// ---- 命令记录持久化(SQLite cmd_history 表) ----
+ipcMain.handle('cmd:add', (_e, host, command) => {
+  try { sessionStore.addCmd(host, command); schedulePersist(); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('cmd:list', () => {
+  try { return { ok: true, cmds: sessionStore.listCmds() }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('cmd:clear', () => {
+  try { sessionStore.clearCmds(); schedulePersist(); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 归档某台主机的命令记录:按当前主机归档,文件名 = 标签页名称_时间戳.txt(不自动打开)
+ipcMain.handle('cmd:archive', async (_e, { host, sessionName }) => {
+  try {
+    const now = new Date();
+    const pad = (x) => String(x).padStart(2, '0');
+    const archiveId = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const name = String(sessionName || '归档').trim().replace(/[\\/:*?"<>|\s]+/g, '_');
+    const count = sessionStore.archiveCmds(archiveId, host, ''); // 先占位 file
+    if (!count) return { ok: true, archived: 0, path: null };
+    const rows = sessionStore.archiveDetail(archiveId);
+    const dir = path.join(appLock.lockDir(), 'archives');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${name}_${archiveId}.txt`);
+    const byHost = {};
+    for (const r of rows) {
+      const h = r.host || '未知主机';
+      if (!byHost[h]) byHost[h] = [];
+      byHost[h].push(r);
+    }
+    let out = `Polaris 命令记录归档  ${archiveId}\n${'='.repeat(50)}\n`;
+    for (const h of Object.keys(byHost)) {
+      out += `\n===== ${h} =====\n`;
+      for (const c of byHost[h]) out += `[${c.created_at}] ${c.command}\n`;
+    }
+    fs.writeFileSync(file, out, 'utf8');
+    // 把文件路径补进批次记录
+    dbSetArchiveFile(archiveId, file);
+    schedulePersist();
+    return { ok: true, archived: count, archiveId, path: file };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 补写归档批次的文件路径(sessionStore 内部更新)
+function dbSetArchiveFile(archiveId, file) {
+  try { sessionStore.setArchiveFile(archiveId, file); } catch { /* ignore */ }
+}
+
+// 列出某台主机的归档批次(时间倒序)
+ipcMain.handle('cmd:listArchives', (_e, host) => {
+  try { return { ok: true, archives: sessionStore.listArchives(host || '') }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 查看某批归档的明细
+ipcMain.handle('cmd:archiveDetail', (_e, archiveId) => {
+  try { return { ok: true, rows: sessionStore.archiveDetail(archiveId) }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 列出归档文件夹里的文件(时间倒序)
+ipcMain.handle('cmd:listArchiveFiles', () => {
+  try {
+    const dir = path.join(appLock.lockDir(), 'archives');
+    fs.mkdirSync(dir, { recursive: true });
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.txt'))
+      .map((f) => {
+        const st = fs.statSync(path.join(dir, f));
+        return { name: f, size: st.size, mtime: st.mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    return { ok: true, files };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 归档文件路径必须落在 archives 目录内(渲染层传的路径不可信,防任意文件删/拷)
+function isInArchives(filePath) {
+  const dir = path.resolve(appLock.lockDir(), 'archives');
+  const resolved = path.resolve(String(filePath || ''));
+  return resolved === dir || resolved.startsWith(dir + path.sep);
+}
+
+// 下载归档文件:弹保存对话框 → 复制一份到用户选的位置
+ipcMain.handle('cmd:downloadArchive', async (_e, filePath) => {
+  try {
+    const src = String(filePath || '');
+    if (!src || !isInArchives(src)) return { ok: false, error: '归档文件不存在' };
+    const save = await dialog.showSaveDialog(mainWindow, {
+      title: '保存归档文件', defaultPath: path.basename(src),
+      filters: [{ name: '文本文件', extensions: ['txt'] }],
+    });
+    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
+    fs.copyFileSync(src, save.filePath);
+    return { ok: true, path: save.filePath };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 删除归档:删文件 + 删数据库里对应批次的归档记录
+ipcMain.handle('cmd:deleteArchive', (_e, archiveId, filePath) => {
+  try {
+    if (filePath) {
+      if (!isInArchives(filePath)) return { ok: false, error: '非法路径' };
+      if (fs.existsSync(filePath)) fs.rmSync(filePath);
+    }
+    sessionStore.deleteArchive(String(archiveId || ''));
+    schedulePersist();
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 打开归档文件夹(查看所有归档文件)
+ipcMain.handle('cmd:openArchives', () => {
+  try {
+    const dir = path.join(appLock.lockDir(), 'archives');
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 导出命令记录为 txt:弹保存对话框 → 按主机分组写入
+// 默认文件名 = 连接名称 + 日期 + 时间(如 我的服务器_2026-08-04_20-55-30.txt)
+// 选择 SSH 私钥文件(原生对话框),返回路径
+ipcMain.handle('pick:keyFile', async () => {
+  try {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 SSH 私钥文件',
+      properties: ['openFile'],
+      filters: [{ name: '私钥文件', extensions: ['*'] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('template:save', async () => {
+  try {
+    const save = await dialog.showSaveDialog(mainWindow, {
+      title: '保存导入模板',
+      defaultPath: '主机导入模板.xlsx',
+      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
+    });
+    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
+
+    // 第一个 sheet:主机列表(表头 + 示例行,示例用文档保留网段 192.0.2.x 避免误连)
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['名称', '主机', '端口', '用户名', '密码', '分组'],
+      ['示例服务器A', '192.0.2.10', '22', 'root', 'password123', '生产'],
+      ['', '192.0.2.11', '22', 'ubuntu', '', '测试'],
+    ]);
+    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 10 }];
+    // 第二个 sheet:填写说明
+    const note = XLSX.utils.aoa_to_sheet([
+      ['填写说明'],
+      ['1. 在"主机列表"表里填你的服务器,首行表头不要动。'],
+      ['2. 每行一台,列顺序:名称,主机,端口,用户名,密码,分组。'],
+      ['3. 名称/端口/密码/分组可留空:名称留空用主机地址,端口默认22,分组默认"默认分组"。'],
+      ['4. 填好后保存,回软件点"导入 → 从 Excel 文件导入"选择本文件。'],
+      ['5. 示例行可直接删掉或用它当格式参照。'],
+    ]);
+    note['!cols'] = [{ wch: 90 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '主机列表');
+    XLSX.utils.book_append_sheet(wb, note, '说明');
+    XLSX.writeFile(wb, save.filePath);
+    return { ok: true, path: save.filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:快速命令(命令收藏) ----------
+ipcMain.handle('quick:list', () => {
+  try { return { ok: true, cmds: sessionStore.listQuickCmds() }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('quick:add', (_e, { name, command }) => {
+  try { const id = sessionStore.addQuickCmd(name, command); schedulePersist(); return { ok: true, id }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('quick:update', (_e, { id, name, command }) => {
+  try { sessionStore.updateQuickCmd(id, name, command); schedulePersist(); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('quick:del', (_e, id) => {
+  try { sessionStore.deleteQuickCmd(id); schedulePersist(); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// ---------- IPC:SSH 隧道 / 端口转发 ----------
+// 隧道挂在"已连接的 SSH 会话"上,id -> { stop(), ...元数据 }
+const tunnels = new Map();
+let tunnelSeq = 0;
+
+function tunnelPublic(t) {
+  return {
+    id: t.id, name: t.name, type: t.type, sessionId: t.sessionId,
+    localHost: t.localHost, localPort: t.localPort,
+    remoteHost: t.remoteHost, remotePort: t.remotePort,
+    status: t.status, createdAt: t.createdAt,
+  };
+}
+
+// 停掉某条隧道(本地/动态=关监听,远程=取消 forwardIn)
+function stopTunnel(t) {
+  try { t.stop(); } catch { /* ignore */ }
+  t.status = 'stopped';
+}
+
+// 会话断开/关闭时,把它挂着的隧道全部停掉(否则端口残留)
+function stopTunnelsForSession(sessionId) {
+  for (const [id, t] of tunnels) {
+    if (t.sessionId === sessionId) {
+      stopTunnel(t);
+      tunnels.delete(id);
+    }
+  }
+}
+
+ipcMain.handle('tunnel:list', () => {
+  try { return { ok: true, tunnels: [...tunnels.values()].map(tunnelPublic) }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('tunnel:create', async (_e, spec) => {
+  try {
+    const sessionId = String(spec.sessionId || '');
+    const s = sshSessions.get(sessionId);
+    if (!s || !s.conn) return { ok: false, error: '请先连接一个会话,再在它上面建隧道' };
+    const type = spec.type; // 'local' | 'remote' | 'dynamic'
+    if (!['local', 'remote', 'dynamic'].includes(type)) return { ok: false, error: '未知隧道类型' };
+    const localPort = Number(spec.localPort);
+    if (!localPort) return { ok: false, error: '本地端口不合法' };
+    // 本地端口不能已被占用(本地/动态要在本地监听;远程的本地端口是"目标")
+    if (type !== 'remote' && [...tunnels.values()].some((t) => t.status === 'active' && t.localPort === localPort && t.type !== 'remote')) {
+      return { ok: false, error: `本地端口 ${localPort} 已被另一条隧道占用` };
+    }
+    let started;
+    if (type === 'local') {
+      started = await tunnelLib.startLocal(s.conn, { localHost: '127.0.0.1', localPort, remoteHost: spec.remoteHost, remotePort: Number(spec.remotePort) });
+    } else if (type === 'remote') {
+      started = await tunnelLib.startRemote(s.conn, { bindAddr: '127.0.0.1', remotePort: Number(spec.remotePort), localHost: '127.0.0.1', localPort });
+    } else {
+      started = await tunnelLib.startDynamic(s.conn, { localHost: '127.0.0.1', localPort });
+    }
+    const id = `tun-${++tunnelSeq}`;
+    tunnels.set(id, {
+      id, name: String(spec.name || '').trim() || `${type.toUpperCase()}:${localPort}`,
+      type, sessionId, localHost: '127.0.0.1', localPort,
+      remoteHost: type === 'remote' ? `(远程:127.0.0.1:${spec.remotePort})` : (spec.remoteHost || ''),
+      remotePort: Number(spec.remotePort) || 0,
+      status: 'active', createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+      stop: started.stop, server: started.server,
+    });
+    const t = tunnels.get(id);
+    console.log(`[MAIN] 隧道已建: ${t.name} (${t.type}) 本地:${t.localPort}`);
+    return { ok: true, tunnel: tunnelPublic(t) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('tunnel:delete', (_e, id) => {
+  try {
+    const t = tunnels.get(String(id || ''));
+    if (!t) return { ok: false, error: '隧道不存在' };
+    stopTunnel(t);
+    tunnels.delete(String(id));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:会话录制与回放 ----------
+// 录制:渲染层传 sessionId + 会话元数据,主进程在数据流里打点写 JSONL
+ipcMain.handle('rec:start', (_e, { sessionId, meta }) => {
+  try {
+    const rec = startRecording(String(sessionId || ''), meta);
+    return { ok: true, file: rec.file };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 停止录制:先把缓冲区里攒着的输出发完(避免尾部数据丢失)再收尾
+ipcMain.handle('rec:stop', (_e, sessionId) => {
+  try {
+    const sid = String(sessionId || '');
+    flushSshData(sid); // 把还没 flush 的终端数据补录进去
+    const rec = finalizeRecording(sid);
+    return { ok: true, record: rec };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 列出全部录制(新的在前)
+ipcMain.handle('rec:list', () => {
+  try { return { ok: true, recordings: sessionStore.listRecordings() }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 删除录制:删元数据 + 删磁盘 JSONL 文件
+ipcMain.handle('rec:delete', (_e, id) => {
+  try {
+    const row = sessionStore.deleteRecording(Number(id));
+    if (row && row.file && fs.existsSync(row.file)) {
+      try { fs.rmSync(row.file); } catch { /* 文件删不掉也不阻塞 */ }
+    }
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 打开录制目录(方便用户手动拷贝/管理 JSONL)
+ipcMain.handle('rec:openDir', () => {
+  try {
+    const dir = recorder.recordingsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 打开会话日志目录(查看/拷贝 .log 审计文件)
+ipcMain.handle('log:openDir', () => {
+  try {
+    const dir = sessionLog.sessionLogsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 读取录制内容供回放:解析 JSONL → 输出按 encoding 解码成文本,输入原样文本
+// (base64 / 编码逻辑都留在主进程,渲染层只拿纯文本,写进 xterm 即可)
+ipcMain.handle('rec:replay', (_e, id) => {
+  try {
+    const meta = sessionStore.getRecording(Number(id));
+    if (!meta) return { ok: false, error: '录制不存在' };
+    if (!fs.existsSync(meta.file)) return { ok: false, error: '录制文件已丢失: ' + meta.file };
+    const events = recorder.parseRecording(meta.file).map((evt) => ({
+      t: evt.t,
+      kind: evt.kind,
+      text: evt.kind === 'o' ? recorder.decodeOutput(evt.data, meta.encoding) : evt.data,
+    }));
+    return { ok: true, meta, events };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:SSH 直连 ----------
+// 指纹校验(known_hosts):首次连接询问是否信任,已信任校验一致,不一致拒绝
+function makeHostVerifier(host, port) {
+  return (key) => {
+    try {
+      const fp = knownHosts.fingerprint(key);
+      const id = `${host}:${port}`;
+      const known = knownHosts.get(id);
+      if (known) {
+        if (known === fp) return true;
+        dialog.showMessageBoxSync(mainWindow, {
+          type: 'error', title: '安全警告',
+          message: '主机密钥不匹配,可能被中间人攻击!',
+          detail: `${id}\n已记录指纹: ${known}\n本次指纹:   ${fp}`,
+          buttons: ['断开连接'],
+        });
+        return false;
+      }
+      const r = dialog.showMessageBoxSync(mainWindow, {
+        type: 'question', title: '首次连接',
+        message: `是否信任 ${host}:${port} 的主机密钥?`,
+        detail: `指纹: ${fp}`,
+        buttons: ['信任并连接', '拒绝'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (r === 0) { knownHosts.set(id, fp); return true; }
+      return false;
+    } catch (err) {
+      console.warn('[MAIN] 指纹校验异常,放行:', err.message);
+      return true;
+    }
+  };
+}
+
+// 跳板机(SSH 代理,等价 ssh -J):先连跳板机,经它 forwardOut 开一条到目标的隧道,
+// 目标 SSH 连接把这条隧道当 sock 用,目标机的认证仍由用户自己的账号完成(跳板只转发字节)。
+// 失败时清理已建的跳板连接并抛出,调用方会走 ssh:connect 的失败分支。
+async function openJumpTunnel(sessionId, finalOpts) {
+  const j = finalOpts.jump;
+  const jport = j.port || 22;
+  const jumpConn = await sshClient.connectRaw({
+    ...resolvePrivateKey({
+      host: j.host, port: jport, username: j.username || finalOpts.username,
+      password: j.password, privateKey: j.private_key || '', passphrase: j.passphrase || '',
+    }),
+    hostVerifier: makeHostVerifier(j.host, jport), // 跳板机指纹同样校验
+    onKeyboardInteractive: makeKbdResponder(sessionId, { ...finalOpts, host: j.host, port: jport }), // 跳板可能也要域认证/OTP
+  });
+  jumpConns.set(sessionId, jumpConn);
+  try {
+    return await new Promise((resolve, reject) => {
+      // 超时兜底:跳板机握手成功但转发永不响应时,别让标签永久卡"连接中"
+      const timer = setTimeout(() => reject(new Error('跳板机转发超时')), 30000);
+      jumpConn.forwardOut(finalOpts.host, 0, finalOpts.host, finalOpts.port || 22, (err, stream) => {
+        clearTimeout(timer);
+        if (err) return reject(err);
+        resolve(stream);
+      });
+    });
+  } catch (err) {
+    try { jumpConn.end(); } catch { /* ignore */ }
+    jumpConns.delete(sessionId);
+    throw err;
+  }
+}
+
+// 断开/关标签时收掉挂在这条会话上的跳板连接(幂等)
+function closeJump(sessionId) {
+  const jc = jumpConns.get(sessionId);
+  if (jc) {
+    jumpConns.delete(sessionId);
+    try { jc.end(); } catch { /* ignore */ }
+  }
+}
+
+// 把私钥文件路径换成私钥内容(ssh2 要的是内容不是路径)
+function resolvePrivateKey(opts) {
+  if (!opts || !opts.privateKey) return opts;
+  try {
+    return { ...opts, privateKey: fs.readFileSync(opts.privateKey) };
+  } catch (err) {
+    console.warn('[MAIN] 读取私钥失败:', err.message); // 读不到就保留路径,让 ssh2 报错更清楚
+    return opts;
+  }
+}
+
+// 给"一次性连接"(批量传输/AI 助手/系统探测)也自动装上指纹校验。
+// 规则与 ssh:connect 一致:传了 verifyHostKey:false 就跳过,否则一律校验。
+function withHostVerify(opts) {
+  if (!opts || !opts.host) return opts;
+  if (opts.verifyHostKey === false) return opts;
+  return { ...opts, hostVerifier: makeHostVerifier(opts.host, opts.port || 22) };
+}
+
+// ---------- keyboard-interactive 认证(域/双密码/OTP 挑战) ----------
+// ssh2 认证阶段如果服务器发起键盘交互挑战,把提示推给渲染层弹窗,用户填完再应答。
+// 单"密码"提示且有保存的密码 → 主进程自动应答,不弹窗打扰。
+const kbdWaiters = new Map(); // id → { resolve, reject, timer }
+let kbdSeq = 0;
+function makeKbdResponder(sessionId, opts) {
+  return ({ name, instructions, prompts }) => new Promise((resolve, reject) => {
+    if (prompts.length === 1 && prompts[0].echo === false && opts.password) {
+      return resolve([opts.password]); // 常规密码挑战:直接用保存的密码
+    }
+    const id = `kbd-${++kbdSeq}`;
+    kbdWaiters.set(id, { resolve, reject });
+    broadcast('ssh:kbd-interactive', sessionId, { id, name, instructions, prompts });
+    const timer = setTimeout(() => {
+      if (kbdWaiters.delete(id)) reject(new Error('keyboard-interactive 应答超时(60s)'));
+    }, 60000);
+    kbdWaiters.get(id).timer = timer;
+  });
+}
+ipcMain.on('ssh:kbd-respond', (_e, id, answers, cancelled) => {
+  const w = kbdWaiters.get(id);
+  if (!w) return;
+  clearTimeout(w.timer);
+  kbdWaiters.delete(id);
+  if (cancelled) w.reject(new Error('用户取消键盘交互认证'));
+  else w.resolve(Array.isArray(answers) ? answers : []);
+});
+
+ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
+  console.log('[MAIN] ssh:connect 被调用 →', `${opts && opts.username}@${opts && opts.host}:${opts && opts.port}`);
+  if (sshSessions.has(sessionId)) {
+    return { ok: false, error: `会话 ${sessionId} 已存在` };
+  }
+  try {
+    const finalOpts = resolvePrivateKey({ ...opts }); // 私钥路径 → 内容
+    // 默认开启指纹校验;渲染进程可传 verifyHostKey:false 关闭
+    if (finalOpts.verifyHostKey !== false) {
+      finalOpts.hostVerifier = makeHostVerifier(finalOpts.host, finalOpts.port);
+    }
+    // keyboard-interactive 挑战 → 渲染层弹窗问用户
+    finalOpts.onKeyboardInteractive = makeKbdResponder(sessionId, finalOpts);
+    // 配了跳板机:先经跳板开隧道到目标,再在隧道上做目标机的 SSH 认证(等价 ssh -J)
+    if (finalOpts.jump && finalOpts.jump.host) {
+      finalOpts.sock = await openJumpTunnel(sessionId, finalOpts);
+    }
+    const { conn, stream } = await sshClient.connect(finalOpts);
+    // 非 utf8 会话(GBK/GB2312):建流式解码器,主进程转码后再发给渲染层
+    const enc = finalOpts.encoding || 'utf8';
+    if (enc !== 'utf8') {
+      try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
+    }
+    closedBroadcast.delete(sessionId); // 重连:清掉上次断开的 closed 标记,新连接可再次广播
+    sshSessions.set(sessionId, { conn, stream, encoding: enc });
+    // 会话日志:设置里开着(默认开)就为这次连接建日志文件
+    if (finalOpts.sessionLog !== false) {
+      startSessionLog(sessionId, {
+        sessionName: finalOpts.sessionName, host: finalOpts.host, port: finalOpts.port,
+        username: finalOpts.username, encoding: enc,
+      });
+    }
+
+    stream.on('data', (data) => {
+      pushSshData(sessionId, data); // 批量转发(性能优化),不再逐条 IPC
+    });
+    stream.on('close', () => {
+      // 无 presence guard:主动断开(ssh:close)已先删记录,但 closed 广播仍要发给渲染层
+      flushSshData(sessionId); // 关前把攒着的数据发完,别丢尾部
+      cleanupSshDecoder(sessionId); // 冲刷没转完的字符
+      finalizeRecording(sessionId); // 断线时若在录制,自动收尾保存
+      finalizeSessionLog(sessionId); // 断开时收尾会话日志
+      stopTunnelsForSession(sessionId); // 断开时停掉挂在这条连接上的隧道
+      closeJump(sessionId); // 断开时收掉跳板连接
+      if (!closedBroadcast.has(sessionId)) {
+        closedBroadcast.add(sessionId);
+        broadcast('ssh:status', sessionId, { status: 'closed' });
+      }
+      sshSessions.delete(sessionId);
+    });
+    conn.on('close', () => {
+      if (!sshSessions.has(sessionId)) return; // 流 close / ssh:close 已收尾并广播,这里只兜底
+      flushSshData(sessionId);
+      cleanupSshDecoder(sessionId);
+      finalizeRecording(sessionId); // 幂等:即使上面已收尾,这里也是空操作
+      finalizeSessionLog(sessionId); // 幂等:已收尾则空操作
+      stopTunnelsForSession(sessionId); // 幂等:已停的隧道这里也是空操作
+      closeJump(sessionId); // 幂等:已收的跳板连接这里也是空操作
+      if (!closedBroadcast.has(sessionId)) {
+        closedBroadcast.add(sessionId);
+        broadcast('ssh:status', sessionId, { status: 'closed' });
+      }
+      sshSessions.delete(sessionId);
+    });
+    conn.on('error', (err) => {
+      broadcast('ssh:status', sessionId, { status: 'error', error: err.message });
+    });
+
+    stream.setWindow(opts.rows || 32, opts.cols || 120, 0, 0);
+    broadcast('ssh:status', sessionId, { status: 'connected' });
+    return { ok: true };
+  } catch (err) {
+    console.log('[MAIN] ssh:connect 失败:', err.message); // 日志里能看到失败原因
+    closeJump(sessionId); // 目标连接失败也要收掉已开好的跳板隧道(幂等,无跳板时为 no-op)
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.on('ssh:write', (_e, sessionId, data) => {
+  // 录制打点:记录敲过的输入(回放时用 ▶ 标出,看清每步做了什么)
+  const rec = recSessions.get(sessionId);
+  if (rec && data) recorder.writeInput(rec.file, Date.now() - rec.startTs, data);
+  writeSessionInput(sessionId, data); // 会话日志:按行缓冲记录输入(命令回车后整行落盘)
+  const s = sshSessions.get(sessionId);
+  if (s && s.stream && !s.stream.destroyed) {
+    s.stream.write(Buffer.from(data));
+  }
+});
+
+ipcMain.on('ssh:resize', (_e, sessionId, cols, rows) => {
+  const s = sshSessions.get(sessionId);
+  if (s && s.stream) {
+    try { s.stream.setWindow(rows, cols, 0, 0); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.on('ssh:close', (_e, sessionId) => {
+  flushSshData(sessionId); // 关闭前先把攒着的终端数据发完
+  cleanupSshDecoder(sessionId);
+  finalizeRecording(sessionId); // 关标签时若在录制,自动收尾
+  finalizeSessionLog(sessionId); // 关标签时收尾会话日志
+  stopTunnelsForSession(sessionId); // 关标签时停掉该连接的隧道
+  closeJump(sessionId); // 关标签时收掉跳板连接
+  const s = sshSessions.get(sessionId);
+  if (s) {
+    try { s.stream.end(); } catch { /* ignore */ }
+    try { s.conn.end(); } catch { /* ignore */ }
+    sshSessions.delete(sessionId);
+  }
+});
+
+// ---------- IPC:SFTP 文件传输 ----------
+// SFTP 对象按 sessionId 缓存:同一 SSH 连接只开一次 sftp 通道
+async function getSftp(sessionId) {
+  const s = sshSessions.get(sessionId);
+  if (!s) throw new Error('SSH 连接不存在或已断开');
+  if (!s.sftp) s.sftp = await sshClient.openSftp(s.conn); // 懒加载:第一次用到才开
+  return s.sftp;
+}
+
+// 把目录和文件名拼成远程路径(统一用 / 分隔,处理 root 边界)
+function joinRemote(dir, name) {
+  if (dir === '/' || dir === '') return `/${name}`;
+  return `${dir.replace(/\/$/, '')}/${name}`;
+}
+
+// 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
+ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    const [items, cwd] = await Promise.all([
+      new Promise((resolve, reject) => {
+        sftp.readdir(remotePath, (err, list) => (err ? reject(err) : resolve(list || [])));
+      }),
+      // realpath 把 '.' / 相对路径 解析成绝对路径,这样面板路径栏显示的是真路径
+      new Promise((resolve) => {
+        sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
+      }),
+    ]);
+    const entries = items.map((it) => ({
+      name: it.filename,
+      isDir: !!it.attrs.isDirectory(),
+      size: it.attrs.size || 0,
+      mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null, // sftp 的 mtime 单位是秒,转成毫秒
+    }));
+    return { ok: true, entries, cwd };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 读取远程文本文件内容(给"SFTP 远程编辑"用)。限制大小,避免误读大二进制。
+const EDIT_MAX_BYTES = 512 * 1024; // 512KB 以内才能编辑
+ipcMain.handle('sftp:readFile', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    // 先看文件大小:目录/超大文件拒绝
+    const stat = await new Promise((resolve, reject) => sftp.stat(remotePath, (err, a) => (err ? reject(err) : resolve(a))));
+    if (stat.isDirectory()) return { ok: false, error: '这是目录,不是文件' };
+    if (stat.size > EDIT_MAX_BYTES) return { ok: false, error: `文件太大(${(stat.size / 1024).toFixed(0)}KB),超过 512KB 不支持在线编辑` };
+    const buf = await new Promise((resolve, reject) => sftp.readFile(remotePath, (err, d) => (err ? reject(err) : resolve(d))));
+    // 按会话编码解码(GBK 会话读 GBK 文件,否则编辑器里直接乱码)
+    const enc = (sshSessions.get(sessionId) && sshSessions.get(sessionId).encoding) || 'utf8';
+    let content;
+    try { content = enc === 'utf8' ? buf.toString('utf8') : iconv.decode(buf, enc); } catch { content = buf.toString('utf8'); }
+    return { ok: true, content, size: stat.size };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 把编辑后的内容写回远程文件
+ipcMain.handle('sftp:writeFile', async (_e, { sessionId, remotePath, content }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    // 按会话编码写回(GBK 会话写回 GBK 字节,避免 UTF-8 覆盖损坏原文件)
+    const enc = (sshSessions.get(sessionId) && sshSessions.get(sessionId).encoding) || 'utf8';
+    let data;
+    try { data = enc === 'utf8' ? Buffer.from(String(content ?? ''), 'utf8') : iconv.encode(String(content ?? ''), enc); } catch { data = Buffer.from(String(content ?? ''), 'utf8'); }
+    await new Promise((resolve, reject) =>
+      sftp.writeFile(remotePath, data, (err) => (err ? reject(err) : resolve()))
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 新建目录
+ipcMain.handle('sftp:mkdir', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    await new Promise((resolve, reject) => sftp.mkdir(remotePath, (err) => (err ? reject(err) : resolve())));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 删除目录:递归删空内容后删目录本身(ssh2 的 sftp.rmdir 只能删空目录,非空返回 "Failure")
+ipcMain.handle('sftp:rmdir', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    await sshClient.rmdirRecursive(sftp, remotePath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 删除文件
+ipcMain.handle('sftp:delete', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    await new Promise((resolve, reject) => sftp.unlink(remotePath, (err) => (err ? reject(err) : resolve())));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 上传:弹出系统对话框选本地文件 → fastPut 到远程
+// 传输进度 → 渲染进程进度条(sftp:progress 事件)
+function emitSftpProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', payload);
+}
+
+ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)
+    const pick = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要上传的本地文件或文件夹',
+      properties: ['openFile', 'openDirectory'],
+    });
+    if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
+    const localPath = pick.filePaths[0];
+    const prog = (p) => emitSftpProgress({ op: 'upload', ...p });
+    if (fs.statSync(localPath).isDirectory()) {
+      const target = joinRemote(remoteDir, path.basename(localPath));
+      const { uploaded, failed } = await sshClient.uploadDir(sftp, localPath, target, prog); // uploadDir 内部会建目标目录
+      return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
+    }
+    const remotePath = joinRemote(remoteDir, path.basename(localPath));
+    await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }));
+    return { ok: true, remotePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 下载:弹出保存对话框 → 流式下载到本地(带进度)
+ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    const name = remotePath.split('/').filter(Boolean).pop() || 'download';
+    const save = await dialog.showSaveDialog(mainWindow, {
+      title: '保存到本地',
+      defaultPath: name,
+    });
+    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
+    const prog = (p) => emitSftpProgress({ op: 'download', ...p });
+    await sshClient.downloadFile(sftp, remotePath, save.filePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }));
+    return { ok: true, localPath: save.filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 批量下载(第 6 课·全选下载):只弹一次"选文件夹",统一字节进度。
+// entries = [{ remotePath, isDir }] —— 目录会递归下载到本地同名子文件夹,文件按原名保存。
+ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && e.remotePath);
+  if (list.length === 0) return { ok: false, error: '没有要下载的内容' };
+  try {
+    const sftp = await getSftp(sessionId);
+    const pick = await dialog.showOpenDialog(mainWindow, {
+      title: `选择把 ${list.length} 个条目保存到哪个文件夹`,
+      properties: ['openDirectory'],
+    });
+    if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
+    const dir = pick.filePaths[0];
+    // 先把目录展开成文件清单,算总字节 → 统一进度
+    const plans = [];
+    for (const e of list) {
+      if (e.isDir) {
+        const localTarget = path.join(dir, e.remotePath.split('/').filter(Boolean).pop() || 'dir');
+        plans.push(...(await sshClient.walkRemote(sftp, e.remotePath, localTarget)));
+      } else {
+        plans.push({ rp: e.remotePath, lp: path.join(dir, path.basename(e.remotePath)), size: 0 });
+      }
+    }
+    const total = plans.reduce((s, p) => s + (p.size || 0), 0);
+    const prog = (p) => emitSftpProgress({ op: 'download', ...p });
+    let done = 0;
+    const results = [];
+    for (let i = 0; i < plans.length; i++) {
+      const p = plans[i];
+      let fDone = 0;
+      try {
+        fs.mkdirSync(path.dirname(p.lp), { recursive: true });
+        await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: i, filesTotal: plans.length }); });
+        results.push({ ok: true, remotePath: p.rp, localPath: p.lp });
+      } catch (err) {
+        results.push({ ok: false, remotePath: p.rp, error: err.message });
+      }
+    }
+    return { ok: true, dir, results };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- 窗口 ----------
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Polaris',
+    backgroundColor: '#1e1f22',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webviewTag: true, // 堡垒机内置浏览器(webview)需要
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+
+  // Windows: 打开主窗口时显式显示原生菜单栏(文件/编辑/…)。锁定流程会 setMenuBarVisibility(false),
+  // 若此前锁定后退出/重建窗口,这里强制恢复,保证"打开应用就有菜单栏"。
+  mainWindow.setMenuBarVisibility(true);
+
+  // 渲染进程的报错/日志:转发 stdout + error 级别写入数据目录 error.log(排查 Windows 便携版界面问题)
+  mainWindow.webContents.on('console-message', (evt, levelOrMsg, msgOrLine) => {
+    // Electron 27+ 事件对象形式(evt.message / evt.level);旧版是位置参数
+    const message = evt && typeof evt === 'object' && 'message' in evt ? evt.message : msgOrLine;
+    const level = evt && typeof evt === 'object' && 'level' in evt ? evt.level : levelOrMsg;
+    if (message) console.log('[RENDERER]', message);
+    if ((level === 'error' || level === 3) && message) {
+      try {
+        const dir = appLock.lockDir();
+        fs.mkdirSync(dir, { recursive: true });
+        fs.appendFileSync(path.join(dir, 'error.log'), `[${new Date().toISOString()}] ${message}\n`);
+      } catch { /* ignore */ }
+    }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    for (const [, s] of sshSessions) {
+      try { s.stream.end(); } catch { /* ignore */ }
+      try { s.conn.end(); } catch { /* ignore */ }
+    }
+    sshSessions.clear();
+  });
+}
+
+// ---------- 应用菜单栏(参考 Netcatty/原生桌面习惯) ----------
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const send = (channel) => () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel);
+  };
+  const template = [
+    ...(isMac ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about', label: '关于 Polaris' },
+        { type: 'separator' },
+        { label: '设置…', accelerator: 'Cmd+,', click: send('menu:settings') }, // macOS 惯例:偏好设置放 App 菜单
+        { type: 'separator' },
+        { role: 'hide', label: '隐藏' }, { role: 'hideOthers', label: '隐藏其他' }, { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        { role: 'quit', label: '退出 Polaris' },
+      ],
+    }] : []),
+    {
+      label: '文件',
+      submenu: [
+        { label: '连接选中会话', accelerator: 'CmdOrCtrl+Enter', click: send('menu:connect') },
+        { label: '断开当前终端', click: send('menu:disconnect') },
+        { type: 'separator' },
+        { label: '新建会话', accelerator: 'CmdOrCtrl+N', click: send('menu:new-session') },
+        { label: '新建分组…', click: send('menu:new-group') },
+        { label: '导入主机…', click: send('menu:import') },
+        { label: '导出会话…', click: send('menu:export') },
+        { type: 'separator' },
+        { label: '锁定', accelerator: 'CmdOrCtrl+L', click: send('menu:lock') },
+        { type: 'separator' },
+        isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' },
+      ],
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
+      label: '查看',
+      submenu: [
+        { label: '折叠/展开会话列表', accelerator: 'CmdOrCtrl+Shift+P', click: send('menu:toggle-panel') },
+        { type: 'separator' },
+        { label: '垂直分屏', click: send('menu:split-v') },
+        { label: '横向分屏', click: send('menu:split-h') },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '切换全屏' },
+      ],
+    },
+    {
+      label: '工具',
+      submenu: [
+        { label: 'SFTP 文件面板', click: send('menu:sftp') },
+        { label: 'SSH 隧道…', click: send('menu:tunnel') },
+        { type: 'separator' },
+        { label: '批量执行', click: send('menu:batch') },
+        { label: '快速命令…', click: send('menu:quick') },
+        { label: '命令记录', click: send('menu:cmd') },
+        { type: 'separator' },
+        { label: '录制当前会话', click: send('menu:record-toggle') },
+        { label: '回放列表…', click: send('menu:record-list') },
+        { type: 'separator' },
+        { label: '打开会话日志目录', click: send('menu:log-open') },
+        { type: 'separator' },
+        { label: 'AI 运维助手', click: send('menu:ai') },
+        { type: 'separator' },
+        { label: 'JumpServer 资产…', click: send('menu:jms') },
+        // Xshell 惯例:设置(选项)放工具菜单;macOS 仍放 App 菜单(系统惯例)
+        ...(isMac ? [] : [{ type: 'separator' }, { label: '设置…', accelerator: 'Ctrl+,', click: send('menu:settings') }]),
+      ],
+    },
+    { role: 'windowMenu', label: '窗口' },
+    {
+      label: '帮助',
+      submenu: [
+        { label: '关于 Polaris', click: send('menu:about') },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// 启动时把旧明文密码迁移成加密(safeStorage)
+function migratePasswords() {
+  try {
+    for (const s of sessionStore.list()) {
+      if (s.password && !crypto.isEncrypted(s.password)) {
+        // groupId: s.group_id —— DB 行的分组字段叫 group_id,
+        // update 内部只看 groupId/group,不显式传会把会话挪去"默认分组"
+        sessionStore.update(s.id, { ...s, groupId: s.group_id, password: crypto.encrypt(s.password) });
+      }
+    }
+  } catch (err) {
+    console.warn('[MAIN] 密码迁移失败:', err.message);
+  }
+}
+
+// 改名(jms-terminal → polaris)后,把旧目录的 localStorage 迁到固定目录,恢复设置/AI配置
+function migrateUserData() {
+  if (POLARIS_DATA_DIR) return; // 便携版数据自包含,不迁本机旧设置
+  try {
+    const appData = app.getPath('appData');
+    const newDir = app.getPath('userData');
+    const newLS = path.join(newDir, 'Local Storage');
+    // 新目录若已有真实数据(不止 1 个数据文件)就不覆盖
+    const hasData = fs.existsSync(newLS) && fs.readdirSync(newLS).filter((f) => f.endsWith('.log') || f.endsWith('.ldb')).length > 1;
+    if (hasData) return;
+    for (const oldName of ['jms-terminal', 'polaris-terminal']) {
+      const oldLS = path.join(appData, oldName, 'Local Storage');
+      if (fs.existsSync(oldLS)) {
+        fs.mkdirSync(path.dirname(newLS), { recursive: true });
+        fs.cpSync(oldLS, newLS, { recursive: true, force: true });
+        console.log(`[MAIN] 已从 ${oldName} 迁移 localStorage(设置/AI 配置恢复)`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('[MAIN] 迁移设置失败:', err.message);
+  }
+}
+
+// ---------- 启动 ----------
+// ---- App 密码锁:首次设密码,之后输入密码才能打开;库文件整库加密 ----
+ipcMain.handle('lock:has', () => ({ ok: true, has: appLock.hasPassword() }));
+// 锁定/解锁时切换原生菜单栏(Windows 上菜单栏是原生 OS 层,覆盖层盖不住)。
+// 只用 setMenuBarVisibility(false) 不够:按 Alt 菜单栏会临时弹出。
+// 锁定 → 彻底移除应用菜单(Menu.setApplicationMenu(null),Alt 也弹不出);解锁 → 重建。
+ipcMain.handle('lock:menu', (_e, visible) => {
+  try {
+    if (visible) {
+      buildMenu();
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setMenuBarVisibility(true);
+    } else {
+      Menu.setApplicationMenu(null);
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setMenuBarVisibility(false);
+    }
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+// 查询应用菜单是否被移除(锁定后应为 null)。供测试断言"锁定后无菜单栏"。
+ipcMain.handle('lock:menuState', () => ({ ok: true, removed: Menu.getApplicationMenu() === null }));
+ipcMain.handle('lock:setup', (_e, password) => {
+  try { appLock.setPassword(password); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+// 校验密码(带防暴力破解:连续失败锁定/递增延时)
+ipcMain.handle('lock:verify', (_e, password) => {
+  try {
+    const r = appLock.verifyWithLock(password);
+    return { ok: r.ok, locked: r.locked, remainingSec: r.remainingSec, attemptsLeft: r.attemptsLeft, error: r.locked ? `锁定中,请 ${r.remainingSec} 秒后再试` : undefined };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+// 当前锁定状态(锁屏页加载时展示倒计时/剩余次数)
+ipcMain.handle('lock:status', () => {
+  try {
+    const s = appLock.status();
+    return { ok: true, locked: s.locked, remainingSec: s.remainingSec, attemptsLeft: s.attemptsLeft };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+// 修改密码:校验旧密码 → 更新 app.lock 哈希 → 用新密码重新加密整个数据库(data.bin)
+ipcMain.handle('lock:change', (_e, { current, next }) => {
+  try {
+    if (!appLock.hasPassword()) return { ok: false, error: '尚未设置密码' };
+    if (!appLock.verifyPassword(current)) return { ok: false, error: '当前密码不正确' };
+    if (!next || String(next).length < 4) return { ok: false, error: '新密码至少 4 位' };
+    appLock.updatePassword(next); // 更新锁的密码哈希
+    dbPassword = next;            // 数据库用新密码重新加密(密钥由新密码派生)
+    persistDb();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+// 密码验证通过后,解锁:解密库 → 建主窗口(启动流程)
+// 临时锁定用主窗口内覆盖层(renderer 端验证,不走这里),此通道仅启动解锁用
+ipcMain.handle('lock:success', async (_e, password) => {
+  try {
+    if (appLock.isLocked()) return { ok: false, error: '尝试次数过多,请稍后再试' }; // 防暴力:锁定期间一律拒绝
+    // 解锁也走防暴力校验(防绕过锁屏直接调 unlockApp)
+    const v0 = appLock.verifyWithLock(password);
+    if (!v0.ok) return { ok: false, error: v0.locked ? `锁定中,请 ${v0.remainingSec} 秒后再试` : '密码不正确' };
+    await unlockApp(password);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+function openLockWindow() {
+  const has = appLock.hasPassword();
+  lockWindow = new BrowserWindow({
+    width: 400,
+    height: has ? 320 : 380, // 高度够,避免顶部 logo 被裁(Windows 上内容偏高)
+    resizable: false,
+    title: 'Polaris · 解锁',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
+    },
+  });
+  lockWindow.on('closed', () => { lockWindow = null; });
+  // Windows: 打开应用时先显示锁屏窗口,也保证原生菜单栏(文件/编辑/…)可见
+  lockWindow.setMenuBarVisibility(true);
+  lockWindow.loadFile(path.join(__dirname, 'src', 'lock.html'));
+}
+
+// 用密码解密数据库并进入主界面(首次会迁移现有明文库)
+async function unlockApp(password) {
+  const dataPath = path.join(appLock.lockDir(), 'data.bin');
+  const oldDb = path.join(appLock.lockDir(), 'sessions.db');
+  let bytes = null;
+  if (fs.existsSync(dataPath)) {
+    bytes = dbCrypto.decryptBytes(fs.readFileSync(dataPath), password); // 密码错会抛错
+  } else if (fs.existsSync(oldDb)) {
+    bytes = fs.readFileSync(oldDb); // 首次启用加密:迁移现有明文库
+    console.log('[MAIN] 首次启用加密,迁移现有数据库');
+  }
+  dbPassword = password;
+  sessionStore = createStore(bytes ? Buffer.from(bytes) : null);
+  migratePasswords(); // 老明文密码 → safeStorage 加密(内存库内)
+  persistDb();        // 立即把库写成加密 data.bin
+  createWindow();
+  buildMenu();        // 解锁进主界面时重建菜单栏(防锁定期间被置空后残留)
+  if (lockWindow && !lockWindow.isDestroyed()) { lockWindow.close(); lockWindow = null; }
+}
+
+app.whenReady().then(() => {
+  // 内置浏览器中文乱码修复:部分堡垒机页面(控制台/模拟页)响应头不带 charset,
+  // 浏览器按 HTML 规范默认以 Windows-1252 解码 → UTF-8 中文变乱码(æ¨¡æ‹Ÿ...)。
+  // 给"text/html 且未声明 charset"的响应补上 charset=utf-8;
+  // 已声明编码(GBK/UTF-8)的页面不受影响。
+  try {
+    session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
+      const hdrs = details.responseHeaders || {};
+      const key = Object.keys(hdrs).find((k) => k.toLowerCase() === 'content-type');
+      const ct = key && hdrs[key] ? hdrs[key][0] : '';
+      if (ct && /^text\/html/i.test(ct) && !/charset=/i.test(ct)) {
+        cb({ responseHeaders: { ...hdrs, [key]: [ct + '; charset=utf-8'] } });
+        return;
+      }
+      cb({});
+    });
+  } catch (e) { console.warn('[MAIN] 响应头 charset 拦截失败(不影响使用):', e.message); }
+  buildMenu();
+  migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
+  if (DEV_MODE) {
+    try {
+      require('./mock/mock-server').start();
+    } catch (err) {
+      console.warn('[MAIN] mock 服务器启动失败(可能已在运行):', err.message);
+    }
+  }
+  openLockWindow(); // 先过密码锁,再开主界面
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0 && sessionStore) createWindow();
+});
+
+app.on('before-quit', () => {
+  for (const t of tunnels.values()) stopTunnel(t); // 退出前停掉所有隧道(释放本地端口)
+  tunnels.clear();
+  finalizeAllRecordings(); // 退出前把没停的录制都收尾(否则文件成孤儿)
+  finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
+  persistDb();             // 再确保数据库落盘
+});
+
+app.on('window-all-closed', () => {
+  persistDb();
+  if (sessionStore) { try { sessionStore.close(); } catch { /* ignore */ } }
+  app.quit();
+});

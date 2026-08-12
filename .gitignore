@@ -1,0 +1,30 @@
+# ---- 依赖 / 构建产物 ----
+node_modules/
+release/
+logs/
+*.log
+
+# ---- macOS ----
+.DS_Store
+
+# ---- 内部测试套件(含真实环境凭据,不入库)----
+/test-*.js
+/test-all.js
+/test-helper.js
+
+# ---- 一次性调试脚本 / 镜像 ----
+/repro-*.js
+/kbd-loop-tmp.js
+/verify-space-transfer.js
+/polaris-display-test.ps1
+/polaris-res.go
+/polaris-res.exe
+/screenshot-main.png
+
+# ---- 根目录死镜像(src/ 为唯一源,cp 出来的冗余副本)----
+/renderer.js
+/index.html
+/styles.css
+/index.css
+/ssh-client.js
+/mock-server.js

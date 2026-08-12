@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>Polaris</title>
+  <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ============ 主界面:左侧会话列表 + 右侧终端 ============ -->
+  <div id="main-view" class="view">
+    <div class="toolbar">
+      <span class="app-logo">Polaris</span>
+      <button id="btn-toggle-panel" class="btn-mini" title="折叠/展开会话列表">☰</button>
+      <span id="toolbar-status" class="toolbar-item status"></span>
+      <span class="spacer"></span>
+      <button id="btn-connect" class="btn-mini" title="连接选中会话">🔌 连接</button>
+      <button id="btn-broadcast" class="btn-mini" title="广播模式:把输入同步到所有已连接会话">📡 广播</button>
+      <button id="btn-view" class="btn-mini" title="视图:垂直/横向分屏">▦ 视图</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-sftp-toggle" class="btn-mini" title="SFTP 文件面板">📁 SFTP</button>
+      <button id="btn-tunnel" class="btn-mini" title="SSH 隧道/端口转发(跳板/内网数据库)">🔗 隧道</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-batch" class="btn-mini" title="批量执行:一条命令发到多台主机,结果统一看">⚡ 批量</button>
+      <button id="btn-quick" class="btn-mini" title="快速命令:常用命令收藏,一键发送">🚀 快捷</button>
+      <button id="btn-cmd" class="btn-mini" title="命令记录:查看/重发/导出每台主机执行过的命令">⌘ 命令记录</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-rec" class="btn-mini" title="录制与回放">⏺ 录制</button>
+      <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持)">🔒 锁定</button>
+      <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI)">⚙ 设置</button>
+      <span class="spacer"></span>
+      <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手">
+        <span class="ai-logo"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg></span>
+        AI
+      </button>
+    </div>
+
+    <div class="main-body">
+      <!-- 左侧:会话列表 -->
+      <aside id="session-panel">
+        <div class="asset-header">
+          <span>会话列表</span>
+          <div class="asset-header-btns">
+            <button id="btn-quick-connect" class="btn-mini" title="快捷连接:输入 user@host[:port] 临时直连(不保存会话)">🔗</button>
+            <button id="btn-new-group" class="btn-mini" title="新建分组(选中分组时创建为子分组)">🗂</button>
+            <button id="btn-new-session" class="btn-mini" title="新建会话">➕</button>
+            <button id="btn-bastion2" class="btn-mini" title="堡垒机:JumpServer(API) / H3C(浏览器登录)">🛡 堡垒机</button>
+          </div>
+        </div>
+        <!-- 堡垒机最小化入口(面板收起时显示,点它展开) -->
+        <div id="bastion-mini" class="bastion-mini hidden" title="展开堡垒机浏览器(H3C 等)">🌐 堡垒机(H3C)</div>
+        <!-- 视图切换:网格 / 列表 / 树形 -->
+        <div class="view-switch">
+          <button id="vs-grid" class="vs-btn" title="网格视图">▦</button>
+          <button id="vs-list" class="vs-btn" title="列表视图">≡</button>
+          <button id="vs-tree" class="vs-btn" title="树形视图(按分组)">⛁</button>
+        </div>
+        <div class="asset-search">
+          <input id="input-session-search" type="text" placeholder="搜索名称 / IP(空格多词)…" />
+          <button id="btn-select-all-filtered" class="btn-mini" title="全选当前搜索出的主机(再点一次取消全选)">全选</button>
+        </div>
+        <!-- 批量操作条:勾选会话后出现 -->
+        <div id="batch-bar" class="batch-bar hidden">
+          <span id="batch-count" class="dim">已选 0 台</span>
+          <button id="batch-connect" class="btn-mini" title="批量连接选中会话">连接</button>
+          <button id="batch-close" class="btn-mini" title="批量关闭选中的已连接">关闭</button>
+          <button id="batch-upload" class="btn-mini" title="批量上传文件到选中主机">上传</button>
+          <button id="batch-download" class="btn-mini" title="从选中主机批量下载文件">下载</button>
+          <button id="batch-delete" class="btn-mini" title="批量删除选中会话">删除</button>
+          <button id="batch-clear" class="btn-mini" title="取消选择">✕</button>
+        </div>
+        <!-- 无打开的连接时:欢迎提示(显示在会话列表顶部) -->
+        <div id="welcome-hint-session" class="welcome-hint-session hidden">
+          <span>👋 双击左侧会话连接,或点 <b>➕ 新建</b> 添加服务器</span>
+        </div>
+        <div id="session-tree" class="asset-tree"></div>
+        <div class="asset-footer dim">双击会话连接 · 右键删除 · 会话数据已加密存储</div>
+      </aside>
+
+      <!-- 左右分隔条:拖动可调整会话列表宽度 -->
+      <div id="divider-v" class="divider-v" title="拖动调整宽度"></div>
+
+      <!-- 右侧:标签页 + 终端 -->
+      <section class="terminal-area">
+        <!-- 终端内搜索条(Cmd/Ctrl+F) -->
+        <div id="term-search" class="term-search hidden">
+          <input id="term-search-input" class="term-search-input" placeholder="查找(空格分隔多个词)…" />
+          <button id="term-search-prev" class="btn-mini" title="上一个">▲</button>
+          <button id="term-search-next" class="btn-mini" title="下一个">▼</button>
+          <span id="term-search-count" class="term-search-count dim"></span>
+          <button id="term-search-close" class="btn-mini" title="关闭">✕</button>
+        </div>
+        <!-- 快捷连接条(点会话列表 ⚡ 开关):临时直连,不保存会话 -->
+        <div id="quick-connect" class="quick-connect hidden">
+          <span class="qc-icon" title="快捷连接(不保存会话)">🔗</span>
+          <input id="qc-input" class="qc-input" placeholder="user@host[:port],如 root@10.0.0.5:2222,回车直连" spellcheck="false" />
+          <button id="qc-go" class="btn-mini" title="连接">连接</button>
+          <button id="qc-close" class="btn-mini" title="关闭">✕</button>
+        </div>
+        <div class="tab-bar-wrap">
+          <button id="tab-scroll-left" class="tab-scroll-btn hidden" title="向左滚动标签">◀</button>
+          <div id="tab-bar" class="tab-bar"></div>
+          <button id="tab-scroll-right" class="tab-scroll-btn hidden" title="向右滚动标签">▶</button>
+        </div>
+        <div id="terminal-container" class="terminal-container"></div>
+
+        <!-- 上下分隔条:拖动可调整 SFTP 面板高度(面板隐藏时一起隐藏) -->
+        <div id="divider-h" class="divider-h hidden" title="拖动调整高度"></div>
+
+        <!-- ============ SFTP 文件面板(终端下方,可收起) ============ -->
+        <section id="sftp-panel" class="sftp-panel hidden">
+          <div class="sftp-toolbar">
+            <span id="sftp-path" class="sftp-path">/</span>
+            <span class="spacer"></span>
+            <button id="btn-sftp-up" class="btn-mini" title="返回上一级">⬆ 上一级</button>
+            <button id="btn-sftp-refresh" class="btn-mini" title="刷新当前目录(编辑保存/外部改动后点这里看最新)">🔄 刷新</button>
+            <button id="btn-sftp-mkdir" class="btn-mini" title="在当前目录新建目录">＋ 新建目录</button>
+            <button id="btn-sftp-upload" class="btn-mini" title="上传本地文件或文件夹到当前目录">上传</button>
+            <button id="btn-sftp-download" class="btn-mini" title="下载选中文件(可多选)">下载</button>
+            <button id="btn-sftp-delete" class="btn-mini" title="删除选中文件/目录(可多选)">删除</button>
+            <button id="btn-sftp-edit" class="btn-mini" title="编辑选中的远程文本文件(双击文件也行,保存即上传)">✏ 编辑</button>
+            <button id="btn-sftp-select-all" class="btn-mini" title="全选当前目录全部文件/目录(再点一次取消全选)">☑ 全选</button>
+          </div>
+          <!-- 上传/下载进度(Xshell 式:每个文件一行+独立进度条;完成留在列表当"本次会话的历史",可删/清空,关 app 自动清) -->
+          <div id="sftp-progress" class="sftp-progress hidden">
+            <div class="sftp-progress-head">
+              <span id="sftp-progress-label" class="sftp-progress-label">传输记录</span>
+              <button id="btn-sftp-transfers-clear" class="btn-mini" title="删除全部传输历史(本次会话内)">清空</button>
+            </div>
+            <div id="sftp-transfers-list" class="sftp-transfers-list"></div>
+          </div>
+          <div id="sftp-list" class="sftp-list"></div>
+          <!-- 传输记录:每次上传/下载/新建/删除都留一行(时间 + 操作 + 结果) -->
+          <div id="sftp-log" class="sftp-log hidden"></div>
+          <div id="sftp-footer" class="sftp-footer dim">双击进入目录 · 单击选中(可多选,再点取消) · 点「全选」一次选完后下载/删除</div>
+        </section>
+      </section>
+
+      <!-- ============ 命令记录面板(右侧,可收起) ============ -->
+      <section id="cmd-panel" class="cmd-panel hidden">
+        <div class="ai-header">
+          <span>⌘ 命令记录</span>
+          <span id="cmd-count" class="dim"></span>
+          <span class="spacer"></span>
+          <button id="cmd-record-toggle" class="btn-mini" title="开关命令记录">● 记录中</button>
+          <button id="cmd-archive" class="btn-mini" title="归档当前记录并查看归档文件(可下载/删除)">归档</button>
+          <button id="cmd-clear" class="btn-mini" title="清空所有命令记录">清空</button>
+          <button id="cmd-close" class="btn-mini" title="收起">✕</button>
+        </div>
+        <div id="cmd-list" class="cmd-list"></div>
+        <div class="cmd-footer dim">记录每台终端执行过的命令 · 点击命令可重发到对应终端 · 记录在本会话内保留</div>
+      </section>
+
+      <!-- ============ 批量执行结果面板(右侧,可收起) ============ -->
+      <section id="batch-panel" class="cmd-panel batch-panel hidden">
+        <div class="ai-header">
+          <span>⚡ 批量执行</span>
+          <span class="spacer"></span>
+          <button id="batch-panel-close" class="btn-mini" title="收起">✕</button>
+        </div>
+        <div id="batch-hosts" class="batch-hosts"></div>
+        <textarea id="batch-cmd" rows="3" placeholder="输入要批量执行的命令,如 uptime…(Enter 执行,Shift+Enter 换行)"></textarea>
+        <div class="batch-run-row">
+          <span id="batch-panel-count" class="dim">已选 0 台</span>
+          <span class="spacer"></span>
+          <button id="batch-panel-clear" class="btn-mini" title="清空结果">清空</button>
+          <button id="batch-run" class="btn-mini" title="在勾选的主机上执行">▶ 执行</button>
+        </div>
+        <div id="batch-results" class="batch-results"></div>
+        <div class="cmd-footer dim">命令逐台非交互执行 · 结果按主机分组 · 适合批量改配置后统一验收</div>
+      </section>
+
+      <!-- ============ AI 运维助手面板(右侧,可收起) ============
+           注意:这个面板放在所有面板最后 → DOM 顺序决定它在 .main-body
+           flex 布局里永远是最右一列(即使命令记录面板也开着,AI 也在最右) -->
+      <!-- ============ 堡垒机浏览器区域(右侧停靠,像个小窗口:左右拖分隔条调宽、拖底边调高,可最小化) ============ -->
+      <div id="bastion-slot" class="bastion-slot hidden">
+        <!-- 竖分隔条:左右拖动调面板宽度 -->
+        <div id="divider-bastion" class="divider-v" title="左右拖动调整堡垒机面板宽度"></div>
+        <div class="bastion-col">
+        <!-- 堡垒机浏览器面板(可调宽/调高) -->
+        <section id="bastion-panel" class="bastion-panel">
+        <div class="bastion-bar">
+          <span class="bastion-title dim" title="堡垒机浏览器">🌐 堡垒机</span>
+          <select id="bastion-server-select" class="select bastion-server-select" title="已保存的堡垒机,选一个加载"></select>
+          <span class="bastion-nav" title="浏览导航(可拖左侧分隔条调面板宽度)">
+            <button id="bastion-back" class="btn-mini" title="后退">←</button>
+            <button id="bastion-forward" class="btn-mini" title="前进">→</button>
+            <button id="bastion-reload" class="btn-mini" title="刷新">↻</button>
+          </span>
+          <div class="bastion-addr">
+            <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://10.204.240.4" />
+            <button id="bastion-go" class="btn-mini" title="打开堡垒机">打开</button>
+          </div>
+          <span class="bastion-zoom" title="画面缩放">
+            <button id="bastion-zoom-out" class="btn-mini" title="缩小画面">A−</button>
+            <span id="bastion-zoom-label" class="bastion-zoom-label">100%</span>
+            <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
+          </span>
+          <button id="bastion-load" class="btn-mini" title="加载当前堡垒机并自动填充账号密码">加载</button>
+          <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
+          <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
+          <button id="bastion-close" class="btn-mini" title="关闭(最小化到会话列表)">✕</button>
+        </div>
+        <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
+        <div class="bastion-body">
+          <div id="bastion-empty" class="bastion-empty">
+            <div class="be-title">🌐 堡垒机浏览器</div>
+            <div class="be-sub">在上方输入堡垒机 Web 地址,点「打开」开始</div>
+            <div class="be-sub">登录后在堡垒机里选主机 → 点连接 → 自动用本应用打开 SSH</div>
+            <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
+          </div>
+          <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
+          <webview id="bastion-webview" class="bastion-webview"></webview>
+        </div>
+        </section>
+        </div>
+      </div>
+
+      <section id="ai-panel" class="ai-panel hidden">
+        <div class="ai-header">
+          <span class="ai-logo" title="AI">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg>
+          </span>
+          <span>AI</span>
+          <span class="spacer"></span>
+          <button id="ai-config-toggle" class="btn-mini" title="模型配置">⚙</button>
+          <button id="ai-close" class="btn-mini" title="收起">✕</button>
+        </div>
+        <!-- 厂商 / 主机选择(主机在厂商下面,各自占满一行) -->
+        <div class="ai-selects">
+          <label class="ai-select-row"><span class="dim">厂商</span>
+            <select id="ai-vendor-select" class="ai-host-select" title="切换模型厂商(每家独立配置,互不影响)"></select>
+          </label>
+          <div class="ai-select-row ai-host-row"><span class="dim">主机</span>
+            <div id="ai-host-drop" class="ai-host-drop">
+              <button id="ai-host-toggle" class="ai-host-toggle" title="点击选择 AI 操作的主机(可多选)">
+                <span id="ai-host-label">已选 0 台</span> ▾
+              </button>
+              <div id="ai-host-panel" class="ai-host-panel hidden"></div>
+            </div>
+          </div>
+        </div>
+        <!-- 模型配置(点 ⚙ 展开/收起) -->
+        <div id="ai-config" class="ai-config hidden">
+          <label class="field"><span>模型厂商(如 DeepSeek / OpenAI / 通义千问 / Anthropic)</span>
+            <input id="ai-vendor" placeholder="DeepSeek" />
+          </label>
+          <label class="field"><span>接口地址(base_url,自动补全路径)</span>
+            <input id="ai-url" placeholder="https://api.deepseek.com/anthropic" />
+          </label>
+          <label class="field"><span>模型(可添加多个并切换)</span>
+            <div class="ai-model-row">
+              <select id="ai-model" class="select"></select>
+              <button id="ai-model-add" class="btn-mini" title="添加模型">＋</button>
+              <button id="ai-model-del" class="btn-mini" title="删除当前模型">🗑</button>
+            </div>
+          </label>
+          <label class="field"><span>接口格式</span>
+            <select id="ai-format" class="select">
+              <option value="anthropic">Anthropic 格式</option>
+              <option value="openai">OpenAI 兼容格式</option>
+            </select>
+          </label>
+          <label class="field"><span>API Key</span>
+            <input id="ai-key" type="password" placeholder="sk-…" />
+          </label>
+          <div class="ai-config-actions">
+            <div class="ai-config-actions-row">
+              <button id="ai-vendor-new" class="btn-mini" title="新增一个模型厂商,配置相互独立">＋ 新增厂商</button>
+              <button id="ai-vendor-del" class="btn-mini danger" title="删除当前厂商的配置">🗑 删除厂商</button>
+            </div>
+            <button id="ai-config-save" class="btn-primary">保存配置</button>
+          </div>
+        </div>
+        <div id="ai-chat" class="ai-chat"></div>
+        <div class="ai-input-row">
+          <textarea id="ai-input" rows="2" placeholder="输入运维问题,回车发送(Shift+回车换行)…"></textarea>
+          <button id="ai-stop" class="btn-mini ai-stop-btn hidden" title="停止 AI 执行">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+          </button>
+          <button id="ai-send" class="btn-mini ai-send-btn" title="发送">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ 新建/编辑会话弹窗 ============ -->
+  <div id="session-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3 id="session-modal-title">新建会话</h3>
+      <label class="field"><span>名称(随便起,如"公司网站")</span>
+        <input id="f-name" type="text" placeholder="我的服务器" />
+      </label>
+      <label class="field"><span>主机(IP 或域名)</span>
+        <input id="f-host" type="text" placeholder="192.168.1.10" />
+      </label>
+      <div class="field-row">
+        <label class="field"><span>端口(默认 22)</span>
+          <input id="f-port" type="number" value="22" />
+        </label>
+        <label class="field"><span>用户名</span>
+          <input id="f-username" type="text" placeholder="root" />
+        </label>
+      </div>
+      <label class="field"><span>密码</span>
+        <div class="pwd-row">
+          <input id="f-password" type="password" placeholder="登录密码" />
+          <button id="f-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏密码">👁</button>
+        </div>
+      </label>
+      <label class="field"><span>私钥文件(可选,密钥认证)</span>
+        <div class="field-row">
+          <input id="f-private-key" type="text" placeholder="如 /Users/me/.ssh/id_rsa" />
+          <button id="f-private-key-pick" class="btn-mini" title="选择私钥文件">浏览…</button>
+        </div>
+      </label>
+      <label class="field"><span>私钥口令(私钥有设置才填)</span>
+        <div class="pwd-row">
+          <input id="f-passphrase" type="password" placeholder="私钥 passphrase" />
+          <button id="f-passphrase-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏私钥口令">👁</button>
+        </div>
+      </label>
+      <details class="field jump-field">
+        <summary>跳板机(SSH 代理,可选)</summary>
+        <div class="jump-inner">
+          <label class="field"><span>跳板主机(IP/域名)</span>
+            <input id="f-jump-host" type="text" placeholder="如 10.0.0.1(留空 = 直连)" />
+          </label>
+          <div class="field-row">
+            <label class="field"><span>端口(默认 22)</span>
+              <input id="f-jump-port" type="number" value="22" />
+            </label>
+            <label class="field"><span>用户名</span>
+              <input id="f-jump-username" type="text" placeholder="root" />
+            </label>
+          </div>
+          <label class="field"><span>密码</span>
+            <div class="pwd-row">
+              <input id="f-jump-password" type="password" placeholder="跳板机登录密码" />
+              <button id="f-jump-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏跳板密码">👁</button>
+            </div>
+          </label>
+        </div>
+      </details>
+      <label class="field"><span>终端编码(中文乱码时改 GBK)</span>
+        <select id="f-encoding" class="select">
+          <option value="utf8">UTF-8(默认)</option>
+          <option value="gbk">GBK(简体中文/Windows)</option>
+          <option value="gb2312">GB2312</option>
+        </select>
+      </label>
+      <label class="field"><span>登录宏(连接后自动发送,每行一条,可留空)</span>
+        <textarea id="f-on-connect" rows="2" placeholder="如:&#10;cd /var/log&#10;ls -la"></textarea>
+      </label>
+      <label class="field"><span>分组</span>
+        <select id="f-group" class="select"></select>
+      </label>
+      <div class="modal-actions">
+        <button id="modal-save" class="btn-primary">保存</button>
+        <button id="modal-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 批量导入主机弹窗 ============ -->
+  <div id="import-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>批量导入主机</h3>
+      <!-- 方式一:Excel 文件 -->
+      <div class="import-methods">
+        <button id="import-excel" class="btn-ghost">📄 从 Excel 文件导入</button>
+        <button id="import-backup" class="btn-ghost">🔒 从加密备份导入(.polaris)</button>
+        <button id="import-external" class="btn-ghost">🔄 从 Xshell/iTerm2 导入</button>
+        <button id="import-template" class="btn-ghost">⬇ 下载导入模板</button>
+        <input type="file" id="import-file" accept=".xlsx,.xls" class="hidden" />
+        <input type="file" id="import-backup-file" accept=".polaris" class="hidden" />
+        <input type="file" id="import-external-file" accept=".xsh,.json" multiple class="hidden" />
+      </div>
+      <p class="import-hint dim">Excel 列顺序: <code>名称,主机,端口,用户名,密码,分组</code>(首行表头会自动识别跳过);加密备份是"导出"生成的 .polaris 文件,导入时需输入当时设置的密码。</p>
+      <p class="import-or dim">———————— 或者手动粘贴文本 ————————</p>
+      <textarea id="import-text" class="import-text" placeholder="web01,192.168.1.10,22,root,123456,生产&#10;,192.168.1.11,22,ubuntu,,测试"></textarea>
+      <label class="field field-check"><span>覆盖更新已存在的会话(同名时用文件里的数据更新,而不是跳过)</span>
+        <input type="checkbox" id="import-overwrite" />
+      </label>
+      <div id="import-result" class="import-result"></div>
+      <div class="modal-actions">
+        <button id="import-save" class="btn-primary">导入</button>
+        <button id="import-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 自定义输入弹窗(替代 window.prompt,新版 Chromium 已不支持 prompt) ============ -->
+  <div id="prompt-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="prompt-title">输入</h3>
+      <label class="field"><span id="prompt-label">内容</span>
+        <input id="prompt-input" type="text" />
+      </label>
+      <div class="modal-actions">
+        <button id="prompt-ok" class="btn-primary">确定</button>
+        <button id="prompt-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 设置弹窗 ============ -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>设置</h3>
+      <div class="settings-sec">外观</div>
+      <label class="field"><span>主题</span>
+        <select id="set-theme" class="select"></select>
+      </label>
+      <label class="field field-check"><span>终端关键字高亮(error / warning / fail 等着色)</span>
+        <input type="checkbox" id="set-highlight" />
+      </label>
+      <label class="field"><span>终端字体大小</span>
+        <input id="set-font-size" type="number" min="9" max="26" value="13" />
+      </label>
+      <label class="field"><span>终端字体</span>
+        <select id="set-font-family" class="select">
+          <option value='"SF Mono", Menlo, Consolas, monospace'>SF Mono (macOS 默认)</option>
+          <option value='Monaco, Menlo, Consolas, monospace'>Monaco (macOS 经典)</option>
+          <option value='Menlo, Consolas, "Courier New", monospace'>Menlo (macOS)</option>
+          <option value='Consolas, Menlo, "Courier New", monospace'>Consolas (Windows)</option>
+          <option value='"Courier New", Menlo, Consolas, monospace'>Courier New</option>
+          <option value='"JetBrains Mono", Menlo, Consolas, monospace'>JetBrains Mono</option>
+          <option value='"Fira Code", Menlo, Consolas, monospace'>Fira Code</option>
+        </select>
+      </label>
+      <div class="field"><span>ANSI 颜色(终端彩色显示,可自定义 16 色)</span>
+        <details class="ansi-details">
+          <summary>自定义 16 色色板</summary>
+          <div id="ansi-editor" class="ansi-editor"></div>
+          <button id="ansi-reset" class="btn-mini" type="button" title="恢复默认色板">↺ 重置默认色板</button>
+        </details>
+      </div>
+      <div class="settings-sec">连接</div>
+      <label class="field field-check"><span>断线自动重连</span>
+        <input type="checkbox" id="set-autoreconnect" />
+      </label>
+      <label class="field field-check"><span>服务器指纹校验(known_hosts,首次连接会询问)</span>
+        <input type="checkbox" id="set-verify" />
+      </label>
+      <div class="settings-sec">功能</div>
+      <label class="field field-check"><span>启动时恢复上次打开的会话</span>
+        <input type="checkbox" id="set-restore" />
+      </label>
+      <label class="field field-check"><span>命令记录(记录每台终端执行过的命令)</span>
+        <input type="checkbox" id="set-cmdrecord" />
+      </label>
+      <label class="field field-check"><span>会话日志(每个连接落盘为可读文本,「工具 → 打开会话日志目录」可查看)</span>
+        <input type="checkbox" id="set-sessionlog" />
+      </label>
+      <div class="settings-sec">安全</div>
+      <label class="field"><span>闲置自动锁定(分钟,0=关闭)</span>
+        <input id="set-lock-idle" type="number" min="0" max="120" value="5" />
+        <span id="lock-note" class="pwd-note"></span>
+      </label>
+      <div class="field field-pwd">
+        <span>App 密码 / 数据库加密</span>
+        <button id="set-pwd" class="btn-ghost">🔑 修改密码…</button>
+        <span class="pwd-note">修改后数据库用新密码重新加密,忘记密码数据不可恢复</span>
+      </div>
+      <div class="modal-actions">
+        <button id="set-close" class="btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 锁定覆盖层(临时锁定:铺满主窗口,保留窗口按钮;会话在底层保持) ============ -->
+  <div id="lock-overlay" class="lock-overlay hidden">
+    <div class="lock-overlay-box">
+      <div class="lock-overlay-logo">✦ Polaris</div>
+      <div class="lock-overlay-title">已锁定</div>
+      <input id="lo-pw" type="password" placeholder="输入密码解锁" autocomplete="off" />
+      <div id="lo-msg" class="lock-overlay-msg"></div>
+      <button id="lo-btn" class="btn-primary">解锁</button>
+      <div class="lock-overlay-note">锁定中会话保持,输入密码解锁;关闭窗口将退出应用</div>
+    </div>
+  </div>
+
+  <!-- ============ 密码确认弹窗(删除有主机的分组等危险操作) ============ -->
+  <div id="confirm-pwd-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="confirm-pwd-title">🔒 密码确认</h3>
+      <p id="confirm-pwd-desc" class="pwd-hint dim"></p>
+      <label class="field"><span>输入 App 密码</span>
+        <input id="confirm-pwd-input" type="password" placeholder="请输入密码" />
+      </label>
+      <div id="confirm-pwd-msg" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="confirm-pwd-ok" class="btn-primary">确定</button>
+        <button id="confirm-pwd-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 键盘交互认证弹窗(域认证/双密码/OTP 挑战) ============ -->
+  <div id="kbd-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>⌨️ 需要输入验证信息</h3>
+      <p id="kbd-desc" class="pwd-hint dim"></p>
+      <div id="kbd-fields"></div>
+      <div class="modal-actions">
+        <button id="kbd-ok" class="btn-primary">确定</button>
+        <button id="kbd-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 修改密码弹窗 ============ -->
+  <div id="pwd-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>🔑 修改密码</h3>
+      <p class="pwd-hint dim">修改后数据库会用新密码重新加密;忘记密码数据不可恢复。</p>
+      <label class="field"><span>当前密码</span>
+        <input id="pwd-current" type="password" placeholder="输入当前密码" />
+      </label>
+      <label class="field"><span>新密码(至少 4 位)</span>
+        <input id="pwd-new" type="password" placeholder="输入新密码" />
+      </label>
+      <label class="field"><span>确认新密码</span>
+        <input id="pwd-confirm" type="password" placeholder="再次输入新密码" />
+      </label>
+      <div id="pwd-msg" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="pwd-save" class="btn-primary">确认修改</button>
+        <button id="pwd-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 备份文件密码弹窗(导出设密码 / 导入输密码共用) ============ -->
+  <div id="file-pwd-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="file-pwd-title">设置导出密码</h3>
+      <p class="pwd-hint dim" id="file-pwd-hint">备份文件会用这个密码加密,导入时需输入它。</p>
+      <label class="field"><span id="file-pwd-label">密码(至少 4 位)</span>
+        <input id="file-pwd-input" type="password" />
+      </label>
+      <div id="file-pwd-confirm-wrap" class="field">
+        <span>确认密码</span>
+        <input id="file-pwd-input2" type="password" />
+      </div>
+      <div id="file-pwd-msg" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="file-pwd-ok" class="btn-primary">确定</button>
+        <button id="file-pwd-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 会话录制列表弹窗 ============ -->
+  <div id="recordings-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>会话录制</h3>
+      <div class="recordings-toolbar">
+        <span class="dim">录制文件保存在本地应用目录(点「打开目录」查看)</span>
+        <span class="spacer"></span>
+        <button id="recordings-open-dir" class="btn-mini" title="打开录制文件夹">📂 打开目录</button>
+      </div>
+      <div id="recordings-list" class="recordings-list"></div>
+      <p id="recordings-empty" class="recordings-empty dim hidden">还没有录制。连上服务器后,点工具栏「● 录制」开始。</p>
+      <div class="modal-actions">
+        <button id="recordings-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 会话回放弹窗(带时间轴的真实回放) ============ -->
+  <div id="replay-modal" class="modal hidden">
+    <div class="modal-card replay-card">
+      <h3>回放 · <span id="replay-title"></span></h3>
+      <div id="replay-body" class="replay-body">
+        <div id="replay-term" class="replay-term"></div>
+        <!-- 输入侧栏:回放时把敲过的命令按 ▶ 列出来,点击可跳转到对应时刻 -->
+        <div id="replay-input-side" class="replay-input-side hidden">
+          <div class="replay-side-header">
+            <span>▶ 输入</span>
+            <span class="spacer"></span>
+            <button id="replay-side-toggle" class="btn-mini" title="收起输入列表">✕</button>
+          </div>
+          <div id="replay-input-list" class="replay-input-list"></div>
+        </div>
+      </div>
+      <div class="replay-controls">
+        <button id="replay-play" class="btn-mini" title="播放/暂停">▶ 播放</button>
+        <button id="replay-speed" class="btn-mini" title="切换播放速度">1x</button>
+        <input id="replay-progress" type="range" min="0" max="100" value="0" title="拖拽跳转" />
+        <span id="replay-time" class="replay-time dim">00:00 / 00:00</span>
+        <button id="replay-allsync" class="btn-mini" title="立即显示全部内容">⏭ 显示全部</button>
+        <button id="replay-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 录制 / 回放 下拉菜单(点工具栏「⏺ 录制」弹出) ============ -->
+  <div id="rec-menu" class="ctx-menu hidden">
+    <div class="ctx-item" data-rec-act="toggle">● 开始录制</div>
+    <div class="ctx-item" data-rec-act="list">▶ 回放列表…</div>
+  </div>
+
+  <!-- ============ 视图下拉菜单(点工具栏「▦ 视图」弹出,垂直/横向分屏) ============ -->
+  <div id="view-menu" class="ctx-menu hidden">
+    <div class="ctx-item" data-split="v">⫿ 垂直分屏</div>
+    <div class="ctx-item" data-split="h">⬒ 横向分屏</div>
+  </div>
+
+  <!-- ============ 快速命令(命令收藏)弹窗 ============ -->
+  <div id="quick-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>⚡ 快速命令</h3>
+      <p class="quick-hint dim">常用命令收藏,一键「发送到当前终端」或「批量执行到所有已连接主机」。</p>
+      <div id="quick-list" class="quick-list"></div>
+      <div class="quick-add">
+        <div class="field-row">
+          <label class="field"><span>名称</span><input id="quick-name" placeholder="如:查看磁盘" /></label>
+          <label class="field"><span>命令</span><input id="quick-command" placeholder="如:df -h" /></label>
+        </div>
+        <button id="quick-cancel-btn" class="btn-mini hidden" title="取消编辑">✕ 取消</button>
+        <button id="quick-add-btn" class="btn-mini">＋ 保存命令</button>
+      </div>
+      <div class="modal-actions">
+        <button id="quick-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SSH 隧道 / 端口转发弹窗 ============ -->
+  <div id="tunnel-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>🔗 SSH 隧道 / 端口转发</h3>
+      <p class="tunnel-hint dim">隧道走已连接的 SSH 会话:本地转发 L · 远程转发 R · 动态 SOCKS5 代理。断开连接会自动关隧道。</p>
+      <div id="tunnel-list" class="tunnel-list"></div>
+      <button id="tunnel-new" class="btn-ghost">＋ 新建隧道</button>
+      <div id="tunnel-form" class="tunnel-form hidden">
+        <label class="field"><span>走哪条连接(必须已连接)</span>
+          <select id="tunnel-session" class="select"></select>
+        </label>
+        <label class="field"><span>类型</span>
+          <select id="tunnel-type" class="select">
+            <option value="local">本地转发 L · 本地端口 → 远程 host:port</option>
+            <option value="remote">远程转发 R · 远程端口 → 本地端口</option>
+            <option value="dynamic">动态代理 · SOCKS5(本地端口)</option>
+          </select>
+        </label>
+        <div class="field-row">
+          <label class="field"><span>本地端口</span><input id="tunnel-localport" type="number" value="1080" /></label>
+          <label class="field"><span>名称(可选)</span><input id="tunnel-name" placeholder="如:内网数据库" /></label>
+        </div>
+        <div id="tunnel-remote-row" class="field-row">
+          <label class="field"><span>远程主机</span><input id="tunnel-remotehost" placeholder="如 192.168.1.50" /></label>
+          <label class="field"><span>远程端口</span><input id="tunnel-remoteport" type="number" value="3306" /></label>
+        </div>
+        <div class="modal-actions">
+          <button id="tunnel-create" class="btn-primary">创建隧道</button>
+          <button id="tunnel-form-cancel" class="btn-ghost">取消</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="tunnel-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 堡垒机(H3C)配置:保存/管理常用地址 ============ -->
+  <div id="bastion-cfg-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>🌐 堡垒机配置(H3C 等)</h3>
+      <p class="jms-hint dim">保存常用的堡垒机 Web 地址,方便切换;登录会话在浏览器里保持。</p>
+      <div id="bastion-cfg-list" class="jms-assets"></div>
+      <div class="field-row">
+        <label class="field"><span>名称</span><input id="bastion-cfg-name" placeholder="测试堡垒机" /></label>
+        <label class="field"><span>Web 地址</span><input id="bastion-cfg-url" placeholder="https://10.204.240.4" /></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>账号(登录后自动填入)</span><input id="bastion-cfg-account" placeholder="用户名" autocomplete="off" /></label>
+        <label class="field"><span>密码(登录后自动填入)</span><input id="bastion-cfg-pass" type="password" placeholder="密码" autocomplete="off" /></label>
+      </div>
+      <div id="bastion-cfg-msg" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="bastion-cfg-add" class="btn-primary">＋ 保存堡垒机</button>
+        <button id="bastion-cfg-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ JumpServer 服务器管理(多堡垒机) ============ -->
+  <div id="jms-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>🛡 JumpServer 服务器</h3>
+      <p class="jms-hint dim">支持多台堡垒机;登录后资产会出现在左侧会话列表,双击资产连 SSH、右键有更多操作。</p>
+      <div class="jms-server-bar">
+        <select id="jms-server-select" class="select"></select>
+        <button id="jms-server-add" class="btn-mini" title="新增服务器">＋</button>
+        <button id="jms-server-del" class="btn-mini danger" title="删除当前服务器">🗑</button>
+      </div>
+      <div id="jms-login-form">
+        <div class="field-row">
+          <label class="field"><span>名称</span><input id="jms-name" placeholder="我的堡垒机" /></label>
+          <label class="field"><span>Web 地址</span><input id="jms-url" placeholder="https://jms.example.com" /></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>账号</span><input id="jms-user" placeholder="admin" /></label>
+          <label class="field"><span>密码</span><input id="jms-pass" type="password" placeholder="密码" /></label>
+        </div>
+        <div class="jms-adv">
+          <span class="dim jms-adv-toggle" id="jms-adv-toggle">高级(SSH 网关留空自动检测) ▾</span>
+          <div id="jms-adv-body" style="display:none">
+            <div class="field-row">
+              <label class="field"><span>SSH 网关(留空=Web 地址主机)</span><input id="jms-ssh-host" placeholder="自动" /></label>
+              <label class="field"><span>SSH 端口(默认 2222)</span><input id="jms-ssh-port" type="number" value="2222" /></label>
+            </div>
+          </div>
+        </div>
+        <label class="field" id="jms-otp-wrap" style="display:none">
+          <span>双因素验证码(OTP)</span>
+          <input id="jms-otp" placeholder="6 位动态验证码" autocomplete="one-time-code" />
+        </label>
+        <div id="jms-msg" class="error hidden"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="jms-save" class="btn-ghost">💾 保存</button>
+        <button id="jms-login" class="btn-primary">连接 JumpServer</button>
+        <button id="jms-logout" class="btn-ghost hidden">退出登录</button>
+        <button id="jms-refresh" class="btn-ghost hidden">🔄 刷新</button>
+        <button id="jms-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SFTP 远程文件编辑弹窗 ============ -->
+  <div id="edit-modal" class="modal hidden">
+    <div class="modal-card edit-card">
+      <h3>编辑远程文件 · <span id="edit-path" class="edit-path"></span></h3>
+      <textarea id="edit-content" rows="20" spellcheck="false" placeholder="(读取中…)"></textarea>
+      <div class="modal-actions">
+        <button id="edit-save" class="btn-primary">保存并上传</button>
+        <button id="edit-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 会话右键菜单(编辑 / 删除) ============ -->
+  <div id="ctx-menu" class="ctx-menu hidden">
+    <div class="ctx-item" data-act="edit">✏️ 编辑</div>
+    <div class="ctx-item danger" data-act="delete">🗑 删除</div>
+  </div>
+
+  <script src="../node_modules/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <script src="../node_modules/xterm-addon-search/lib/xterm-addon-search.js"></script>
+  <script src="../node_modules/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

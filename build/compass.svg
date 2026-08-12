@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgDark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1b3a"/>
+      <stop offset="1" stop-color="#050b16"/>
+    </linearGradient>
+    <radialGradient id="glowCenter" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2dd4fe" stop-opacity="0.35"/>
+      <stop offset="0.6" stop-color="#15528a" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#050b16" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowStrong" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- 深空科技底 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="180" fill="url(#bgDark)"/>
+  <circle cx="512" cy="512" r="340" fill="url(#glowCenter)"/>
+
+  <!-- 外圈霓虹环 -->
+  <circle cx="512" cy="512" r="370" fill="none" stroke="#2dd4fe" stroke-width="6" filter="url(#glow)" opacity="0.95"/>
+  <circle cx="512" cy="512" r="352" fill="none" stroke="#2dd4fe" stroke-width="1.5" opacity="0.4"/>
+
+  <!-- HUD 括号(四个方位) -->
+  <g fill="none" stroke="#3ee6ff" stroke-width="6" filter="url(#glow)">
+    <path d="M392,181 A352,352 0 0 1 632,181"/>
+    <path d="M843,632 A352,352 0 0 1 632,843"/>
+    <path d="M392,843 A352,352 0 0 1 181,632"/>
+    <path d="M181,392 A352,352 0 0 1 392,181"/>
+  </g>
+
+  <!-- 内圈同心环 -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#3ee6ff" stroke-width="2" opacity="0.35"/>
+  <circle cx="512" cy="512" r="250" fill="none" stroke="#3ee6ff" stroke-width="1.5" opacity="0.2"/>
+
+  <!-- 刻度环 -->
+  <g stroke="#3ee6ff" stroke-linecap="round">
+    <line x1="512" y1="147" x2="512" y2="192" stroke-width="5" filter="url(#glow)"/>
+    <line x1="695" y1="196" x2="680" y2="222" stroke-width="2" opacity="0.8"/>
+    <line x1="828" y1="329" x2="802" y2="344" stroke-width="2" opacity="0.8"/>
+    <line x1="877" y1="512" x2="832" y2="512" stroke-width="5" filter="url(#glow)"/>
+    <line x1="828" y1="695" x2="802" y2="680" stroke-width="2" opacity="0.8"/>
+    <line x1="695" y1="828" x2="680" y2="802" stroke-width="2" opacity="0.8"/>
+    <line x1="512" y1="877" x2="512" y2="832" stroke-width="5" filter="url(#glow)"/>
+    <line x1="329" y1="828" x2="344" y2="802" stroke-width="2" opacity="0.8"/>
+    <line x1="196" y1="695" x2="222" y2="680" stroke-width="2" opacity="0.8"/>
+    <line x1="147" y1="512" x2="192" y2="512" stroke-width="5" filter="url(#glow)"/>
+    <line x1="196" y1="329" x2="222" y2="344" stroke-width="2" opacity="0.8"/>
+    <line x1="329" y1="196" x2="344" y2="222" stroke-width="2" opacity="0.8"/>
+  </g>
+
+  <!-- 罗盘玫瑰:八角星形(半透明科技蓝 + 青色描边辉光) -->
+  <polygon points="512,212 566,383 653,371 641,458 812,512 641,566 653,653 566,641 512,812 458,641 371,653 383,566 212,512 383,458 371,371 458,383"
+           fill="#0e2a4d" fill-opacity="0.9" stroke="#3ee6ff" stroke-width="4" stroke-linejoin="round" filter="url(#glow)"/>
+
+  <!-- N 点红色辉光 -->
+  <polygon points="512,212 540,470 512,512 484,470" fill="#ff3b5c" filter="url(#glowStrong)"/>
+
+  <!-- 方位字母 -->
+  <text x="512" y="180" text-anchor="middle" dominant-baseline="central"
+        font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="bold" fill="#ff5f78" filter="url(#glow)">N</text>
+  <text x="512" y="844" text-anchor="middle" dominant-baseline="central"
+        font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="bold" fill="#3ee6ff">S</text>
+  <text x="844" y="512" text-anchor="middle" dominant-baseline="central"
+        font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="bold" fill="#3ee6ff">E</text>
+  <text x="180" y="512" text-anchor="middle" dominant-baseline="central"
+        font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="bold" fill="#3ee6ff">W</text>
+
+  <!-- 中心轴(发光) -->
+  <circle cx="512" cy="512" r="30" fill="#3ee6ff" filter="url(#glow)"/>
+  <circle cx="512" cy="512" r="12" fill="#062a4d"/>
+</svg>

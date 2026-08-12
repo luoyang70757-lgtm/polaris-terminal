@@ -1,0 +1,56 @@
+{
+  "name": "polaris-terminal",
+  "version": "1.0.0",
+  "description": "Polaris(北极星)· 科幻风 SSH/SFTP 终端工具",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "mock": "node mock/mock-server.js",
+    "dev": "electron . --dev",
+    "dist": "electron-builder"
+  },
+  "author": "jms",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.7.3",
+    "ssh2": "^1.17.0",
+    "xlsx": "^0.18.5",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-search": "^0.13.0"
+  },
+  "build": {
+    "appId": "com.polaris.terminal",
+    "productName": "Polaris",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**",
+      "src/**",
+      "mock/**"
+    ],
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

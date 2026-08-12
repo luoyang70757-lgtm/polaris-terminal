@@ -1,0 +1,141 @@
+'use strict';
+/**
+ * preload.js — 渲染进程与主进程之间的"安全桥梁"
+ * 渲染进程(网页)不能直接碰 Node,只能调用这里暴露的函数。
+ * 每个函数对应主进程的一个 IPC 通道。
+ */
+
+const { contextBridge, ipcRenderer, clipboard, webUtils } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  // ---- 会话管理(SQLite) ----
+  listSessions: () => ipcRenderer.invoke('sessions:list'),
+  createSession: (s) => ipcRenderer.invoke('sessions:create', s),
+  updateSession: (id, s) => ipcRenderer.invoke('sessions:update', id, s),
+  removeSession: (id) => ipcRenderer.invoke('sessions:remove', id),
+  importSessions: (list) => ipcRenderer.invoke('sessions:import', list),
+  exportSessions: (rows, password) => ipcRenderer.invoke('sessions:export', { rows, password }),
+  importBackup: (buf, password) => ipcRenderer.invoke('sessions:importBackup', { buf, password }),
+  importExternal: (files) => ipcRenderer.invoke('sessions:importExternal', { files }),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+  saveTemplate: () => ipcRenderer.invoke('template:save'),
+  pickKeyFile: () => ipcRenderer.invoke('pick:keyFile'),
+
+  // 分组管理
+  listGroups: () => ipcRenderer.invoke('groups:list'),
+  createGroup: (name, parentId) => ipcRenderer.invoke('groups:create', name, parentId),
+  renameGroup: (id, name) => ipcRenderer.invoke('groups:rename', id, name),
+  setGroupProd: (id, flag) => ipcRenderer.invoke('groups:setProd', id, flag),
+  deleteGroup: (id) => ipcRenderer.invoke('groups:delete', id),
+
+  // ---- SSH 直连 ----
+  sshConnect: (sessionId, opts) => ipcRenderer.invoke('ssh:connect', { sessionId, opts }),
+  sshWrite: (sessionId, data) => ipcRenderer.send('ssh:write', sessionId, data),
+  sshResize: (sessionId, cols, rows) => ipcRenderer.send('ssh:resize', sessionId, cols, rows),
+  sshClose: (sessionId) => ipcRenderer.send('ssh:close', sessionId),
+
+  // ---- 主进程事件(终端数据、连接状态) ----
+  onSshData: (cb) => ipcRenderer.on('ssh:data', (_e, sessionId, data) => cb(sessionId, data)),
+  onSshStatus: (cb) => ipcRenderer.on('ssh:status', (_e, sessionId, status) => cb(sessionId, status)),
+  // keyboard-interactive 认证:主进程推提示 → 弹窗 → 应答
+  onSshKbd: (cb) => ipcRenderer.on('ssh:kbd-interactive', (_e, sessionId, data) => cb(sessionId, data)),
+  sshKbdRespond: (id, answers, cancelled) => ipcRenderer.send('ssh:kbd-respond', id, answers, cancelled),
+
+  // ---- 应用菜单事件(文件/视图/工具/帮助) ----
+  onMenu: (cb) => {
+    for (const ch of [
+      'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about',
+      'menu:split-v', 'menu:split-h', 'menu:sftp', 'menu:tunnel', 'menu:batch', 'menu:quick',
+      'menu:cmd', 'menu:record-toggle', 'menu:record-list', 'menu:log-open', 'menu:ai',
+      'menu:connect', 'menu:disconnect', 'menu:lock', 'menu:jms',
+    ]) {
+      ipcRenderer.on(ch, () => cb(ch));
+    }
+  },
+
+  // ---- SFTP 文件传输 ----
+  sftpList: (sessionId, remotePath) => ipcRenderer.invoke('sftp:list', { sessionId, remotePath }),
+  sftpMkdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
+  sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
+  sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),
+  sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
+  sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
+  sftpUpload: (sessionId, remoteDir) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir }),
+  sftpDownload: (sessionId, remotePath) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath }),
+  // entries = [{ remotePath, isDir }] —— 支持文件+目录混合下载(目录递归)
+  sftpDownloadMany: (sessionId, entries) => ipcRenderer.invoke('sftp:downloadMany', { sessionId, entries }),
+  addCmdHistory: (host, command) => ipcRenderer.invoke('cmd:add', host, command),
+  listCmdHistory: () => ipcRenderer.invoke('cmd:list'),
+  clearCmdHistoryDb: () => ipcRenderer.invoke('cmd:clear'),
+  archiveCmdHistory: (host, sessionName) => ipcRenderer.invoke('cmd:archive', { host, sessionName }),
+  openArchives: () => ipcRenderer.invoke('cmd:openArchives'),
+  listCmdArchives: (host) => ipcRenderer.invoke('cmd:listArchives', host),
+  cmdArchiveDetail: (archiveId) => ipcRenderer.invoke('cmd:archiveDetail', archiveId),
+  listArchiveFiles: () => ipcRenderer.invoke('cmd:listArchiveFiles'),
+  downloadArchive: (filePath) => ipcRenderer.invoke('cmd:downloadArchive', filePath),
+  deleteArchive: (archiveId, filePath) => ipcRenderer.invoke('cmd:deleteArchive', archiveId, filePath),
+  sftpBatchUpload: (sessions, remoteDir) => ipcRenderer.invoke('sftp:batchUpload', { sessions, remoteDir }),
+  sftpBatchDownload: (sessions, remotePath) => ipcRenderer.invoke('sftp:batchDownload', { sessions, remotePath }),
+  // 上传/下载进度事件(主进程推送,驱动进度条)
+  onSftpProgress: (cb) => ipcRenderer.on('sftp:progress', (_e, p) => cb(p)),
+
+  // ---- 批量执行结果面板 ----
+  batchExec: (data) => ipcRenderer.invoke('batch:exec', data),
+
+  // ---- JumpServer 资产(堡垒机) ----
+  jmsLogin: (cfg) => ipcRenderer.invoke('jms:login', cfg),
+  jmsMfa: (cfg) => ipcRenderer.invoke('jms:mfa', cfg),
+  jmsAssets: (cfg) => ipcRenderer.invoke('jms:assets', cfg),
+  cryptoEncrypt: (text) => ipcRenderer.invoke('crypto:encrypt', text),
+  cryptoDecrypt: (text) => ipcRenderer.invoke('crypto:decrypt', text),
+  // H3C 堡垒机:解码 accessclient:// token
+  bastionDecode: (url) => ipcRenderer.invoke('bastion:decode', url),
+  // 目标连通性探测(TCP + SSH banner),诊断"无法连接"用
+  bastionProbe: (p) => ipcRenderer.invoke('bastion:probe', p),
+  // 导出堡垒机资产诊断包(排查"资产不完整"用)
+  exportBastionDiag: (data) => ipcRenderer.invoke('diag:exportBastion', data),
+
+  // ---- 快速命令(命令收藏) ----
+  quickList: () => ipcRenderer.invoke('quick:list'),
+  quickAdd: (name, command) => ipcRenderer.invoke('quick:add', { name, command }),
+  quickUpdate: (id, name, command) => ipcRenderer.invoke('quick:update', { id, name, command }),
+  quickDel: (id) => ipcRenderer.invoke('quick:del', id),
+
+  // ---- SSH 隧道/端口转发 ----
+  tunnelList: () => ipcRenderer.invoke('tunnel:list'),
+  tunnelCreate: (spec) => ipcRenderer.invoke('tunnel:create', spec),
+  tunnelDelete: (id) => ipcRenderer.invoke('tunnel:delete', id),
+
+  // ---- 会话录制与回放 ----
+  recStart: (sessionId, meta) => ipcRenderer.invoke('rec:start', { sessionId, meta }),
+  recStop: (sessionId) => ipcRenderer.invoke('rec:stop', sessionId),
+  recList: () => ipcRenderer.invoke('rec:list'),
+  recDelete: (id) => ipcRenderer.invoke('rec:delete', id),
+  recReplay: (id) => ipcRenderer.invoke('rec:replay', id),
+  recOpenDir: () => ipcRenderer.invoke('rec:openDir'),
+
+  // ---- 会话日志(可读纯文本落盘) ----
+  logOpenDir: () => ipcRenderer.invoke('log:openDir'),
+
+  // ---- 剪贴板(复制粘贴用) ----
+  copyText: (text) => clipboard.writeText(text),
+  readClipboard: () => clipboard.readText(),
+
+  // ---- 系统探测(OS 识别) ----
+  detectOs: (opts) => ipcRenderer.invoke('sessions:detectOs', opts),
+
+  // ---- App 密码锁 ----
+  lockHas: () => ipcRenderer.invoke('lock:has'),
+  lockMenu: (visible) => ipcRenderer.invoke('lock:menu', visible), // 锁定后隐藏原生菜单栏(Windows)
+  lockMenuState: () => ipcRenderer.invoke('lock:menuState'), // 查询菜单是否已移除(测试用)
+  lockSetup: (password) => ipcRenderer.invoke('lock:setup', password),
+  lockVerify: (password) => ipcRenderer.invoke('lock:verify', password),
+  lockStatus: () => ipcRenderer.invoke('lock:status'),
+  lockChange: (current, next) => ipcRenderer.invoke('lock:change', { current, next }),
+  lockSuccess: (password) => ipcRenderer.invoke('lock:success', password),
+
+  // ---- AI 助手 ----
+  aiChat: (cfg) => ipcRenderer.invoke('ai:chat', cfg),
+  aiStop: (requestId) => ipcRenderer.send('ai:stop', requestId),
+  onAiStream: (cb) => ipcRenderer.on('ai:stream', (_e, evt) => cb(evt)),
+});
