@@ -1,4 +1,4 @@
-# Polaris — Xshell 风格 SSH/SFTP 终端
+# Polaris — SSH/SFTP 终端
 
 > 技术栈:Electron 43 + xterm.js + ssh2 + SQLite(node:sqlite 内置)
 > 会话数据存本地 SQLite(整库 AES-256-GCM 加密),密码走系统 safeStorage 加密。
@@ -72,7 +72,7 @@ npm run dev          # 开发模式(自动拉起 mock SSH 服务器)
 ├── src/
 │   ├── index.html        # 界面(会话列表/终端/堡垒机/SFTP/AI)
 │   ├── renderer.js       # 渲染逻辑
-│   └── styles.css        # Xshell 风格深色主题
+│   └── styles.css        # 深色主题
 ├── mock/
 │   ├── mock-server.js    # mock SSH/HTTP/堡垒机服务器(开发模式自动拉起,演示用)
 │   └── fake-shell.js     # 假资产 shell
