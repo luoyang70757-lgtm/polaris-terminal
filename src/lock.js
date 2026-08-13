@@ -2,7 +2,6 @@
 // 锁屏界面逻辑:首次设置密码,之后输入密码解锁(带防暴力破解:失败次数提示 + 锁定倒计时)
 (async () => {
   const has = (await window.api.lockHas()).has;
-  const title = document.getElementById('lock-title');
   const pw = document.getElementById('pw');
   const pw2 = document.getElementById('pw2');
   const msg = document.getElementById('lock-msg');
@@ -10,12 +9,10 @@
   const btn = document.getElementById('btn');
 
   if (has) {
-    title.textContent = '输入密码解锁';
     pw2.style.display = 'none';
     btn.textContent = '解锁';
     note.textContent = '忘记密码将无法打开 App,数据不可恢复';
   } else {
-    title.textContent = '设置密码';
     pw2.style.display = ''; // 首次设置要显示"确认密码"
     btn.textContent = '设置并进入';
     note.textContent = '之后每次打开都要输入此密码;请牢记,忘记无法恢复';

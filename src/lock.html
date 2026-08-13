@@ -6,18 +6,31 @@
   <title>Polaris · 解锁</title>
   <link rel="stylesheet" href="styles.css" />
   <style>
-    body { margin: 0; height: 100vh; display: flex; align-items: flex-start; justify-content: center;
-      padding-top: 26px; overflow-y: auto; /* 顶部开始排列,内容超高可滚动,不会裁掉 logo */
-      background: radial-gradient(ellipse at 50% 30%, #0e1d40 0%, #070c18 70%); }
-    .lock-box { width: 300px; display: flex; flex-direction: column; gap: 10px; }
-    .lock-logo { font-size: 26px; font-weight: 800; color: var(--accent); text-align: center; letter-spacing: 1px; }
-    .lock-title { text-align: center; color: var(--text); font-size: 14px; }
-    .lock-box input {
-      padding: 9px 12px; font-size: 14px; background: var(--input-bg, #1a1b1e);
-      border: 1px solid var(--border); border-radius: 6px; color: var(--text); outline: none;
+    body { margin: 0; min-height: 100vh; display: flex; align-items: safe center; justify-content: safe center;
+      overflow-y: auto; /* 内容超高可滚动;safe center 保证超高时从顶部开始,不裁 logo */
+      background: radial-gradient(ellipse at 50% 32%, #10204d 0%, #070c18 72%); }
+    /* 深空玻璃卡片:与 App 内登录卡片一致,整窗居中,视觉协调 */
+    .lock-box {
+      width: 364px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 46px 30px 40px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+      display: flex; flex-direction: column; gap: 18px;
     }
-    .lock-box input:focus { border-color: var(--accent); }
-    .lock-box .btn-primary { padding: 10px; font-size: 14px; }
+    .lock-logo {
+      font-size: 28px; font-weight: 800; color: var(--accent); text-align: center;
+      letter-spacing: 2px; text-shadow: 0 0 20px rgba(45, 212, 254, 0.35);
+      padding-bottom: 8px;
+    }
+    .lock-box input {
+      padding: 13px 14px; font-size: 15px; background: var(--input-bg, #1a1b1e);
+      border: 1px solid var(--border); border-radius: 7px; color: var(--text); outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .lock-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(45, 212, 254, 0.15); }
+    .lock-box .btn-primary { padding: 13px; font-size: 15px; border-radius: 7px; }
     .lock-msg { color: var(--orange); font-size: 12px; text-align: center; min-height: 16px; }
     .lock-note { color: var(--text-dim); font-size: 11px; text-align: center; line-height: 1.6; }
   </style>
@@ -25,7 +38,6 @@
 <body>
   <div class="lock-box">
     <div class="lock-logo">✦ Polaris</div>
-    <div id="lock-title" class="lock-title">设置密码</div>
     <input id="pw" type="password" placeholder="输入密码" autofocus />
     <input id="pw2" type="password" placeholder="再次确认密码" style="display:none" />
     <button id="btn" class="btn-primary">设置并进入</button>

@@ -75,6 +75,31 @@ if (POLARIS_DATA_DIR) {
 // 不影响任何功能,只影响渲染性能。必须在 app ready 前调用。
 if (process.platform === 'win32') app.disableHardwareAcceleration();
 
+// Linux 下 Electron 35+ 默认启用 Chromium 的 Fontations 新字体后端,小字号文字(菜单栏/工具栏)
+// 易发虚、不清晰。关闭它退回 FreeType 渲染,中英文小字更锐利。必须在 app ready / 创建窗口前设置。
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('disable-features', 'FontationsFontBackend');
+}
+
+// ---- 中文输入法在 Wayland(GNOME/Mutter)下不定时失效的修复 ----
+// 现象:打开 App 后当前终端中文打不出来 / 切标签、切窗口后候选窗偶尔消失。
+// 根因:GNOME 的 Mutter 合成器只提供 text-input-v3 协议,而 Chromium 对它的实现较新、
+//       在聚焦切换时经常状态失步(实测协议日志里出现 set_surrounding_text 错乱、频繁
+//       disable/enable 抖动)。而 fcitx5 成熟稳定的 XIM 路径(XMODIFIERS=@im=fcitx5)
+//       只有 X11/XWayland 应用能走。
+// 修法:Wayland 会话下强制应用跑在 XWayland,中文输入走 fcitx5 XIM,绕开 text-input-v3。
+//       本机 1080p 无缩放,不受 XWayland HiDPI 模糊影响;仅 Wayland 会话生效,X11 会话无副作用。
+// 注意:app.commandLine.appendSwitch 对 ozone-platform 太晚(Electron 原生层已按 Wayland
+//       初始化完);实测 --ozone-platform-hint=x11 也会被自动检测覆盖。只有真实命令行参数
+//       才能生效,因此这里检测到 Wayland 会话且尚未带参时,带参重启一次(重启后 argv 含
+//       --ozone-platform=x11,不会再进入这里,无死循环)。
+if (process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland') {
+  if (!process.argv.includes('--ozone-platform=x11')) {
+    app.relaunch({ args: process.argv.slice(1).concat(['--ozone-platform=x11']) });
+    app.exit(0);
+  }
+}
+
 const DEV_MODE = process.argv.includes('--dev') || process.env.POLARIS_DEV === '1';
 let mainWindow = null;
 
@@ -2078,7 +2103,7 @@ function openLockWindow() {
   const has = appLock.hasPassword();
   lockWindow = new BrowserWindow({
     width: 400,
-    height: has ? 320 : 380, // 高度够,避免顶部 logo 被裁(Windows 上内容偏高)
+    height: has ? 374 : 437, // 居中卡片 364x338(已设密码)/364x401(加"确认密码"行),四周留白 18px
     resizable: false,
     title: 'Polaris · 解锁',
     webPreferences: {
@@ -2087,8 +2112,10 @@ function openLockWindow() {
     },
   });
   lockWindow.on('closed', () => { lockWindow = null; });
-  // Windows: 打开应用时先显示锁屏窗口,也保证原生菜单栏(文件/编辑/…)可见
-  lockWindow.setMenuBarVisibility(true);
+  // 锁屏期间不显示应用菜单栏(文件/编辑/…),未输密码时不暴露菜单内容。
+  // 仅移除菜单而不动窗口标题栏;解锁进主界面后 unlockApp() 会重新 buildMenu() 恢复。
+  Menu.setApplicationMenu(null);
+  lockWindow.setMenuBarVisibility(false);
   lockWindow.loadFile(path.join(__dirname, 'src', 'lock.html'));
 }
 

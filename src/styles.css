@@ -19,9 +19,11 @@
 html, body { height: 100%; }
 
 body {
-  /* 现代化字体栈:mac 用苹方/SF,Windows 用微软雅黑/Segoe UI,中文优先 */
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  /* 现代化字体栈:Linux 优先 Noto Sans CJK SC(系统默认中文「文泉驿正黑」渲染差、笔画糊);
+     mac 用苹方/SF,Windows 用微软雅黑/Segoe UI。Noto 装不了时会自然回退到平台字体 */
+  font-family: "Noto Sans CJK SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Helvetica Neue", Arial, sans-serif;
   font-size: 13px;
   -webkit-font-smoothing: antialiased; /* 字体渲染更平滑 */
   -moz-osx-font-smoothing: grayscale;
@@ -232,6 +234,8 @@ select.select:focus { border-color: var(--accent); }
   border: none;
   color: var(--text-dim);
   font-size: 14px;
+  font-weight: 500; /* 略加粗,小字更清晰 */
+  -webkit-font-smoothing: antialiased;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 3px;

@@ -42,6 +42,15 @@
       ],
       "category": "public.app-category.developer-tools"
     },
+    "linux": {
+      "target": [
+        "AppImage",
+        "dir"
+      ],
+      "category": "Network",
+      "icon": "build/icon.png",
+      "executableName": "polaris"
+    },
     "win": {
       "target": [
         "nsis",

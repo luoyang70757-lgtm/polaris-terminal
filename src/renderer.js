@@ -1960,6 +1960,57 @@ document.addEventListener('focusin', (e) => {
   if (isTerm || isBody || onMenu) dlog('FOCUS', `→ ${termElInfo(ae)}${isTerm ? ' (终端)' : isBody ? ' (BODY!)' : ' (菜单)'}`);
 }, true);
 
+// ---- 中文输入法不定时失效修复 ----
+// 症状:拼音候选窗偶尔弹不出来,按键直接以纯字母形式上屏/发到服务器。
+// 根因:fcitx5/ibus 等输入法在「切标签 / 终端失焦 / 窗口失焦」时不会触发 xterm 隐藏
+//       textarea 的 compositionend,导致 xterm 内部一直认为"组合中"(_isComposing=true),
+//       之后的按键不再走组合流程 → 打不出中文。
+// 修法:setupImeGuard 跟踪每个终端的组合状态;在「失焦 / 重新聚焦 / 窗口失焦 / 页面隐藏」
+//       时若组合未正常结束,先清掉残留 preedit 再派发一次 compositionend,强制 xterm 复位。
+//       下次聚焦终端时 Chromium 会向输入法申请全新会话,输入法恢复。
+function setupImeGuard(term) {
+  const ta = term.textarea;
+  if (!ta || typeof ta.addEventListener !== 'function') return null;
+  let composing = false;
+  let timer = null;
+  const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const resetStuck = () => {
+    clearTimer();
+    if (!composing) return;
+    composing = false;
+    try {
+      // 必须先清空残留 preedit:否则合成 compositionend 时 xterm 会把
+      // substring(_compositionPosition.start, end) 那段拼音误提交到终端。
+      ta.value = '';
+      ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }));
+    } catch { /* ignore */ }
+  };
+  ta.addEventListener('compositionstart', () => {
+    composing = true;
+    clearTimer();
+    // 兜底:组合若卡死(长时间无任何输入),3s 后强制复位,避免候选窗永久弹不出。
+    // 正常打字时每次 compositionupdate 都会重置计时,不会误杀。
+    timer = setTimeout(resetStuck, 3000);
+  });
+  ta.addEventListener('compositionupdate', () => {
+    if (composing) { clearTimer(); timer = setTimeout(resetStuck, 3000); }
+  });
+  ta.addEventListener('compositionend', () => { composing = false; clearTimer(); });
+  ta.addEventListener('blur', resetStuck); // 切标签 / 焦点被 UI 顶掉 时组合未结束 → 复位
+  term.onFocus(resetStuck);                 // 回到终端时上轮组合未正常结束 → 复位
+  return resetStuck;
+}
+
+// 全局兜底:窗口失焦 / 页面隐藏 时,把所有终端未结束的组合强制复位
+window.addEventListener('blur', () => {
+  if (!state.tabs) return;
+  for (const t of state.tabs.values()) { try { t.__imeReset && t.__imeReset(); } catch { /* ignore */ } }
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden || !state.tabs) return;
+  for (const t of state.tabs.values()) { try { t.__imeReset && t.__imeReset(); } catch { /* ignore */ } }
+});
+
 // ---------- 标签右键菜单(关闭/复制/重命名/定位) ----------
 function showTabMenu(e, sessionId) {
   const t = state.tabs.get(sessionId);
@@ -5002,6 +5053,7 @@ function connectToServer(session) {
     searchAddon,            // 终端内搜索插件
   };
   state.tabs.set(sessionId, tab);
+  tab.__imeReset = setupImeGuard(term); // 输入法组合状态看护(见 setupImeGuard)
   saveRestoreList(); // 记录打开列表,用于启动恢复
   recordRecent(sessionId); // 记入"最近连接"
 
