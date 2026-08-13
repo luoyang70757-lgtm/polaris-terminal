@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- 终端调试日志:把面板内容存成 .log 文件 ----
   debugSave: (text) => ipcRenderer.invoke('debug:save', text),
+  // 传输记录行「📂 打开所在文件夹」:系统文件管理器里定位已下载文件
+  revealInFolder: (p) => ipcRenderer.send('fs:reveal', p),
 
   // ---- 主进程事件(终端数据、连接状态) ----
   onSshData: (cb) => ipcRenderer.on('ssh:data', (_e, sessionId, data) => cb(sessionId, data)),

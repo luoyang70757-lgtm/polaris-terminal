@@ -557,6 +557,12 @@ ipcMain.handle('jms:assets', async (_e, { baseUrl, token }) => {
 // ---------- IPC:H3C 堡垒机(accessclient:// token 解码) ----------
 // H3C Shterm 堡垒机用 accessclient://<base64(zlib(json))> 唤起外部工具,
 // 内含目标主机/账号/一次性密码。这里在主子进程解码(zlib 只在 Node 有)。
+// 传输记录行「📂 打开所在文件夹」:在系统文件管理器里定位已下载的文件/目录
+ipcMain.on('fs:reveal', (_e, p) => {
+  try { if (p) shell.showItemInFolder(String(p)); } catch { /* ignore */ }
+  if (process.env.POLARIS_AUTO_DL_DIR) console.log('[fs:reveal] ' + String(p)); // 测试观察点:真实调用了 reveal
+});
+
 // 终端调试日志:把渲染层面板内容存到会话日志目录(排查终端/vim 按键问题用)
 ipcMain.handle('debug:save', (_e, text) => {
   try {
@@ -1786,10 +1792,10 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
   try {
     const sftp = await getSftp(sessionId);
     const name = remotePath.split('/').filter(Boolean).pop() || 'download';
-    const save = await dialog.showSaveDialog(mainWindow, {
-      title: '保存到本地',
-      defaultPath: name,
-    });
+    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答保存对话框,不弹原生窗口
+    const save = process.env.POLARIS_AUTO_DL_DIR
+      ? { canceled: false, filePath: path.join(process.env.POLARIS_AUTO_DL_DIR, name) }
+      : await dialog.showSaveDialog(mainWindow, { title: '保存到本地', defaultPath: name });
     if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
     const localPath = save.filePath;
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
@@ -1814,10 +1820,13 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
   if (list.length === 0) return { ok: false, error: '没有要下载的内容' };
   try {
     const sftp = await getSftp(sessionId);
-    const pick = await dialog.showOpenDialog(mainWindow, {
-      title: `选择把 ${list.length} 个条目保存到哪个文件夹`,
-      properties: ['openDirectory'],
-    });
+    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答"选文件夹"对话框,不弹原生窗口
+    const pick = process.env.POLARIS_AUTO_DL_DIR
+      ? { canceled: false, filePaths: [process.env.POLARIS_AUTO_DL_DIR] }
+      : await dialog.showOpenDialog(mainWindow, {
+          title: `选择把 ${list.length} 个条目保存到哪个文件夹`,
+          properties: ['openDirectory'],
+        });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
     const dir = pick.filePaths[0];
     // 先把目录展开成文件清单,算总字节 → 统一进度

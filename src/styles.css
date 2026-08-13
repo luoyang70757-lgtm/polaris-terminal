@@ -1054,10 +1054,15 @@ input[type="checkbox"] {
 }
 .sftp-transfer-row {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+.sftp-transfer-row .st-main {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 0;
-  font-size: 11px;
 }
 .sftp-transfer-row .st-dir {
   flex-shrink: 0;
@@ -1105,6 +1110,32 @@ input[type="checkbox"] {
 }
 .sftp-transfer-row .st-del:hover { color: #ff5f57; }
 .sftp-transfer-row.active { background: rgba(45, 212, 254, 0.06); }
+/* 第二行:本地保存路径 + 📂 打开所在文件夹(仅下载完成后显示) */
+.sftp-transfer-row .st-local-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 22px; /* 与 st-dir(14px) + gap(8px) 对齐 */
+  font-family: Menlo, Consolas, monospace;
+  color: var(--text-dim);
+}
+.sftp-transfer-row .st-local {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 长路径优先显示结尾(文件名部分) */
+  text-align: left;
+}
+.sftp-transfer-row .st-open {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  line-height: 1;
+}
+.sftp-transfer-row .st-open:hover { filter: brightness(1.4); }
 
 /* 路径条:等宽字体 + 深色底,像终端里的路径 */
 .sftp-path {

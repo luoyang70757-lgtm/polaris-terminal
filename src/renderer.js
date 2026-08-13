@@ -1997,7 +1997,10 @@ function setupImeGuard(term) {
   });
   ta.addEventListener('compositionend', () => { composing = false; clearTimer(); });
   ta.addEventListener('blur', resetStuck); // 切标签 / 焦点被 UI 顶掉 时组合未结束 → 复位
-  term.onFocus(resetStuck);                 // 回到终端时上轮组合未正常结束 → 复位
+  // 回到终端时上轮组合未正常结束 → 复位。注意:xterm 的 term.onFocus/onBlur 是事件对象
+  // getter(返回 IEvent,不是可调用函数),直接 term.onFocus(fn) 会 TypeError 崩掉,必须用
+  // textarea 的 DOM focus 事件(与上面 blur 一致)。
+  ta.addEventListener('focus', resetStuck);
   return resetStuck;
 }
 
@@ -5965,6 +5968,20 @@ async function sftpDownload() {
     setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
     if (res.resumedFrom > 0) addLog(`⬇ ${remote} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
     addLog(`⬇ 下载 ${remote} → ${res.localPath} ✅`);
+    // 单文件走保存对话框,没有 sftp:progress 事件 → 没记录行;补一条"已完成"记录,
+    // 这样保存路径能一直看见,还能点 📂 打开所在文件夹
+    let row = sftpTransfer.rows.get(remote);
+    if (!row) {
+      row = makeSftpTransferRow({ file: remote, op: 'download' });
+      sftpTransfer.rows.set(remote, row);
+      const list = document.getElementById('sftp-transfers-list');
+      if (list) list.prepend(row.el);
+      row.el.classList.remove('active');
+      row.el.classList.add('done');
+      row.meta.textContent = '✓';
+      if (els.sftpProgress) els.sftpProgress.classList.remove('hidden');
+    }
+    if (row.setLocal) row.setLocal(res.localPath);
     return;
   }
 
@@ -5981,6 +5998,11 @@ async function sftpDownload() {
   const fail = res.results.filter((r) => !r.ok);
   setStatus(`已下载 ${ok} 个文件 → ${res.dir}`, 'var(--green)');
   if (ok) addLog(`⬇ 下载 ${ok} 个文件 → ${res.dir} ✅`);
+  // 把每个文件的本地保存路径盖到对应传输记录行上(行上有 📂 打开所在文件夹)
+  res.results.filter((r) => r.ok).forEach((r) => {
+    const row = sftpTransfer.rows.get(r.remotePath);
+    if (row && row.setLocal) row.setLocal(r.localPath);
+  });
   fail.forEach((r) => addLog(`⬇ 下载失败 ${r.remotePath}: ${r.error}`, true));
   if (fail.length) alert(`${fail.length} 个文件下载失败,见下方传输记录`);
 }
@@ -6761,10 +6783,12 @@ window.api.onSshData((sessionId, data) => {
 
 // ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
 // 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
-const sftpTransfer = { rows: new Map(), active: new Set() }; // path → { el, fill, meta }; active = 当前批次里出现过的文件
+const sftpTransfer = { rows: new Map(), active: new Set() }; // path → { el, fill, meta, setLocal }; active = 当前批次里出现过的文件
 function makeSftpTransferRow(p) {
   const el = document.createElement('div');
   el.className = 'sftp-transfer-row active';
+  // 第一行:方向 / 远程名 / 进度条 / 进度 / 删除
+  const main = document.createElement('div'); main.className = 'st-main';
   const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
   const name = document.createElement('span'); name.className = 'st-name'; name.textContent = p.file.split('/').filter(Boolean).pop() || p.file; name.title = p.file;
   const track = document.createElement('div'); track.className = 'st-track';
@@ -6773,8 +6797,22 @@ function makeSftpTransferRow(p) {
   const meta = document.createElement('span'); meta.className = 'st-meta'; meta.textContent = '0B';
   const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
   del.addEventListener('click', () => { sftpTransfer.rows.delete(p.file); el.remove(); });
-  el.append(dir, name, track, meta, del);
-  return { el, fill, meta };
+  main.append(dir, name, track, meta, del);
+  // 第二行:本地保存路径 + 「📂 打开所在文件夹」(仅下载完成后盖上去,上传不显示)
+  const localRow = document.createElement('div'); localRow.className = 'st-local-row hidden';
+  const open = document.createElement('button'); open.className = 'st-open'; open.title = '在文件管理器中显示'; open.textContent = '📂';
+  const local = document.createElement('span'); local.className = 'st-local'; local.textContent = ''; local.title = '';
+  let _localPath = '';
+  open.addEventListener('click', () => { if (_localPath) window.api.revealInFolder(_localPath); });
+  localRow.append(open, local);
+  el.append(main, localRow);
+  const setLocal = (lp) => {
+    _localPath = lp;
+    local.textContent = lp;
+    local.title = lp;
+    localRow.classList.remove('hidden');
+  };
+  return { el, fill, meta, setLocal };
 }
 window.api.onSftpProgress((p) => {
   if (!p || !els.sftpProgress) return;
