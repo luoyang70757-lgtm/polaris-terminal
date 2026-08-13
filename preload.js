@@ -33,6 +33,15 @@ contextBridge.exposeInMainWorld('api', {
   sshWrite: (sessionId, data) => ipcRenderer.send('ssh:write', sessionId, data),
   sshResize: (sessionId, cols, rows) => ipcRenderer.send('ssh:resize', sessionId, cols, rows),
   sshClose: (sessionId) => ipcRenderer.send('ssh:close', sessionId),
+  // ---- Telnet 直连(复用整条 ssh:data/ssh:write 管线) ----
+  telnetConnect: (sessionId, opts) => ipcRenderer.invoke('telnet:connect', { sessionId, opts }),
+  // ---- 批量端口探测 ----
+  probePorts: (opts) => ipcRenderer.invoke('probe:ports', opts),
+  // ---- 测试连接(协议感知:SSH 须收到 banner) ----
+  testConnect: (opts) => ipcRenderer.invoke('test:connect', opts),
+
+  // ---- 终端调试日志:把面板内容存成 .log 文件 ----
+  debugSave: (text) => ipcRenderer.invoke('debug:save', text),
 
   // ---- 主进程事件(终端数据、连接状态) ----
   onSshData: (cb) => ipcRenderer.on('ssh:data', (_e, sessionId, data) => cb(sessionId, data)),

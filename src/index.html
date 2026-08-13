@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- 解锁后科幻开机过场(正式版播放;点击/按键可跳过;默认 hidden,由 renderer 按 ?boot=1 揭开) -->
+  <div id="boot-overlay" class="boot-overlay hidden" aria-hidden="true">
+    <canvas id="boot-rain"></canvas>
+    <div class="boot-scan"></div>
+    <div class="boot-center">
+      <div class="boot-logo">✦ POLARIS</div>
+      <div class="boot-ring"></div>
+      <div class="boot-status"><span id="boot-line">正在建立安全信道…</span><span class="boot-caret">▊</span></div>
+    </div>
+  </div>
+
   <!-- ============ 主界面:左侧会话列表 + 右侧终端 ============ -->
   <div id="main-view" class="view">
     <div class="toolbar">
@@ -29,6 +40,7 @@
       <button id="btn-rec" class="btn-mini" title="录制与回放">⏺ 录制</button>
       <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持)">🔒 锁定</button>
       <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI)">⚙ 设置</button>
+      <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题">🧾 调试</button>
       <span class="spacer"></span>
       <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手">
         <span class="ai-logo"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg></span>
@@ -46,15 +58,16 @@
             <button id="btn-new-group" class="btn-mini" title="新建分组(选中分组时创建为子分组)">🗂</button>
             <button id="btn-new-session" class="btn-mini" title="新建会话">➕</button>
             <button id="btn-bastion2" class="btn-mini" title="堡垒机:JumpServer(API) / H3C(浏览器登录)">🛡 堡垒机</button>
+            <button id="btn-port-probe" class="btn-mini" title="端口探测:批量检查主机哪些端口开放">🔎</button>
           </div>
         </div>
         <!-- 堡垒机最小化入口(面板收起时显示,点它展开) -->
         <div id="bastion-mini" class="bastion-mini hidden" title="展开堡垒机浏览器(H3C 等)">🌐 堡垒机(H3C)</div>
-        <!-- 视图切换:网格 / 列表 / 树形 -->
+        <!-- 视图切换:网格 / 列表 / 树形(带文字标签,均分整行,总宽与分组头一致) -->
         <div class="view-switch">
-          <button id="vs-grid" class="vs-btn" title="网格视图">▦</button>
-          <button id="vs-list" class="vs-btn" title="列表视图">≡</button>
-          <button id="vs-tree" class="vs-btn" title="树形视图(按分组)">⛁</button>
+          <button id="vs-grid" class="vs-btn" title="网格视图">▦ 网格</button>
+          <button id="vs-list" class="vs-btn" title="列表视图">≡ 列表</button>
+          <button id="vs-tree" class="vs-btn" title="树形视图(按分组)">⛁ 树形</button>
         </div>
         <div class="asset-search">
           <input id="input-session-search" type="text" placeholder="搜索名称 / IP(空格多词)…" />
@@ -111,6 +124,7 @@
         <!-- ============ SFTP 文件面板(终端下方,可收起) ============ -->
         <section id="sftp-panel" class="sftp-panel hidden">
           <div class="sftp-toolbar">
+            <span id="sftp-conn" class="sftp-conn dim" title="当前 SFTP 连接"></span>
             <span id="sftp-path" class="sftp-path">/</span>
             <span class="spacer"></span>
             <button id="btn-sftp-up" class="btn-mini" title="返回上一级">⬆ 上一级</button>
@@ -292,6 +306,12 @@
   <div id="session-modal" class="modal hidden">
     <div class="modal-card wide">
       <h3 id="session-modal-title">新建会话</h3>
+      <label class="field"><span>协议</span>
+        <select id="f-protocol" class="select">
+          <option value="ssh">SSH(默认)</option>
+          <option value="telnet">Telnet(裸 TCP,连网络设备)</option>
+        </select>
+      </label>
       <label class="field"><span>名称(随便起,如"公司网站")</span>
         <input id="f-name" type="text" placeholder="我的服务器" />
       </label>
@@ -299,53 +319,59 @@
         <input id="f-host" type="text" placeholder="192.168.1.10" />
       </label>
       <div class="field-row">
-        <label class="field"><span>端口(默认 22)</span>
+        <label class="field"><span id="f-port-label">端口(默认 22)</span>
           <input id="f-port" type="number" value="22" />
         </label>
-        <label class="field"><span>用户名</span>
+        <label class="field"><span id="f-username-label">用户名</span>
           <input id="f-username" type="text" placeholder="root" />
         </label>
       </div>
-      <label class="field"><span>密码</span>
+      <div class="test-conn-row">
+        <button id="f-test-conn" class="btn-mini" type="button" title="探测该主机端口是否可达(不登录,只测连通性)">🔌 测试连接</button>
+        <span id="f-test-conn-result" class="tcr"></span>
+      </div>
+      <label class="field"><span id="f-password-label">密码</span>
         <div class="pwd-row">
           <input id="f-password" type="password" placeholder="登录密码" />
           <button id="f-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏密码">👁</button>
         </div>
       </label>
-      <label class="field"><span>私钥文件(可选,密钥认证)</span>
-        <div class="field-row">
-          <input id="f-private-key" type="text" placeholder="如 /Users/me/.ssh/id_rsa" />
-          <button id="f-private-key-pick" class="btn-mini" title="选择私钥文件">浏览…</button>
-        </div>
-      </label>
-      <label class="field"><span>私钥口令(私钥有设置才填)</span>
-        <div class="pwd-row">
-          <input id="f-passphrase" type="password" placeholder="私钥 passphrase" />
-          <button id="f-passphrase-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏私钥口令">👁</button>
-        </div>
-      </label>
-      <details class="field jump-field">
-        <summary>跳板机(SSH 代理,可选)</summary>
-        <div class="jump-inner">
-          <label class="field"><span>跳板主机(IP/域名)</span>
-            <input id="f-jump-host" type="text" placeholder="如 10.0.0.1(留空 = 直连)" />
-          </label>
+      <div id="f-ssh-only">
+        <label class="field"><span>私钥文件(可选,密钥认证)</span>
           <div class="field-row">
-            <label class="field"><span>端口(默认 22)</span>
-              <input id="f-jump-port" type="number" value="22" />
+            <input id="f-private-key" type="text" placeholder="如 /Users/me/.ssh/id_rsa" />
+            <button id="f-private-key-pick" class="btn-mini" title="选择私钥文件">浏览…</button>
+          </div>
+        </label>
+        <label class="field"><span>私钥口令(私钥有设置才填)</span>
+          <div class="pwd-row">
+            <input id="f-passphrase" type="password" placeholder="私钥 passphrase" />
+            <button id="f-passphrase-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏私钥口令">👁</button>
+          </div>
+        </label>
+        <details class="field jump-field">
+          <summary>跳板机(SSH 代理,可选)</summary>
+          <div class="jump-inner">
+            <label class="field"><span>跳板主机(IP/域名)</span>
+              <input id="f-jump-host" type="text" placeholder="如 10.0.0.1(留空 = 直连)" />
             </label>
-            <label class="field"><span>用户名</span>
-              <input id="f-jump-username" type="text" placeholder="root" />
+            <div class="field-row">
+              <label class="field"><span>端口(默认 22)</span>
+                <input id="f-jump-port" type="number" value="22" />
+              </label>
+              <label class="field"><span>用户名</span>
+                <input id="f-jump-username" type="text" placeholder="root" />
+              </label>
+            </div>
+            <label class="field"><span>密码</span>
+              <div class="pwd-row">
+                <input id="f-jump-password" type="password" placeholder="跳板机登录密码" />
+                <button id="f-jump-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏跳板密码">👁</button>
+              </div>
             </label>
           </div>
-          <label class="field"><span>密码</span>
-            <div class="pwd-row">
-              <input id="f-jump-password" type="password" placeholder="跳板机登录密码" />
-              <button id="f-jump-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏跳板密码">👁</button>
-            </div>
-          </label>
-        </div>
-      </details>
+        </details>
+      </div>
       <label class="field"><span>终端编码(中文乱码时改 GBK)</span>
         <select id="f-encoding" class="select">
           <option value="utf8">UTF-8(默认)</option>
@@ -362,6 +388,29 @@
       <div class="modal-actions">
         <button id="modal-save" class="btn-primary">保存</button>
         <button id="modal-cancel" class="btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 端口探测弹窗 ============ -->
+  <div id="probe-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>🔎 端口探测</h3>
+      <label class="field"><span>主机(IP 或域名)</span>
+        <input id="probe-host" type="text" placeholder="192.168.1.10" />
+      </label>
+      <label class="field"><span>端口(逗号分隔,支持范围,如 22,23,80,1000-1010)</span>
+        <input id="probe-ports" type="text" placeholder="22,23,80,443,3389" />
+      </label>
+      <div class="field-row">
+        <label class="field"><span>单端口超时(毫秒)</span>
+          <input id="probe-timeout" type="number" value="3000" />
+        </label>
+        <label class="field" style="align-self:flex-end"><button id="probe-run" class="btn-primary">开始探测</button></label>
+      </div>
+      <div id="probe-result" class="probe-result"></div>
+      <div class="modal-actions">
+        <button id="probe-close" class="btn-ghost">关闭</button>
       </div>
     </div>
   </div>
@@ -751,6 +800,20 @@
   <div id="ctx-menu" class="ctx-menu hidden">
     <div class="ctx-item" data-act="edit">✏️ 编辑</div>
     <div class="ctx-item danger" data-act="delete">🗑 删除</div>
+  </div>
+
+  <!-- ============ 终端调试日志(排查按键/焦点问题) ============ -->
+  <div id="debug-panel" class="debug-panel hidden">
+    <div class="debug-head">
+      <span>🧾 终端调试日志</span>
+      <span class="spacer"></span>
+      <button id="debug-copy" class="btn-mini" title="复制全部日志到剪贴板">📋 复制</button>
+      <button id="debug-save" class="btn-mini" title="保存为 .log 文件(会话日志目录)">💾 保存</button>
+      <button id="debug-clear" class="btn-mini" title="清空日志">🗑 清空</button>
+      <button id="debug-close" class="btn-mini" title="关闭面板">✕</button>
+    </div>
+    <div id="debug-body" class="debug-body" spellcheck="false"></div>
+    <div class="debug-foot">记录按键/焦点/收发数据,可能含敏感输入;排查完请点「🗑 清空」</div>
   </div>
 
   <script src="../node_modules/xterm/lib/xterm.js"></script>

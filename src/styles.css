@@ -5,8 +5,8 @@
   --bg-panel-2: #131d3d;
   --bg-hover: #1b2a52;
   --border: #1d3a66;
-  --text: #d7e5ff;
-  --text-dim: #7c90c0;
+  --text: #c7dcff;
+  --text-dim: #94a9da;
   --accent: #2dd4fe;
   --accent-hover: #6ee3ff;
   --green: #2dd4a0;
@@ -64,6 +64,12 @@ body {
 .field-check input { width: auto; }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
+/* 会话弹窗"测试连接":按钮 + 内联结果,占一行 */
+.test-conn-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.tcr { font-size: 12px; line-height: 1; }
+.tcr-run { color: var(--text-dim); }
+.tcr-ok { color: var(--green); }
+.tcr-bad { color: var(--red); }
 /* 跳板机(SSH 代理)折叠区 */
 .jump-field { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 12px; }
 .jump-field summary { cursor: pointer; font-size: 13px; color: var(--text); user-select: none; }
@@ -88,6 +94,21 @@ input {
   outline: none;
 }
 input:focus { border-color: var(--accent); }
+
+/* textarea 与 input 同风格:登录宏等多行输入在深色弹窗里不能是默认白框 */
+textarea {
+  width: 100%;
+  background: var(--input-bg, #1a1b1e);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+  font-family: Menlo, Consolas, monospace; /* 命令/宏用等宽字体 */
+  resize: vertical; /* 可下拉拉高,默认 2 行 */
+}
+textarea:focus { border-color: var(--accent); }
 
 select.select {
   width: 100%;
@@ -197,7 +218,7 @@ select.select:focus { border-color: var(--accent); }
 .asset-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 6px;
   font-weight: 600;
   font-size: 12px;
@@ -246,9 +267,9 @@ select.select:focus { border-color: var(--accent); }
 .asset-item.dragging { opacity: 0.4; }
 /* 当前选中的分组:提示"全选"会针对这一组 */
 .asset-group-head.active-group { background: rgba(45, 212, 254, 0.12); color: var(--accent); border-radius: 4px; }
-/* 生产环境分组:红色警示,一眼分清别误操作 */
-.asset-group-head.prod { color: var(--red); font-weight: 700; border-left: 3px solid var(--red); background: rgba(255, 60, 60, 0.06); }
-.asset-item.prod { border-left: 3px solid var(--red); background: rgba(255, 60, 60, 0.05); }
+/* 生产环境分组:红色警示,一眼分清别误操作(红标同样在右侧,与分割线一致) */
+.asset-group-head.prod { color: var(--red); font-weight: 700; background: rgba(255, 60, 60, 0.06); }
+.asset-item.prod { border-right: 3px solid var(--red); background: rgba(255, 60, 60, 0.05); }
 .asset-item.prod .name { color: var(--red); font-weight: 600; }
 
 /* 勾选框:重置全局 input 样式(width:100% + padding 会把复选框撑成整行) */
@@ -287,11 +308,34 @@ input[type="checkbox"] {
   border-radius: 4px;
   cursor: pointer;
   user-select: none;
+  /* 会话列表每行(普通会话/JMS 资产/H3C 资产)右侧亮色竖线分隔 + 竖线后留白:深藏青背景上清晰可见(--border 太暗会看不见) */
+  border-right: 2px solid var(--text-dim);
+  margin-right: 8px;
 }
 .asset-item:hover { background: var(--bg-hover); }
 
+/* 树形/列表视图:普通会话 = 紧凑小条,宽度贴合主机名(不拉满整行)
+   去掉右侧竖线(.asset-item 的 border-right 叠上圆角会看成一串「}」大括号)——主机条两侧留空,只留 JMS/H3C 资产与分组头带分割线 */
+.asset-item.host-item {
+  width: max-content;
+  max-width: 100%; /* 超长名字回退成省略号,不把面板撑出横向滚动 */
+  border-right: none;
+  margin-right: 0;
+}
+/* 堡垒机/JMS 资产条:同样去掉右侧竖线(叠圆角看成一串「}」大括号)——用户反馈堡垒机右侧也要删 */
+.asset-item.jms-asset-item {
+  border-right: none;
+  margin-right: 0;
+}
+
 .asset-item .icon { color: var(--green); font-size: 14px; }
 .asset-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+/* Telnet 会话徽标:会话列表里一眼区分 SSH / Telnet */
+.proto-badge {
+  margin-left: 6px; font-size: 9px; line-height: 1; padding: 2px 4px;
+  border-radius: 3px; background: var(--bg-hover); color: var(--accent);
+  flex-shrink: 0; letter-spacing: 0.3px;
+}
 .asset-item .addr { font-size: 11px; color: var(--text-dim); font-family: Menlo, Consolas, monospace; margin-left: 6px; flex-shrink: 0; }
 .asset-item .addr { font-size: 11px; color: var(--text-dim); font-family: Menlo, Consolas, monospace; }
 .asset-item .accounts { font-size: 10px; color: var(--orange); }
@@ -299,15 +343,20 @@ input[type="checkbox"] {
 .asset-footer { padding: 8px 12px; font-size: 11px; border-top: 1px solid var(--border); }
 
 /* ---------- 会话列表视图切换(网格/列表/树形) ---------- */
-.view-switch { display: flex; gap: 2px; padding: 0 12px 6px; }
+.view-switch { display: flex; gap: 4px; padding: 0 12px 6px; }
 .vs-btn {
-  flex: 1;
+  flex: 1 1 0; /* 三个按钮均分整行:总宽与分组头一致,协调不空旷(只放图标会被拉得很开) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-dim);
   border-radius: 4px;
-  padding: 3px 0;
-  font-size: 13px;
+  padding: 4px 0;
+  font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 .vs-btn:hover { background: var(--bg-hover); color: var(--text); }
@@ -524,6 +573,18 @@ input[type="checkbox"] {
 
 .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
 .modal-actions .btn-primary { flex: 1; margin-top: 0; }
+
+/* ---------- 端口探测弹窗结果表 ---------- */
+.probe-result { margin-top: 12px; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.probe-row { display: flex; gap: 10px; padding: 6px 10px; font-size: 12px; align-items: center; }
+.probe-row:nth-child(even) { background: var(--bg-panel); }
+.probe-row .p-port { width: 60px; font-family: Menlo, Consolas, monospace; color: var(--text); flex-shrink: 0; }
+.probe-row .p-status { width: 70px; font-weight: 600; flex-shrink: 0; }
+.p-open { color: var(--green); }
+.p-closed { color: var(--red); }
+.p-timeout, .p-error { color: var(--orange); }
+.probe-row .p-banner { flex: 1; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.probe-empty { padding: 12px; font-size: 12px; color: var(--text-dim); text-align: center; }
 
 /* 设置弹窗:高度自适应——分组间距收紧、ANSI 色板收进可折叠块,
    完成按钮吸底(内容再高也始终可见,矮窗口不用内部滚动) */
@@ -1055,6 +1116,15 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* SFTP 工具栏连接标签:显示当前连接名称 + IP */
+.sftp-conn {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22%;
+  color: var(--accent, #6ea8fe);
+}
 
 .sftp-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 
@@ -1395,3 +1465,101 @@ input[type="checkbox"] {
 .ansi-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
 .ansi-row input[type="color"] { width: 26px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: none; cursor: pointer; flex-shrink: 0; }
 #ansi-reset { font-size: 11px; }
+
+/* ---------- 解锁后科幻开机过场 ---------- */
+.boot-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: radial-gradient(ellipse at 50% 40%, #0a1734 0%, #050a18 70%);
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  cursor: wait;
+}
+.boot-overlay::after { /* 细扫描线纹理 */
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(120,180,255,0.05) 0 1px, transparent 1px 3px);
+}
+#boot-rain { position: absolute; inset: 0; opacity: 0.45; }
+.boot-scan { /* 全息扫描线:从上到下扫过一次 */
+  position: absolute; left: 0; right: 0; height: 90px;
+  background: linear-gradient(180deg, transparent, rgba(45,212,254,0.18), rgba(45,212,254,0.35), rgba(45,212,254,0.18), transparent);
+  box-shadow: 0 0 40px rgba(45,212,254,0.25);
+  animation: boot-scan 1.15s cubic-bezier(.4,.1,.5,1) forwards;
+}
+.boot-center { position: relative; text-align: center; z-index: 2; }
+.boot-logo {
+  font-size: 40px; font-weight: 800; letter-spacing: 6px; color: var(--accent);
+  text-shadow: 0 0 18px rgba(45,212,254,0.55), 0 0 42px rgba(45,212,254,0.25);
+  animation: boot-flicker 0.7s steps(2) 0s, boot-glitch 0.35s linear 0.55s;
+}
+.boot-ring { /* 外圈能量环,旋转渐亮 */
+  width: 150px; height: 150px; margin: -34px auto -12px;
+  border: 1px solid rgba(45,212,254,0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boot-ring 1.1s linear infinite;
+}
+.boot-status {
+  margin-top: 14px; font-size: 13px; color: var(--text-dim);
+  font-family: Menlo, Consolas, monospace; letter-spacing: 1px;
+  min-height: 18px;
+}
+.boot-caret { color: var(--accent); animation: boot-blink 0.6s steps(1) infinite; margin-left: 3px; }
+.boot-overlay.boot-done { animation: boot-fade 0.45s ease forwards; }
+
+@keyframes boot-scan { from { top: -12%; } to { top: 112%; } }
+@keyframes boot-flicker { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes boot-glitch {
+  0%,100% { transform: translateX(0); }
+  20% { transform: translateX(-2px); text-shadow: -3px 0 #ff2d6d, 3px 0 #2dd4fe; }
+  40% { transform: translateX(2px); text-shadow: 3px 0 #ff2d6d, -3px 0 #2dd4fe; }
+  60% { transform: translateX(-1px); }
+  80% { transform: translateX(1px); }
+}
+@keyframes boot-ring { to { transform: rotate(360deg); } }
+@keyframes boot-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+@keyframes boot-fade { to { opacity: 0; visibility: hidden; } }
+
+/* ---------- 终端调试日志面板 ---------- */
+.debug-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 300;
+  width: 540px;
+  max-width: 85vw;
+  height: 58vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+.debug-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.debug-head .btn-mini { padding: 3px 8px; font-size: 12px; }
+.debug-body {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.35);
+}
+.debug-foot {
+  padding: 5px 10px;
+  font-size: 11px;
+  opacity: 0.6;
+  border-top: 1px solid var(--border);
+}

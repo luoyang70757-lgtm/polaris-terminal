@@ -28,8 +28,8 @@ const SearchAddonClass =
 const THEMES = {
   dark: {
     name: '深空(默认)',
-    term: { background: '#070c18', foreground: '#d7e5ff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
-    css: { '--bg': '#070c18', '--bg-panel': '#0d1530', '--bg-panel-2': '#131d3d', '--bg-hover': '#1b2a52', '--border': '#1d3a66', '--text': '#d7e5ff', '--text-dim': '#7c90c0', '--term-bg': '#070c18', '--input-bg': '#0a1128' },
+    term: { background: '#070c18', foreground: '#c7dcff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
+    css: { '--bg': '#070c18', '--bg-panel': '#0d1530', '--bg-panel-2': '#131d3d', '--bg-hover': '#1b2a52', '--border': '#1d3a66', '--text': '#c7dcff', '--text-dim': '#94a9da', '--term-bg': '#070c18', '--input-bg': '#0a1128' },
   },
   light: {
     name: '浅色',
@@ -86,6 +86,11 @@ const els = {
 
   sessionModal: $('session-modal'),
   sessionModalTitle: $('session-modal-title'),
+  fProtocol: $('f-protocol'),
+  fSshOnly: $('f-ssh-only'),
+  fPortLabel: $('f-port-label'),
+  fUsernameLabel: $('f-username-label'),
+  fPasswordLabel: $('f-password-label'),
   fName: $('f-name'),
   fHost: $('f-host'),
   fPort: $('f-port'),
@@ -103,6 +108,8 @@ const els = {
   fJumpPasswordToggle: $('f-jump-password-toggle'),
   fEncoding: $('f-encoding'),
   fOnConnect: $('f-on-connect'),
+  fTestConn: $('f-test-conn'),
+  fTestConnResult: $('f-test-conn-result'),
   fGroup: $('f-group'),
   modalSave: $('modal-save'),
   modalCancel: $('modal-cancel'),
@@ -147,6 +154,15 @@ const els = {
   btnLock: $('btn-lock'),
   // JumpServer 资产面板
   btnBastion2: $('btn-bastion2'),
+  // 端口探测
+  btnPortProbe: $('btn-port-probe'),
+  probeModal: $('probe-modal'),
+  probeHost: $('probe-host'),
+  probePorts: $('probe-ports'),
+  probeTimeout: $('probe-timeout'),
+  probeRun: $('probe-run'),
+  probeResult: $('probe-result'),
+  probeClose: $('probe-close'),
   jmsModal: $('jms-modal'),
   jmsServerSelect: $('jms-server-select'),
   jmsServerAdd: $('jms-server-add'),
@@ -210,6 +226,14 @@ const els = {
   // 设置
   btnSettings: $('btn-settings'),
   settingsModal: $('settings-modal'),
+  // 终端调试日志
+  btnDebug: $('btn-debug'),
+  debugPanel: $('debug-panel'),
+  debugBody: $('debug-body'),
+  debugCopy: $('debug-copy'),
+  debugSave: $('debug-save'),
+  debugClear: $('debug-clear'),
+  debugClose: $('debug-close'),
   setTheme: $('set-theme'),
   setHighlight: $('set-highlight'),
   setFontSize: $('set-font-size'),
@@ -302,6 +326,7 @@ const els = {
   tunnelFormCancel: $('tunnel-form-cancel'),
   tunnelClose: $('tunnel-close'),
   sftpPath: $('sftp-path'),
+  sftpConn: $('sftp-conn'),
   sftpList: $('sftp-list'),
   sftpLog: $('sftp-log'),
   btnSftpUp: $('btn-sftp-up'),
@@ -1067,7 +1092,7 @@ function highlightText(tab, bytes) {
 // =====================================================================
 // 会话列表(从 SQLite 读取并渲染)
 // =====================================================================
-let groupsCollapsedOnBoot = false; // 只折叠一次(启动时),之后用户自己展开的保持
+let groupsCollapsedOnBoot = false; // 启动时全部分组折叠过一次后置位(只在首次 loadSessions 生效)
 async function loadSessions() {
   const [res, gres] = await Promise.all([
     window.api.listSessions(),
@@ -1076,10 +1101,10 @@ async function loadSessions() {
   if (res.ok) {
     state.sessions = res.sessions;
     state.groups = gres.ok ? gres.groups : [];
-    // 打开 app 时默认折叠所有分组(不展开一大片);只影响首次加载
+    // 默认不打开分组:启动时全部分组折叠(只显示分组头,展开后主机才出现);本次会话内展开/折叠状态会记住
     if (!groupsCollapsedOnBoot) {
-      groupsCollapsedOnBoot = true;
       for (const g of state.groups) state.collapsedGroups.add(g.id);
+      groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
     restoreSessions(); // 数据就绪后恢复上次打开的会话(默认关闭,restoreOnStartup=false 时直接跳过)
@@ -1147,13 +1172,18 @@ async function exportGroup(gid, groupName) {
   promptFilePwd('set', { type: 'export', data });
 }
 
+// 搜索词是完整 IP 地址(4 段点分十进制)→ 对主机 IP 精确匹配,避免子串误伤(搜 1.10 命中 1.100)
+function termIsFullIp(t) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(t);
+}
+
 // 堡垒机资产搜索:空格分隔多关键词(如多个 IP/名称),命中任意一个就显示
 // 与 filterSessions 语义一致 —— 之前 JMS/H3C 用整体 includes(),空格分隔的多 IP 搜不出来
 function bastionAssetMatch(a, filter) {
   const terms = (filter || '').toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return true;
   const hay = (a.name + ' ' + (a.ip || '') + ' ' + (a.accounts || []).join(' ')).toLowerCase();
-  return terms.some((t) => hay.includes(t));
+  return terms.some((t) => termIsFullIp(t) ? (a.ip || '').toLowerCase() === t : hay.includes(t));
 }
 
 // 按关键词过滤会话(搜索框):空格分隔多关键词,命中任意一个就显示
@@ -1162,7 +1192,7 @@ function filterSessions(filter) {
   if (!terms.length) return state.sessions;
   return state.sessions.filter((s) => {
     const hay = `${s.name} ${s.host} ${s.username}`.toLowerCase();
-    return terms.some((t) => hay.includes(t));
+    return terms.some((t) => termIsFullIp(t) ? s.host.toLowerCase() === t : hay.includes(t));
   });
 }
 
@@ -1206,12 +1236,14 @@ function groupSessions(sessions) {
 function makeSessionRow(s) {
   const item = document.createElement('div');
   const prod = isSessionProd(s); // 生产分组会话:红色警示
+  const isTelnet = (s.protocol || 'ssh') === 'telnet';
   item.className = 'asset-item' + (prod ? ' prod' : '');
   item.title = `${s.name}\n${s.username}@${s.host}:${s.port}${prod ? '\n🔴 生产环境!' : ''}`;
   const check = document.createElement('input');
   check.type = 'checkbox';
   check.className = 'asset-check';
   check.checked = state.selectedForBatch.has(s.id);
+  if (isTelnet) { check.disabled = true; check.title = 'Telnet 会话不支持批量执行/SFTP(仅 SSH)'; }
   check.addEventListener('change', () => {
     if (check.checked) state.selectedForBatch.add(s.id);
     else state.selectedForBatch.delete(s.id);
@@ -1219,19 +1251,33 @@ function makeSessionRow(s) {
   });
   const icon = document.createElement('span');
   icon.className = 'icon';
-  icon.textContent = '🖥';
+  icon.textContent = isTelnet ? '🔧' : '🖥';
   const name = document.createElement('span');
   name.className = 'name';
   name.textContent = s.name;
   item.appendChild(check);
   item.appendChild(icon);
   item.appendChild(name);
+  if (isTelnet) {
+    const badge = document.createElement('span');
+    badge.className = 'proto-badge';
+    badge.textContent = 'TEL';
+    item.appendChild(badge);
+  }
 
-  // 点会话行 = 用户改在操作会话,取消分组选中(全选回到"全部")
-  item.addEventListener('click', () => {
+  // 点会话行 = 用户改在操作会话:已打开的切到对应标签(SFTP 跟着走);
+  // 没打开的 → 下方收起 SFTP(没有连接,不显示文件面板)。勾选框点击只做批量勾选,不切换。
+  item.addEventListener('click', (e) => {
+    if (e.target === check) return;
     if (state.activeGroupId != null) {
       state.activeGroupId = null;
       renderSessionList(els.inputSessionSearch.value);
+    }
+    const openTab = findTabBySessionId(s.id);
+    if (openTab) {
+      activateTab(openTab.sessionId);
+    } else if (state.sftp.visible) {
+      closeSftpPanel();
     }
   });
 
@@ -1361,7 +1407,11 @@ function renderSessionsTree(sessions) {
       head.addEventListener('click', toggleRecent);
       els.sessionTree.appendChild(head);
       if (!state.recentCollapsed) {
-        for (const s of recentSessions) els.sessionTree.appendChild(makeSessionRow(s));
+        for (const s of recentSessions) {
+          const r = makeSessionRow(s);
+          r.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
+          els.sessionTree.appendChild(r);
+        }
       }
     }
   }
@@ -1387,6 +1437,7 @@ function renderSessionsTree(sessions) {
     for (const child of childrenOf.get(g.id) || []) renderNode(child, depth + 1);
     for (const s of sessByGroup.get(g.id) || []) {
       const row = makeSessionRow(s);
+      row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
       row.style.paddingLeft = `${24 + depth * 18}px`;
       els.sessionTree.appendChild(row);
     }
@@ -1431,7 +1482,11 @@ function renderSessionsList(sessions) {
     });
     head.classList.toggle('active-group', state.activeGroupId === Number(head.dataset.groupId) || state.activeGroupId === head.dataset.groupId);
     els.sessionTree.appendChild(head);
-    for (const s of list) els.sessionTree.appendChild(makeSessionRow(s));
+    for (const s of list) {
+      const r = makeSessionRow(s);
+      r.classList.add('host-item'); // 列表视图同样用紧凑小条(左侧竖线分隔+右侧留白)
+      els.sessionTree.appendChild(r);
+    }
   }
   renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
 }
@@ -1444,11 +1499,13 @@ function renderSessionsGrid(sessions) {
     const card = document.createElement('div');
     card.className = 'session-card';
     card.dataset.sessionId = s.id; // 标签右键"定位到会话列表"靠它找到卡片
-    card.title = `${s.name}\n${s.username}@${s.host}:${s.port}`;
+    const isTelnet = (s.protocol || 'ssh') === 'telnet';
+    card.title = `${s.name}\n${s.username}@${s.host}:${s.port}${isTelnet ? '\n(Telnet)' : ''}`;
     const check = document.createElement('input');
     check.type = 'checkbox';
     check.className = 'card-check';
     check.checked = state.selectedForBatch.has(s.id);
+    if (isTelnet) { check.disabled = true; check.title = 'Telnet 会话不支持批量执行/SFTP(仅 SSH)'; }
     check.addEventListener('change', () => {
       if (check.checked) state.selectedForBatch.add(s.id);
       else state.selectedForBatch.delete(s.id);
@@ -1456,13 +1513,13 @@ function renderSessionsGrid(sessions) {
     });
     const icon = document.createElement('div');
     icon.className = 'card-icon';
-    icon.textContent = '🖥';
+    icon.textContent = isTelnet ? '🔧' : '🖥';
     const name = document.createElement('div');
     name.className = 'card-name';
     name.textContent = s.name;
     const addr = document.createElement('div');
     addr.className = 'card-addr dim';
-    addr.textContent = `${s.username}@${s.host}`;
+    addr.textContent = `${isTelnet ? 'telnet' : s.username}@${s.host}`;
     card.appendChild(check);
     card.appendChild(icon);
     card.appendChild(name);
@@ -1841,10 +1898,67 @@ function showCtxMenu(x, y, items) {
   els.ctxMenu.style.left = `${x}px`;
   els.ctxMenu.style.top = `${y}px`;
   els.ctxMenu.classList.remove('hidden');
+  dlog('MENU', `open: ${items.map((i) => (i.separator ? '---' : i.label)).join(' | ')}`);
 }
 function closeCtxMenu() {
+  dlog('MENU', 'close');
   els.ctxMenu.classList.add('hidden');
 }
+
+// ---------- 终端调试日志 ----------
+// 排查"终端/vim 按键不生效、粘贴后打不出空格"这类问题:常驻记录 按键(含当时焦点)、
+// 焦点迁移、收/发数据、连接状态。工具栏「🧾 调试」打开面板;内容可能含敏感输入,排查完请清空。
+const termDebug = { lines: [], max: 2000 };
+function dlog(kind, msg) {
+  const d = new Date();
+  const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+  const line = `[${ts}] ${kind} ${msg}`;
+  termDebug.lines.push(line);
+  if (termDebug.lines.length > termDebug.max) termDebug.lines.splice(0, termDebug.lines.length - termDebug.max);
+  if (els.debugPanel && !els.debugPanel.classList.contains('hidden')) renderDebugBody();
+}
+function renderDebugBody() {
+  if (els.debugBody) { els.debugBody.textContent = termDebug.lines.join('\n'); els.debugBody.scrollTop = els.debugBody.scrollHeight; }
+}
+function toggleDebugPanel() {
+  const hidden = els.debugPanel.classList.contains('hidden');
+  els.debugPanel.classList.toggle('hidden', !hidden);
+  els.btnDebug.classList.toggle('active', hidden);
+  if (!hidden) renderDebugBody();
+}
+function termElInfo(el) {
+  if (!el) return 'null';
+  const tag = el.tagName || '';
+  const id = el.id ? `#${el.id}` : '';
+  const cls = typeof el.className === 'string' ? el.className.trim() : '';
+  return tag + id + (cls ? '.' + cls.split(/\s+/).join('.') : '');
+}
+
+// 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)
+window.addEventListener('keydown', (e) => {
+  if (!state.tabs || !state.tabs.size) return;
+  const k = e.key;
+  if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock' || k === 'Escape') return;
+  const ae = document.activeElement;
+  const cls = ae && typeof ae.className === 'string' ? ae.className : '';
+  const inTerm = !!cls && cls.indexOf('xterm-helper-textarea') >= 0;
+  const isBody = ae === document.body;
+  const onMenu = !!cls && cls.indexOf('ctx-menu') >= 0;
+  if (!inTerm && !isBody && !onMenu) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
+  const mod = (e.ctrlKey ? '^' : '') + (e.altKey ? '⌥' : '') + (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '');
+  const key = k.length === 1 ? (k === ' ' ? '␣' : k) : k;
+  dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
+}, true);
+
+// 焦点迁移:终端 textarea / BODY / 菜单 之间的变化(右键菜单点一下把焦点顶掉就是元凶)
+document.addEventListener('focusin', (e) => {
+  const ae = e.target;
+  const cls = ae && typeof ae.className === 'string' ? ae.className : '';
+  const isTerm = !!cls && cls.indexOf('xterm-helper-textarea') >= 0;
+  const isBody = ae === document.body;
+  const onMenu = ae && (ae.id === 'ctx-menu' || (!!cls && cls.indexOf('ctx-item') >= 0));
+  if (isTerm || isBody || onMenu) dlog('FOCUS', `→ ${termElInfo(ae)}${isTerm ? ' (终端)' : isBody ? ' (BODY!)' : ' (菜单)'}`);
+}, true);
 
 // ---------- 标签右键菜单(关闭/复制/重命名/定位) ----------
 function showTabMenu(e, sessionId) {
@@ -2105,9 +2219,11 @@ function fillGroupSelect() {
 function openSessionModal(session) {
   state.editingId = session ? session.id : null;
   els.sessionModalTitle.textContent = session ? `编辑会话: ${session.name}` : '新建会话';
+  const proto = (session && session.protocol) || 'ssh';
+  els.fProtocol.value = proto;
   els.fName.value = session ? session.name : '';
   els.fHost.value = session ? session.host : '';
-  els.fPort.value = session ? session.port : 22;
+  els.fPort.value = session ? session.port : (proto === 'telnet' ? 23 : 22);
   els.fUsername.value = session ? session.username : '';
   els.fPassword.value = session ? (session.password || '') : '';
   els.fPrivateKey.value = session ? (session.private_key || '') : '';
@@ -2119,6 +2235,7 @@ function openSessionModal(session) {
   els.fJumpPassword.value = jump ? (jump.password || '') : '';
   els.fEncoding.value = session ? (session.encoding || 'utf8') : 'utf8';
   els.fOnConnect.value = session ? (session.on_connect || '') : '';
+  applySessionProtocol(proto); // 按协议切换字段可见性/标签
   fillGroupSelect();
   els.fGroup.value = session && session.group_id != null
     ? String(session.group_id)
@@ -2127,17 +2244,94 @@ function openSessionModal(session) {
   els.fName.focus();
 }
 
+// 会话弹窗按协议切换:Telnet 隐藏私钥/跳板等 SSH 专属字段,端口/账号密码标签改说明
+function applySessionProtocol(proto) {
+  const isTelnet = proto === 'telnet';
+  els.fSshOnly.classList.toggle('hidden', isTelnet);
+  els.fPortLabel.textContent = isTelnet ? '端口(默认 23)' : '端口(默认 22)';
+  els.fUsernameLabel.textContent = isTelnet ? '账号(可选,登录提示时自动发送)' : '用户名';
+  els.fPasswordLabel.textContent = isTelnet ? '密码(可选,登录提示时自动发送)' : '密码';
+  els.fPort.placeholder = isTelnet ? '23' : '22';
+  els.fUsername.placeholder = isTelnet ? '如 admin' : 'root';
+  if (isTelnet && !els.fPort.value) els.fPort.value = 23;
+}
+
 function closeSessionModal() {
   state.editingId = null;
   els.sessionModal.classList.add('hidden');
 }
 
+// =====================================================================
+// 端口探测:批量 TCP 连通性检查(会话面板 🔎 按钮)
+// =====================================================================
+// 展开端口输入:"22,80,1000-1010" → [22, 80, 1000..1010];去重、去非法、上限 200 个
+function parsePorts(str) {
+  const out = [];
+  const seen = new Set();
+  for (const part of String(str || '').split(',')) {
+    const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = m[2] != null ? Number(m[2]) : a;
+    for (let p = Math.min(a, b); p <= Math.max(a, b) && out.length < 200; p++) {
+      if (p > 0 && p < 65536 && !seen.has(p)) { seen.add(p); out.push(p); }
+    }
+  }
+  return out;
+}
+
+// HTML 转义(探测结果里的 banner 是远端文本,不能直接 innerHTML 拼接)
+function escHtml(x) {
+  return String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function openProbeModal() {
+  els.probeHost.value = ''; // 每次打开留空,避免误探旧主机
+  els.probePorts.value = '';
+  els.probeTimeout.value = 3000;
+  els.probeResult.innerHTML = '<div class="probe-empty">填主机和端口后点「开始探测」</div>';
+  els.probeModal.classList.remove('hidden');
+  els.probeHost.focus();
+}
+
+function closeProbeModal() {
+  els.probeModal.classList.add('hidden');
+}
+
+async function runPortProbe() {
+  const host = els.probeHost.value.trim();
+  const ports = parsePorts(els.probePorts.value);
+  const timeout = Math.min(10000, Math.max(500, parseInt(els.probeTimeout.value || '3000', 10)));
+  if (!host) { alert('请填写主机'); return; }
+  if (!ports.length) { alert('请填写端口(如 22,80,1000-1010)'); return; }
+  els.probeRun.disabled = true;
+  els.probeRun.textContent = `探测中...`;
+  els.probeResult.innerHTML = `<div class="probe-empty">正在探测 ${host} 的 ${ports.length} 个端口...</div>`;
+  try {
+    const res = await window.api.probePorts({ host, ports, timeoutMs: timeout });
+    const rows = (res && res.length ? res : []).map((r) => {
+      const statusText = { open: '开放', closed: '关闭', timeout: '超时', error: '错误' }[r.status] || r.status;
+      const cls = `p-${r.status}`;
+      return `<div class="probe-row"><span class="p-port">${r.port}</span>` +
+        `<span class="p-status ${cls}">${statusText}</span>` +
+        `<span class="p-banner">${escHtml(r.banner || (r.error || ''))}</span></div>`;
+    }).join('');
+    els.probeResult.innerHTML = rows || '<div class="probe-empty">无结果</div>';
+  } catch (err) {
+    els.probeResult.innerHTML = `<div class="probe-empty">探测失败: ${escHtml(err.message || String(err))}</div>`;
+  } finally {
+    els.probeRun.disabled = false;
+    els.probeRun.textContent = '开始探测';
+  }
+}
+
 // 真正保存会话(传分组 id)
 async function doSaveSession(groupId) {
+  const proto = els.fProtocol.value === 'telnet' ? 'telnet' : 'ssh';
   const data = {
     name: els.fName.value.trim(),
     host: els.fHost.value.trim(),
-    port: parseInt(els.fPort.value || '22', 10),
+    port: parseInt(els.fPort.value || (proto === 'telnet' ? '23' : '22'), 10),
     username: els.fUsername.value.trim(),
     password: els.fPassword.value,
     privateKey: els.fPrivateKey.value.trim(),
@@ -2152,12 +2346,13 @@ async function doSaveSession(groupId) {
       : null,
     encoding: els.fEncoding.value,
     onConnect: els.fOnConnect.value,
+    protocol: proto,
     groupId,
   };
 
-  // 简单校验:必填项
-  if (!data.name || !data.host || !data.username) {
-    alert('名称、主机、用户名不能为空');
+  // 简单校验:必填项(telnet 的账号是可选自动登录,不强制)
+  if (!data.name || !data.host || (proto !== 'telnet' && !data.username)) {
+    alert(proto === 'telnet' ? '名称、主机不能为空' : '名称、主机、用户名不能为空');
     return;
   }
 
@@ -2223,6 +2418,7 @@ async function cloneSession(s) {
     privateKey: s.private_key || '',
     passphrase: s.passphrase || '',
     encoding: s.encoding || 'utf8',
+    protocol: s.protocol || 'ssh',
     groupId: s.group_id != null ? s.group_id : undefined,
   });
   if (!res.ok) { alert(`克隆失败: ${res.error}`); return; }
@@ -3554,7 +3750,10 @@ function openBastionPanel() {
   bastionRenderServerSelect();
   const saved = state.settings.bastionUrl || '';
   if (saved) els.bastionUrl.value = saved;
+  // 键盘焦点:webview 已加载 → 焦点给 webview(否则点击 guest 页面时,宿主焦点停在地址框,
+  // 按键会被地址框吞掉、输入框"打不进去";见 bastion-focus-fix)。空 webview 才聚焦地址框让用户输地址。
   if (!els.bastionWebview.src && saved) loadBastion(saved);
+  else if (els.bastionWebview.src) els.bastionWebview.focus();
   else els.bastionUrl.focus();
   refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
 }
@@ -3720,6 +3919,13 @@ function injectBastionAssetHook() {
       window.__bastionHookInjected = true;
       window.__bastionAssets = [];
       window.__bastionDiag = [{ ts: Date.now(), ev: 'hook-injected' }];
+      // 键盘焦点桥:记录"用户最后交互发生在 guest"的时间戳(click 时 webview guest 的
+      // focus/focusin 事件被 Chromium 抑制、不发;pointerdown/mousedown 正常)。宿主用它
+      // 判断该把键盘焦点补到 webview 元素上,否则按键会被宿主当前焦点(如地址框)吞掉。
+      window.__bastionFocusTs = 0;
+      ['pointerdown', 'mousedown'].forEach(function (ev) {
+        document.addEventListener(ev, function () { window.__bastionFocusTs = Date.now(); }, true);
+      });
       function capture(url, text, body) {
         if (!url || !text) return;
         const matched = /getAccessViewDevs|getAccessViewTree/.test(url);
@@ -4118,10 +4324,11 @@ function initBastionWebview() {
 }
 
 async function openTunnelModal() {
-  // 填充会话下拉(全部打开连接,未连的置灰提示)
+  // 填充会话下拉(全部打开连接,未连的置灰提示);Telnet 无 SSH 通道,直接跳过
   const sel = els.tunnelSession;
   sel.innerHTML = '';
   for (const t of state.tabs.values()) {
+    if (t.session && (t.session.protocol || 'ssh') === 'telnet') continue;
     const opt = document.createElement('option');
     opt.value = t.sessionId;
     const connected = t.status === 'connected';
@@ -4655,7 +4862,12 @@ function connectToServer(session) {
     const sel = term.getSelection();
     showCtxMenu(e.clientX, e.clientY, [
       { label: '📋 复制', action: () => { const s = term.getSelection(); if (s) window.api.copyText(s); } },
-      { label: '📥 粘贴', action: () => { const t = window.api.readClipboard(); if (t) term.paste(t); } },
+      { label: '📥 粘贴', action: () => {
+        const t = window.api.readClipboard();
+        if (t) term.paste(t);
+        refocusTerminal(sessionId); // 菜单是 <div>,点击会把 textarea 焦点顶掉(落到 body),
+        // 用户接着敲的字(含空格)会全被吞掉直到再点终端 —— 粘贴完立刻把焦点还回终端。
+      } },
       { label: '全选', action: () => { try { term.selectAll(); } catch { /* xterm 某些版本无 selectAll */ } } },
     ]);
   });
@@ -4737,6 +4949,7 @@ function connectToServer(session) {
       );
       if (!ok) return; // 拒绝则吞掉(命令不执行)
     }
+    dlog('SEND', `${sessionId} ${JSON.stringify(String(data).slice(0, 80))}${data.length > 80 ? '…' : ''}`);
     sendInput(sessionId, data); // 普通输入照发(广播模式也走这里)
   });
   // 窗口尺寸变化 → 同步给服务器(否则 vim 全屏会错位)
@@ -4819,30 +5032,44 @@ function connectInto(tab, session, isReconnect) {
     tab.term.write('\r\n\x1b[36m[正在尝试重连...]\x1b[0m\r\n');
   }
   tab.encoding = session.encoding || 'utf8'; // 终端编码(GBK 时主进程会转码)
-  window.api.sshConnect(tab.sessionId, {
-    host: session.host,
-    port: session.port || 22,
-    username: session.username,
-    password: session.password,
-    privateKey: session.private_key || '', // 密钥认证:私钥文件路径
-    passphrase: session.passphrase || '',
-    cols: tab.term.cols,
-    rows: tab.term.rows,
-    verifyHostKey: state.settings.verifyHostKey !== false, // 指纹校验开关
-    sessionName: session.name || '', // 会话日志文件名用它
-    sessionLog: state.settings.sessionLog !== false, // 会话日志开关
-    jump: session.jump && session.jump.host ? session.jump : null, // 跳板机(SSH 代理),直连则为 null
-  }).then((res) => {
-    if (res && !res.ok) {
-      // 连接失败:写入真实原因;若是重连失败,继续安排下一次
-      setTabStatus(tab.sessionId, 'closed');
-      tab.term.write(`\r\n\x1b[31m[连接失败] ${res.error}\x1b[0m\r\n`);
-      setStatus('连接失败', 'var(--red)');
-      // 堡垒机直连会话失败:记入诊断包(同步失败走这里,不经过 onSshStatus)
-      if (session && session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId: tab.sessionId, bastionKey: session.bastionKey, host: session.host, port: session.port, account: session.username, error: res.error });
-      if (isReconnect) scheduleReconnect(tab);
-    }
-  });
+  const fail = (res) => {
+    // 连接失败:写入真实原因;若是重连失败,继续安排下一次
+    setTabStatus(tab.sessionId, 'closed');
+    tab.term.write(`\r\n\x1b[31m[连接失败] ${res.error}\x1b[0m\r\n`);
+    setStatus('连接失败', 'var(--red)');
+    // 堡垒机直连会话失败:记入诊断包(同步失败走这里,不经过 onSshStatus)
+    if (session && session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId: tab.sessionId, bastionKey: session.bastionKey, host: session.host, port: session.port, account: session.username, error: res.error });
+    if (isReconnect) scheduleReconnect(tab);
+  };
+  const isTelnet = (session.protocol || 'ssh') === 'telnet';
+  const p = isTelnet
+    ? window.api.telnetConnect(tab.sessionId, {
+        host: session.host,
+        port: session.port || 23,
+        username: session.username || '', // telnet 自动登录(可选):检测 login:/password: 提示自动发送
+        password: session.password || '',
+        cols: tab.term.cols,
+        rows: tab.term.rows,
+        timeoutMs: 15000,
+        sessionName: session.name || '',
+        sessionLog: state.settings.sessionLog !== false,
+        encoding: tab.encoding,
+      })
+    : window.api.sshConnect(tab.sessionId, {
+        host: session.host,
+        port: session.port || 22,
+        username: session.username,
+        password: session.password,
+        privateKey: session.private_key || '', // 密钥认证:私钥文件路径
+        passphrase: session.passphrase || '',
+        cols: tab.term.cols,
+        rows: tab.term.rows,
+        verifyHostKey: state.settings.verifyHostKey !== false, // 指纹校验开关
+        sessionName: session.name || '', // 会话日志文件名用它
+        sessionLog: state.settings.sessionLog !== false, // 会话日志开关
+        jump: session.jump && session.jump.host ? session.jump : null, // 跳板机(SSH 代理),直连则为 null
+      });
+  p.then((res) => { if (res && !res.ok) fail(res); });
 }
 
 // ---- 断线自动重连(参考 Netcatty 的长驻工作流) ----
@@ -4894,6 +5121,7 @@ function activateTab(sessionId) {
     state.sftp.sessionId = sessionId;
     state.sftp.path = '.';
     state.sftp.selected = null;
+    setSftpConnLabel(sessionId);
     loadSftpList();
   }
 }
@@ -4952,12 +5180,14 @@ function closeTab(sessionId) {
       state.sftp.sessionId = sid;
       state.sftp.path = '.';
       state.sftp.selected = null;
+      setSftpConnLabel(sid);
       loadSftpList();
     } else {
       state.sftp.sessionId = null;
       state.sftp.selected = null;
       els.sftpPath.textContent = '/';
       els.sftpList.innerHTML = '<div class="sftp-empty">当前没有连接</div>';
+      setSftpConnLabel(null);
     }
   }
 }
@@ -5391,6 +5621,15 @@ function formatTime(ms) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// 终端右键菜单粘贴后把焦点还回终端:ctx 菜单是 <div>,点击它会把 textarea 的焦点顶掉
+// (落到 body),用户接着敲的字会全被吞掉直到再次点击终端 —— 表现就是"粘贴后打不出字/空格"。
+function refocusTerminal(sessionId) {
+  const ae = document.activeElement;
+  if (ae && ae.tagName === 'BUTTON') { try { ae.blur(); } catch { /* ignore */ } }
+  const t = state.tabs.get(sessionId);
+  if (t) { try { t.term.focus(); } catch { /* ignore */ } }
+}
+
 // SFTP 工具栏按钮操作完,把焦点还给终端:原生 <button> 点击后一直占着焦点,
 // 用户接着敲空格会被按钮当"激活键"吞掉(打不出空格 / 误触发按钮)。先 blur 按钮再聚焦终端。
 function sftpRefocusTerminal() {
@@ -5549,8 +5788,33 @@ function renderSftpLog() {
   els.sftpLog.scrollTop = els.sftpLog.scrollHeight; // 滚动到底,看最新一条
 }
 
+// SFTP 工具栏连接标签:显示当前连接的名称 + IP(无连接/面板清空时置空)
+function setSftpConnLabel(sessionId) {
+  const t = sessionId ? state.tabs.get(sessionId) : null;
+  const s = t && t.session;
+  els.sftpConn.textContent = s ? `${s.name} · ${s.host}:${s.port}` : '';
+}
+
+// 收起 SFTP 面板(切换/选中未打开的会话时,下方没有可显示的 SFTP)
+function closeSftpPanel() {
+  state.sftp.visible = false;
+  state.sftp.sessionId = null;
+  els.sftpPanel.classList.add('hidden');
+  els.dividerH.classList.add('hidden');
+  els.btnSftpToggle.classList.remove('active');
+  setSftpConnLabel(null);
+  refitAll();
+  syncPanelButtons();
+}
+
 // ---- 面板开关 ----
 function toggleSftpPanel() {
+  // Telnet 会话没有 SFTP 通道(仅 SSH 协议能力):提醒后不开面板
+  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
+  if (active && active.session && (active.session.protocol || 'ssh') === 'telnet') {
+    addLog('📁 SFTP 仅支持 SSH 会话', true);
+    return;
+  }
   state.sftp.visible = !state.sftp.visible;
   els.sftpPanel.classList.toggle('hidden', !state.sftp.visible);
   els.dividerH.classList.toggle('hidden', !state.sftp.visible); // 分隔条跟着面板一起显示/隐藏
@@ -5561,11 +5825,13 @@ function toggleSftpPanel() {
   if (!state.activeSessionId) {
     els.sftpPath.textContent = '/';
     els.sftpList.innerHTML = '<div class="sftp-empty">先连接一台服务器,再打开文件面板</div>';
+    setSftpConnLabel(null);
     return;
   }
   state.sftp.sessionId = state.activeSessionId;
   state.sftp.path = '.';
   state.sftp.selected = null;
+  setSftpConnLabel(state.activeSessionId);
   loadSftpList();
 }
 
@@ -5620,6 +5886,7 @@ async function sftpUpload() {
   }
   const done = res.isDir ? `文件夹 ${res.remotePath}(${res.count} 个文件)` : res.remotePath;
   setStatus(`已上传 → ${done}`, 'var(--green)');
+  if (res.resumedFrom > 0) addLog(`⬆ ${res.remotePath} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
   addLog(`⬆ 上传 ${done} ✅`);
   if (res.failed && res.failed.length) {
     for (const f of res.failed) addLog(`⬆ 上传失败 ${f.rp}: ${f.error}`, true);
@@ -5644,6 +5911,7 @@ async function sftpDownload() {
       return;
     }
     setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
+    if (res.resumedFrom > 0) addLog(`⬇ ${remote} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
     addLog(`⬇ 下载 ${remote} → ${res.localPath} ✅`);
     return;
   }
@@ -5965,11 +6233,41 @@ els.termSearchPrev.addEventListener('click', () => doTermSearch('prev'));
 els.termSearchClose.addEventListener('click', closeTermSearch);
 els.modalSave.addEventListener('click', saveSession);
 els.modalCancel.addEventListener('click', closeSessionModal);
+// 协议切换:显示/隐藏 SSH 专属字段,端口/账号标签随协议变
+els.fProtocol.addEventListener('change', () => {
+  const v = els.fProtocol.value;
+  // 新建会话切协议时把默认端口顺带改对(编辑已有会话不碰真实端口)
+  const cur = parseInt(els.fPort.value, 10);
+  if (v === 'telnet' && cur === 22) els.fPort.value = 23;
+  else if (v === 'ssh' && cur === 23) els.fPort.value = 22;
+  applySessionProtocol(v);
+});
 // 「浏览…」选私钥文件:弹原生文件对话框,把路径填进输入框
 els.fPrivateKeyPick.addEventListener('click', async () => {
   const res = await window.api.pickKeyFile();
   if (res && res.ok) els.fPrivateKey.value = res.path;
 });
+// 测试连接:不登录;协议感知——SSH 必须收到 SSH banner、Telnet 等到数据才算真的可达(端口 accept 但无服务不误报成功)
+els.fTestConn.addEventListener('click', async () => {
+  const host = els.fHost.value.trim();
+  const port = parseInt(els.fPort.value, 10) || (els.fProtocol.value === 'telnet' ? 23 : 22);
+  const res = els.fTestConnResult;
+  if (!host) { res.textContent = '先填写主机'; res.className = 'tcr tcr-bad'; return; }
+  res.textContent = '⏳ 测试中…'; res.className = 'tcr tcr-run';
+  try {
+    const r = await window.api.testConnect({ host, port, protocol: els.fProtocol.value, timeoutMs: 2500 });
+    if (r && r.ok) { res.textContent = `✅ ${host}:${port} ${r.message}`; res.className = 'tcr tcr-ok'; }
+    else { res.textContent = `❌ ${host}:${port} ${(r && r.message) || '连接失败'}`; res.className = 'tcr tcr-bad'; }
+  } catch (e) {
+    res.textContent = '⚠ 测试失败: ' + ((e && e.message) || e); res.className = 'tcr tcr-bad';
+  }
+});
+// 端口探测
+els.btnPortProbe.addEventListener('click', (e) => { e.stopPropagation(); openProbeModal(); });
+els.probeClose.addEventListener('click', closeProbeModal);
+els.probeRun.addEventListener('click', runPortProbe);
+els.probeHost.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e.preventDefault(); runPortProbe(); } });
+els.probePorts.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e.preventDefault(); runPortProbe(); } });
 // 导入/导出已移到"文件"菜单(menu:import / menu:export)
 // 修改密码
 els.setPwd.addEventListener('click', openPwdModal);
@@ -6029,6 +6327,29 @@ els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
 applyBastionZoom(); // 应用持久化的缩放级别
 initBastionWebview();
 setInterval(pollBastionAssets, 4000); // 定时刷新 H3C 资产(用户登录/进资产页后捕获)
+
+// 键盘焦点桥(宿主侧):click 进 webview guest 不会把宿主焦点移到 webview 元素上,
+// 之后按键会被宿主当前焦点(地址框等)吞掉,guest 输入框"打不进去"。用 guest 注入的
+// __bastionFocusTs(mousedown/pointerdown 时间戳)判断"用户最近操作在 guest",把焦点补回 webview。
+window.__hostEditableTs = 0;
+document.addEventListener('mousedown', (e) => {
+  // 宿主可编辑元素被点击 → 记时间,让焦点检查不抢回(用户在输地址/AI/搜索等)
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) window.__hostEditableTs = Date.now();
+}, true);
+function bastionFocusCheck() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  if (els.bastionSlot.classList.contains('hidden')) return; // 面板收起:不打扰
+  if (!els.lockOverlay.classList.contains('hidden')) return; // 锁定中:webview 已 display:none
+  if (document.activeElement === wv) return; // 键盘焦点已在 webview:无需轮询
+  try {
+    wv.executeJavaScript('window.__bastionFocusTs || 0').then((ts) => {
+      if (ts && ts > (window.__hostEditableTs || 0) && document.activeElement !== wv) wv.focus();
+    }).catch(() => {});
+  } catch { /* 导航中 executeJavaScript 可能短暂不可用,忽略 */ }
+}
+setInterval(bastionFocusCheck, 150); // 点进 guest 后 ~150ms 内把键盘焦点补回 webview
 updateBastionMini();
 els.jmsServerSelect.addEventListener('change', () => jmsSelectServer(els.jmsServerSelect.value));
 els.jmsServerAdd.addEventListener('click', jmsAddServer);
@@ -6063,6 +6384,19 @@ document.addEventListener('click', (e) => {
 
 // 设置
 els.btnSettings.addEventListener('click', openSettingsModal);
+// 终端调试日志面板
+els.btnDebug.addEventListener('click', toggleDebugPanel);
+els.debugClose.addEventListener('click', () => { els.debugPanel.classList.add('hidden'); els.btnDebug.classList.remove('active'); });
+els.debugClear.addEventListener('click', () => { termDebug.lines.length = 0; renderDebugBody(); });
+els.debugCopy.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(termDebug.lines.join('\n')); setStatus('调试日志已复制到剪贴板'); }
+  catch { setStatus('复制失败', 'var(--red)'); }
+});
+els.debugSave.addEventListener('click', async () => {
+  const r = await window.api.debugSave(termDebug.lines.join('\n'));
+  if (r && r.ok) setStatus(`调试日志已保存: ${r.path}`);
+  else setStatus('保存调试日志失败', 'var(--red)');
+});
 els.setClose.addEventListener('click', closeSettingsModal);
 els.setTheme.addEventListener('change', () => {
   state.settings.theme = els.setTheme.value;
@@ -6358,6 +6692,11 @@ async function detectOsForTab(t) {
 window.api.onSshData((sessionId, data) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
+  // 接收数据只在面板打开时记(否则滚屏日志会瞬间刷爆环形缓冲,挤掉按键/焦点这些关键记录)
+  if (els.debugPanel && !els.debugPanel.classList.contains('hidden')) {
+    if (typeof data === 'string') dlog('RECV', `${sessionId} +${data.length}B ${JSON.stringify(data.slice(0, 60))}${data.length > 60 ? '…' : ''}`);
+    else dlog('RECV', `${sessionId} +${data.length}B [${Array.from(data.slice(0, 12)).map((b) => b.toString(16).padStart(2, '0')).join(' ')}${data.length > 12 ? ' …' : ''}]`);
+  }
   if (typeof data === 'string') {
     // 主进程已把 GBK/GB2312 转成 UTF-8 字符串,直接写
     t.term.write(state.settings.highlight ? highlightString(data) : data);
@@ -6423,6 +6762,7 @@ function clearSftpTransfers() {
 window.api.onSshStatus((sessionId, status) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
+  dlog('STATUS', `${sessionId} ${status.status}${status.error ? ' ' + status.error : ''}`);
   const dot = t.el.querySelector('.tab-status-dot');
   if (status.status === 'connected') {
     setTabStatus(sessionId, 'connected');
@@ -6525,6 +6865,66 @@ fillAiConfig();     // 把当前厂商配置填进 ⚙ 面板
 updateCmdRecordBtn(); // 命令记录开关按钮状态
 updateRecordBtn();    // 会话录制按钮状态(初始=未录制)
 syncPanelButtons();   // 面板开关按钮激活态
+// ---- 解锁后科幻开机过场(仅正式版 ?boot=1 播放;点击/按键可跳过) ----
+// 数字雨 + 全息扫描线 + 能量环 + 状态行打字机,~2.2s 后淡出揭开主界面
+(function bootIntro() {
+  if (new URLSearchParams(location.search).get('boot') !== '1') return;
+  const ov = document.getElementById('boot-overlay');
+  if (!ov) return;
+  ov.classList.remove('hidden'); // 揭开过场(正式版;dev 测试不播,overlay 保持 hidden 不挡界面)
+  const line = document.getElementById('boot-line');
+  const rain = document.getElementById('boot-rain');
+  const statuses = ['验证加密密钥… OK', '加载会话数据库… OK', '建立安全信道… OK', '✦ ACCESS GRANTED'];
+  let raf = null;
+
+  function drawRain() { // 背景数字雨(轻量 canvas,过场结束即停)
+    const ctx = rain.getContext('2d');
+    const W = rain.width = rain.offsetWidth;
+    const H = rain.height = rain.offsetHeight;
+    const fs = 14, cols = Math.ceil(W / fs);
+    const drops = new Array(cols).fill(0);
+    const glyphs = 'アイウエオカキクケコ0123456789ABCDEF';
+    ctx.font = fs + 'px Menlo, monospace';
+    const step = () => {
+      ctx.fillStyle = 'rgba(4,10,24,0.14)';
+      ctx.fillRect(0, 0, W, H);
+      for (let i = 0; i < cols; i++) {
+        ctx.fillStyle = Math.random() > 0.97 ? '#7de8ff' : '#1fbfff';
+        ctx.fillText(glyphs[Math.floor(Math.random() * glyphs.length)], i * fs, drops[i] * fs);
+        if (drops[i] * fs > H && Math.random() > 0.97) drops[i] = 0;
+        drops[i]++;
+      }
+      raf = requestAnimationFrame(step);
+    };
+    step();
+  }
+
+  let done = false;
+  function skip() {
+    if (done) return;
+    done = true;
+    if (raf) cancelAnimationFrame(raf);
+    ov.classList.add('boot-done');
+    setTimeout(() => ov.remove(), 500);
+  }
+  ov.addEventListener('click', skip);
+  window.addEventListener('keydown', skip, { once: true });
+
+  drawRain();
+  line.textContent = 'POLARIS 安全系统启动中…';
+  let i = 0;
+  const typer = setInterval(() => {
+    if (i >= statuses.length) {
+      clearInterval(typer);
+      setTimeout(skip, 550); // ACCESS GRANTED 停留片刻再淡出
+      return;
+    }
+    line.textContent = statuses[i];
+    if (i === statuses.length - 1) line.style.color = 'var(--green)'; // 最后一行高亮绿色
+    i++;
+  }, 420);
+  setTimeout(skip, 2400); // 兜底:无论如何 2.4s 内结束
+})();
 loadCmdHistory();   // 加载持久化的命令记录
 loadRecent();       // 加载最近连接
 // 终端字体(如 SF Mono)加载完后再重适配一次,避免字体未就绪时算错行高、终端只占一半

@@ -14,6 +14,7 @@ const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
 
 const sshClient = require('./lib/ssh-client');
+const telnetClient = require('./lib/telnet-client'); // 最小 Telnet 客户端(裸 TCP + IAC 协商)
 const { createStore } = require('./lib/session-store');
 const crypto = require('./lib/crypto'); // safeStorage 密码加密
 const knownHosts = require('./lib/known-hosts'); // 主机指纹校验
@@ -104,6 +105,8 @@ function schedulePersist() {
 // ---------- SSH 连接池 ----------
 // sessionId -> { conn, stream }
 const sshSessions = new Map();
+// Telnet 连接池:sessionId -> telnet-client 客户端对象(复用整套 ssh:data 管线,协议无关)
+const telnetSessions = new Map();
 // 已广播过 closed 的 sessionId:stream close 与 conn close 同一次断开可能都触发,只广播一次
 // (不能放在 sshSessions 记录上——ssh:close 会先删记录再触发 close 事件;重连时在 ssh:connect 清掉)
 const closedBroadcast = new Set();
@@ -199,17 +202,17 @@ function finalizeRecording(sessionId) {
   if (!rec) return null;
   recSessions.delete(sessionId); // 先摘掉,防止收尾过程中又来新数据
   try {
-    const { size } = recorder.finishRecording(rec.file);
+    const fin = recorder.finishRecording(rec.file); // 停止时压缩成 .jsonl.gz,返回 {size, file}
     const id = sessionStore.addRecording({
       sessionName: rec.sessionName, host: rec.host, port: rec.port,
       username: rec.username, encoding: rec.encoding, cols: rec.cols, rows: rec.rows,
-      file: rec.file,
+      file: fin.file, // 压缩后的文件路径(旧版 .jsonl 兼容:finishRecording 失败时原样返回)
       startedAt: new Date(rec.startTs).toISOString().replace('T', ' ').slice(0, 19),
       durationMs: Date.now() - rec.startTs,
-      size,
+      size: fin.size,
     });
     schedulePersist(); // 元数据变更,防抖落盘
-    return { id, ...rec };
+    return { id, ...rec, file: fin.file, size: fin.size }; // file 覆盖为压缩后的路径(rec:stop 返回它)
   } catch (err) {
     console.warn('[MAIN] 录制收尾失败:', err.message);
     return null;
@@ -529,6 +532,19 @@ ipcMain.handle('jms:assets', async (_e, { baseUrl, token }) => {
 // ---------- IPC:H3C 堡垒机(accessclient:// token 解码) ----------
 // H3C Shterm 堡垒机用 accessclient://<base64(zlib(json))> 唤起外部工具,
 // 内含目标主机/账号/一次性密码。这里在主子进程解码(zlib 只在 Node 有)。
+// 终端调试日志:把渲染层面板内容存到会话日志目录(排查终端/vim 按键问题用)
+ipcMain.handle('debug:save', (_e, text) => {
+  try {
+    const dir = sessionLog.sessionLogsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `polaris-debug-${Date.now()}.log`);
+    fs.writeFileSync(file, String(text || ''), 'utf8');
+    return { ok: true, path: file };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('bastion:decode', (_e, url) => {
   try {
     const zlib = require('zlib');
@@ -557,6 +573,61 @@ ipcMain.handle('bastion:probe', (_e, { host, port, timeoutMs }) => {
 });
 
 // 导出堡垒机资产诊断包:渲染层收集的资产请求记录 → 写 JSON 到用户下载目录,返回路径供拷贝
+// ---------- IPC:批量端口探测 ----------
+// 每个端口一个 TCP 连接 + 超时,并行探测;开放且收到首字节时带上 banner 前 60 字节。
+// status: 'open'(能连上) / 'closed'(拒连) / 'timeout'(连不上没回包) / 'error'(其他)
+function probeOnePort(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    let done = false, connected = false;
+    const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(r); };
+    sock.on('connect', () => {
+      connected = true;
+      sock.setTimeout(Math.min(timeoutMs, 2500)); // 连上后只等短暂 banner(等不到也算 open)
+    });
+    sock.on('data', (d) => finish({ status: 'open', banner: d.toString('utf8', 0, 60).replace(/[\r\n\t]+/g, ' ').trim() }));
+    sock.on('timeout', () => finish(connected ? { status: 'open', banner: null } : { status: 'timeout', banner: null }));
+    sock.on('error', (e) => finish({ status: (e.code === 'ECONNREFUSED' || e.code === 'EHOSTUNREACH') ? 'closed' : 'error', banner: null, error: e.code || e.message }));
+    sock.setTimeout(timeoutMs); // 连接阶段超时
+  });
+}
+ipcMain.handle('probe:ports', async (_e, { host, ports, timeoutMs }) => {
+  const t = timeoutMs || 3000;
+  const list = (Array.isArray(ports) ? ports : []).map((p) => Number(p)).filter((p) => p > 0 && p < 65536);
+  const results = await Promise.allSettled(list.map((port) => probeOnePort(host, port, t)));
+  return list.map((port, i) => ({ port, ...(results[i].status === 'fulfilled' ? results[i].value : { status: 'error', error: '内部错误' }) }));
+});
+
+// ---------- IPC:测试连接(会话弹窗「测试连接」按钮) ----------
+// 协议感知,比纯 TCP 探测严格:端口 accept 但没服务(如 NAT/防火墙转发后静默断开)会误报成功,
+// 而真实 SSH 连接会 "Connection lost before handshake"。这里 SSH 必须收到 SSH banner、Telnet 等到任意数据才算可达。
+ipcMain.handle('test:connect', async (_e, { host, port, protocol, timeoutMs }) => {
+  const t = timeoutMs || 3000;
+  const wantSsh = (protocol || 'ssh') !== 'telnet';
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    let done = false; let buf = ''; let dataSeen = false;
+    const finish = (ok, message) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve({ ok, message }); };
+    sock.on('connect', () => sock.setTimeout(t));
+    sock.on('data', (d) => {
+      buf += d.toString('utf8', 0, 64);
+      dataSeen = true;
+      if (wantSsh) {
+        if (buf.indexOf('SSH-') >= 0) return finish(true, 'SSH 服务正常');
+        sock.setTimeout(500); // 收到非 SSH 数据:再等片刻排除 banner 分片,然后判"不是 SSH"
+        return;
+      }
+      return finish(true, '服务可达');
+    });
+    sock.on('close', () => finish(false, '连接被对端关闭(未完成握手)'));
+    sock.on('timeout', () => finish(false, wantSsh
+      ? (dataSeen ? '端口可达,但不是 SSH 服务(未收到 SSH banner)' : '端口可达但无响应,可能不是 SSH 服务')
+      : '连接后无响应'));
+    sock.on('error', (e) => finish(false, (e.code === 'ECONNREFUSED' || e.code === 'EHOSTUNREACH') ? '端口未开放/拒绝连接' : `连接失败(${e.code || e.message})`));
+    sock.setTimeout(t);
+  });
+});
+
 ipcMain.handle('diag:exportBastion', (_e, data) => {
   try {
     const dir = app.getPath('downloads') || app.getPath('userData');
@@ -1394,6 +1465,52 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
   }
 });
 
+// ---------- IPC:Telnet 连接 ----------
+// Telnet 会话复用整条 ssh:data/ssh:status/ssh:write 管线(录制/会话日志/GBK 转码都在
+// pushSshData 里按 sessionId 路由),只是底层从 ssh2 stream 换成裸 TCP socket + IAC 协商。
+ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resolve) => {
+  if (telnetSessions.has(sessionId)) { resolve({ ok: false, error: `会话 ${sessionId} 已存在` }); return; }
+  let settled = false;
+  const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+  const tel = telnetClient.connect({
+    host: opts.host,
+    port: opts.port || 23,
+    timeoutMs: opts.timeoutMs || 15000,
+    cols: opts.cols, rows: opts.rows,
+    autoLogin: (opts.username || opts.password) ? { username: opts.username, password: opts.password } : null,
+    onConnect: () => {
+      const enc = opts.encoding || 'utf8';
+      if (enc !== 'utf8') {
+        try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
+      }
+      if (opts.sessionLog !== false) {
+        startSessionLog(sessionId, { sessionName: opts.sessionName, host: opts.host, port: opts.port, username: opts.username, encoding: enc });
+      }
+      broadcast('ssh:status', sessionId, { status: 'connected' });
+      done({ ok: true });
+    },
+    onData: (chunk) => pushSshData(sessionId, chunk),
+    onError: (err) => {
+      // 连接阶段失败(超时/拒连)返回给调用方;已连接后的错误走 ssh:status
+      telnetSessions.delete(sessionId);
+      done({ ok: false, error: err.message });
+    },
+    onClose: () => {
+      if (!telnetSessions.has(sessionId)) return; // 连接失败已删记录,这里只兜底
+      flushSshData(sessionId);
+      cleanupSshDecoder(sessionId);
+      finalizeRecording(sessionId); // 幂等:ssh:close 已收尾则空操作
+      finalizeSessionLog(sessionId); // 幂等
+      if (!closedBroadcast.has(sessionId)) {
+        closedBroadcast.add(sessionId);
+        broadcast('ssh:status', sessionId, { status: 'closed' });
+      }
+      telnetSessions.delete(sessionId);
+    },
+  });
+  telnetSessions.set(sessionId, tel); // 立即登记:用户中途关标签,ssh:close 也能路由到它
+}));
+
 ipcMain.on('ssh:write', (_e, sessionId, data) => {
   // 录制打点:记录敲过的输入(回放时用 ▶ 标出,看清每步做了什么)
   const rec = recSessions.get(sessionId);
@@ -1402,14 +1519,21 @@ ipcMain.on('ssh:write', (_e, sessionId, data) => {
   const s = sshSessions.get(sessionId);
   if (s && s.stream && !s.stream.destroyed) {
     s.stream.write(Buffer.from(data));
+    return;
   }
+  // Telnet 会话:CRLF 映射 + 本地回显在 telnet 客户端内处理
+  const t = telnetSessions.get(sessionId);
+  if (t) t.write(Buffer.from(data));
 });
 
 ipcMain.on('ssh:resize', (_e, sessionId, cols, rows) => {
   const s = sshSessions.get(sessionId);
   if (s && s.stream) {
     try { s.stream.setWindow(rows, cols, 0, 0); } catch { /* ignore */ }
+    return;
   }
+  const t = telnetSessions.get(sessionId);
+  if (t) t.resize(cols, rows); // NAWS 窗口大小协商
 });
 
 ipcMain.on('ssh:close', (_e, sessionId) => {
@@ -1419,6 +1543,16 @@ ipcMain.on('ssh:close', (_e, sessionId) => {
   finalizeSessionLog(sessionId); // 关标签时收尾会话日志
   stopTunnelsForSession(sessionId); // 关标签时停掉该连接的隧道
   closeJump(sessionId); // 关标签时收掉跳板连接
+  const t = telnetSessions.get(sessionId);
+  if (t) {
+    try { t.destroy(); } catch { /* ignore */ }
+    telnetSessions.delete(sessionId);
+    // socket close 事件里 onClose 已因记录删除而 early-return,这里补发 closed
+    if (!closedBroadcast.has(sessionId)) {
+      closedBroadcast.add(sessionId);
+      broadcast('ssh:status', sessionId, { status: 'closed' });
+    }
+  }
   const s = sshSessions.get(sessionId);
   if (s) {
     try { s.stream.end(); } catch { /* ignore */ }
@@ -1440,6 +1574,49 @@ async function getSftp(sessionId) {
 function joinRemote(dir, name) {
   if (dir === '/' || dir === '') return `/${name}`;
   return `${dir.replace(/\/$/, '')}/${name}`;
+}
+
+// ---- 断点续传(会话内,内存记录)----
+// 只续传"本次会话里我们自己中断过"的传输:失败时记真实已写字节(+本地 mtime),重试同一路径时
+// 由 ssh-client 的 resolve*Offset 纯函数判定偏移。绝不按 size 猜同名既有文件(那会拼脏文件)。
+// ponytail: 内存表,app 重启后中断点重置(退化为全量重传),不产生错误数据;需要跨重启续传再做磁盘化。
+// 键带 sessionId 前缀:多主机并发传同名同路径文件时互不覆盖,续传表严格按连接隔离。
+const sftpPartials = new Map(); // 键 = `${sessionId}:${remotePath}` / `${sessionId}:${localPath}` → {bytes, mtimeMs} / {bytes}
+const ptKey = (sessionId, p) => `${sessionId}:${p}`;
+
+// 查上传续传偏移:返回 >0 表示应从该偏移续传;状态已失效则清记录并返回 0
+async function resolveUploadResume(sessionId, sftp, remotePath, localPath) {
+  const key = ptKey(sessionId, remotePath);
+  const p = sftpPartials.get(key);
+  if (!p) return 0;
+  const cur = await sshClient.statSize(sftp, remotePath); // 远端真实已写字节(以实际落盘为准)
+  const off = sshClient.resolveUploadOffset(p, fs.statSync(localPath).mtimeMs, cur);
+  if (off === 0) sftpPartials.delete(key);
+  return off;
+}
+
+// 上传失败时记下中断点:远端已写字节 + 本地 mtime(本地 mtime 变过就不续,前缀可能已失效)
+async function recordUploadPartial(sessionId, sftp, remotePath, localPath) {
+  try {
+    const cur = await sshClient.statSize(sftp, remotePath);
+    if (cur > 0) sftpPartials.set(ptKey(sessionId, remotePath), { bytes: cur, mtimeMs: fs.statSync(localPath).mtimeMs });
+  } catch { /* 记不下来就放弃续传,不影响主流程 */ }
+}
+
+// 查下载续传偏移:本地残留必须恰好等于中断点(说明那份残留是我们传的)
+function resolveDownloadResume(sessionId, localPath) {
+  const key = ptKey(sessionId, localPath);
+  const p = sftpPartials.get(key);
+  if (!p) return 0;
+  const localSize = fs.existsSync(localPath) ? fs.statSync(localPath).size : 0;
+  const off = sshClient.resolveDownloadOffset(p, localSize);
+  if (off === 0) sftpPartials.delete(key);
+  return off;
+}
+
+// 下载失败时记下本地中断点(真实落盘大小)
+function recordDownloadPartial(sessionId, localPath) {
+  try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
 }
 
 // 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
@@ -1556,18 +1733,30 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
     const prog = (p) => emitSftpProgress({ op: 'upload', ...p });
     if (fs.statSync(localPath).isDirectory()) {
       const target = joinRemote(remoteDir, path.basename(localPath));
-      const { uploaded, failed } = await sshClient.uploadDir(sftp, localPath, target, prog); // uploadDir 内部会建目标目录
+      // 目录内每个文件各自断点续传:中断点判定 + 失败时记录
+      const { uploaded, failed } = await sshClient.uploadDir(
+        sftp, localPath, target, prog,
+        (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
+        (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp)
+      );
       return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
     }
     const remotePath = joinRemote(remoteDir, path.basename(localPath));
-    await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }));
-    return { ok: true, remotePath };
+    const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
+    if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, remotePath)); // 这次从偏移续传,旧的记录作废
+    try {
+      await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
+      return { ok: true, remotePath, resumedFrom: resumeFrom };
+    } catch (err) {
+      recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
+      return { ok: false, error: err.message };
+    }
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-// 下载:弹出保存对话框 → 流式下载到本地(带进度)
+// 下载:弹出保存对话框 → 流式下载到本地(带进度),再次存到同一路径时断点续传
 ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
   try {
     const sftp = await getSftp(sessionId);
@@ -1577,9 +1766,17 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
       defaultPath: name,
     });
     if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
+    const localPath = save.filePath;
+    const resumeFrom = resolveDownloadResume(sessionId, localPath);
+    if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, localPath)); // 这次从偏移续传,旧的记录作废
     const prog = (p) => emitSftpProgress({ op: 'download', ...p });
-    await sshClient.downloadFile(sftp, remotePath, save.filePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }));
-    return { ok: true, localPath: save.filePath };
+    try {
+      await sshClient.downloadFile(sftp, remotePath, localPath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
+      return { ok: true, localPath, resumedFrom: resumeFrom };
+    } catch (err) {
+      recordDownloadPartial(sessionId, localPath); // 又失败:用最新的真实落盘大小更新中断点
+      return { ok: false, error: err.message };
+    }
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -1610,19 +1807,23 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
     }
     const total = plans.reduce((s, p) => s + (p.size || 0), 0);
     const prog = (p) => emitSftpProgress({ op: 'download', ...p });
-    let done = 0;
-    const results = [];
-    for (let i = 0; i < plans.length; i++) {
-      const p = plans[i];
-      let fDone = 0;
+    let done = 0, finished = 0;
+    // 并发下载:一次多个文件同时传;done 各 worker 增量累加(单线程无竞争),filesDone 取已完成的文件数
+    const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
+      const resumeFrom = resolveDownloadResume(sessionId, p.lp);
+      if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, p.lp));
+      let fDone = resumeFrom; // 续传时首块增量只算新写的部分,避免把续传字节重复计入累计
       try {
         fs.mkdirSync(path.dirname(p.lp), { recursive: true });
-        await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: i, filesTotal: plans.length }); });
-        results.push({ ok: true, remotePath: p.rp, localPath: p.lp });
+        await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: finished, filesTotal: plans.length }); }, resumeFrom);
+        return { ok: true, remotePath: p.rp, localPath: p.lp };
       } catch (err) {
-        results.push({ ok: false, remotePath: p.rp, error: err.message });
+        recordDownloadPartial(sessionId, p.lp); // 又失败:更新本地中断点
+        return { ok: false, remotePath: p.rp, error: err.message };
+      } finally {
+        finished++;
       }
-    }
+    });
     return { ok: true, dir, results };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -1632,7 +1833,7 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
 // ---------- 窗口 ----------
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
+    width: 1000,   // 工具栏真实内容宽 817px(实测,spacer 会被压到 0);1000 = 单行紧凑间距(~8px) + Windows 字体/边框余量,1920×1080 完全放得下
     height: 800,
     minWidth: 900,
     minHeight: 600,
@@ -1647,7 +1848,9 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  // 正式版:带 ?boot=1 触发主窗口的科幻开机过场(解锁后"打开的瞬间");dev/测试不播,避免干扰
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'),
+    DEV_MODE ? undefined : { query: { boot: '1' } });
 
   // Windows: 打开主窗口时显式显示原生菜单栏(文件/编辑/…)。锁定流程会 setMenuBarVisibility(false),
   // 若此前锁定后退出/重建窗口,这里强制恢复,保证"打开应用就有菜单栏"。
