@@ -52,7 +52,7 @@
     const p = pw.value;
     if (!p) { msg.textContent = '请输入密码'; return; }
     if (!has) {
-      if (p.length < 4) { msg.textContent = '密码至少 4 位'; return; }
+      if (p.length < 8) { msg.textContent = '密码至少 8 位'; return; }
       if (p !== pw2.value) { msg.textContent = '两次输入的密码不一致'; return; }
       const r = await window.api.lockSetup(p);
       if (!r.ok) { msg.textContent = '设置失败: ' + r.error; return; }

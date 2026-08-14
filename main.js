@@ -144,6 +144,7 @@ function persistDb() {
     const tmpPath = path.join(dir, `data.bin.tmp-${process.pid}`);
     fs.writeFileSync(tmpPath, blob);
     fs.renameSync(tmpPath, finalPath);
+    try { fs.chmodSync(finalPath, 0o600); } catch { /* 平台不支持则忽略 */ } // 加密库只允许当前用户读写
   } catch (err) {
     console.warn('[MAIN] 保存数据库失败:', err.message);
   }
@@ -612,9 +613,16 @@ ipcMain.handle('bastion:decode', (_e, url) => {
   try {
     const zlib = require('zlib');
     const token = String(url || '').replace(/^accessclient:\/\//, '');
+    // 压缩炸弹防护:正常 accessclient token 是几十~几百字节的 JSON;
+    // 恶意构造的高压缩比 base64 经 inflateSync 可膨胀出 GB 级内存,直接 OOM 主进程。
+    // 限制:输入 base64 解码后 ≤ 64KB,解压后 ≤ 1MB,超限拒绝。
+    if (token.length > 96 * 1024) return { ok: false, error: '连接凭证过大,拒绝解码' };
     const b64 = token.replace(/-/g, '+').replace(/_/g, '/');
     const buf = Buffer.from(b64, 'base64');
-    const info = JSON.parse(zlib.inflateSync(buf).toString('utf8'));
+    if (buf.length > 64 * 1024) return { ok: false, error: '连接凭证异常(长度超限)' };
+    const inflated = zlib.inflateSync(buf);
+    if (inflated.length > 1024 * 1024) return { ok: false, error: '连接凭证异常(解压超限)' };
+    const info = JSON.parse(inflated.toString('utf8'));
     return { ok: true, info };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -764,7 +772,10 @@ ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
     const base = path.basename(remotePath) || 'download';
     const results = [];
     for (const s of sessions) {
-      const localPath = path.join(localDir, `${s.name}_${base}`);
+      // 会话名可能来自导入文件(如 iTerm2 的 Name 字段),含 ../ 或 / 会让 path.join
+      // 穿越出保存目录 → 本地任意路径写文件(安全漏洞)。净化后再拼。
+      const safeName = String(s.name || 'host').replace(/[\\/:*?"<>|\r\n]+/g, '_').replace(/\.\./g, '_').slice(0, 60) || 'host';
+      const localPath = path.join(localDir, `${safeName}_${base}`);
       try {
         const conn = await sshClient.connectRaw(withHostVerify(resolvePrivateKey(s)));
         const sftp = await sshClient.openSftp(conn);
@@ -1874,7 +1885,8 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
 ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
   try {
     const sftp = await getSftp(sessionId);
-    const name = remotePath.split('/').filter(Boolean).pop() || 'download';
+    // 文件名取自远程路径,净化掉路径分隔符/.. (远程路径理论上可控,防保存时穿越)
+    const name = String(remotePath.split('/').filter(Boolean).pop() || 'download').replace(/[\\/:*?"<>|\r\n]+/g, '_').replace(/\.\./g, '_') || 'download';
     // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答保存对话框,不弹原生窗口
     const save = process.env.POLARIS_AUTO_DL_DIR
       ? { canceled: false, filePath: path.join(process.env.POLARIS_AUTO_DL_DIR, name) }
@@ -2145,7 +2157,12 @@ ipcMain.handle('lock:menu', (_e, visible) => {
 // 查询应用菜单是否被移除(锁定后应为 null)。供测试断言"锁定后无菜单栏"。
 ipcMain.handle('lock:menuState', () => ({ ok: true, removed: Menu.getApplicationMenu() === null }));
 ipcMain.handle('lock:setup', (_e, password) => {
-  try { appLock.setPassword(password); return { ok: true }; }
+  try {
+    // 最小密码长度:整库加密密钥由密码 PBKDF2 派生,1 字符密码 = 密钥可被秒级爆破拖垮
+    if (!password || String(password).length < 8) return { ok: false, error: 'App 密码至少 8 位' };
+    appLock.setPassword(password);
+    return { ok: true };
+  }
   catch (err) { return { ok: false, error: err.message }; }
 });
 // 校验密码(带防暴力破解:连续失败锁定/递增延时)

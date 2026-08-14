@@ -327,12 +327,14 @@ function start() {
     }
     console.error('[MOCK] SSH 错误:', e);
   });
-  server.listen(HTTP_PORT, () => {
+  // 只绑 127.0.0.1:mock 是本地测试工具,绑 0.0.0.0 会让内网任何机器可连,
+  // 配合硬编码凭据/任意公钥认证甚至能借它当枢轴访问开发机(localhost 服务)
+  server.listen(HTTP_PORT, '127.0.0.1', () => {
     console.log(`[MOCK] JumpServer HTTP API 已启动: http://127.0.0.1:${HTTP_PORT}`);
     console.log(`[MOCK]   登录接口  POST /api/v1/authentication/auth/`);
     console.log(`[MOCK]   资产接口  GET  /api/v1/assets/assets/`);
   });
-  sshd.listen(SSH_PORT, '0.0.0.0', () => {
+  sshd.listen(SSH_PORT, '127.0.0.1', () => {
     console.log(`[MOCK] KoKo SSH 网关已启动: 127.0.0.1:${SSH_PORT}`);
     console.log(`[MOCK]   直连格式  ssh -p ${SSH_PORT} 'admin@root@192.168.10.10'@127.0.0.1`);
     console.log(`[MOCK]   测试账号  admin/admin123 · ops/ops123`);

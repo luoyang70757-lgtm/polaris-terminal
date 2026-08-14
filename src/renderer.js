@@ -670,7 +670,7 @@ async function confirmFilePwd() {
   const showErr = (m) => { els.filePwdMsg.textContent = m; els.filePwdMsg.classList.remove('hidden'); };
   if (!p1) { showErr('请输入密码'); return; }
   if (isSet) {
-    if (p1.length < 4) { showErr('密码至少 4 位'); return; }
+    if (p1.length < 8) { showErr('密码至少 8 位'); return; }
     if (p1 !== els.filePwdInput2.value) { showErr('两次密码不一致'); return; }
   }
   closeFilePwd();
@@ -4774,7 +4774,8 @@ function initBastionWebview() {
     // accessclient:// → 接管连接;其他新窗口链接 → 留在同一 webview 打开(避免弹窗)
     e.preventDefault();
     if (e.url && e.url.startsWith('accessclient://')) handleAccessClientUrl(e.url);
-    else if (e.url && !e.url.startsWith('about:')) { try { wv.src = e.url; } catch { /* ignore */ } }
+    // file:// 一律拒绝:webview 是网页上下文,允许 file:// 导航等于让任意网页读本地文件
+    else if (e.url && !e.url.startsWith('about:') && !e.url.startsWith('file:')) { try { wv.src = e.url; } catch { /* ignore */ } }
   });
   // 加载状态:开始显示"加载中"转圈,成功隐藏,失败显示错误
   wv.addEventListener('did-start-loading', () => {
