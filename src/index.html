@@ -219,14 +219,32 @@
         </div>
         <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
         <div class="bastion-body">
-          <div id="bastion-empty" class="bastion-empty">
-            <div class="be-title">🌐 堡垒机浏览器</div>
-            <div class="be-sub">在上方输入堡垒机 Web 地址,点「打开」开始</div>
-            <div class="be-sub">登录后在堡垒机里选主机 → 点连接 → 自动用本应用打开 SSH</div>
-            <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
+          <!-- web 标签页专属会话/资产列表:显示当前 web 标签页对应堡垒机的资产,双击连 SSH -->
+          <div id="bastion-asset-sidebar" class="bastion-asset-sidebar hidden">
+            <div class="bastion-asset-head">
+              <div class="bastion-asset-title" title="当前 web 标签页对应的堡垒机资产">
+                <span id="bastion-asset-srv" class="bastion-asset-srv">堡垒机</span>
+                <span id="bastion-asset-status" class="bastion-asset-status"></span>
+                <span id="bastion-asset-cnt" class="dim"></span>
+              </div>
+              <div class="bastion-asset-actions">
+                <button id="bastion-asset-refresh" class="btn-mini" title="刷新资产">↻</button>
+                <button id="bastion-asset-collapse" class="btn-mini" title="收起资产列表">≫</button>
+              </div>
+            </div>
+            <div id="bastion-asset-list" class="bastion-asset-list"></div>
           </div>
-          <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
-          <webview id="bastion-webview" class="bastion-webview"></webview>
+          <button id="bastion-asset-reopen" class="bastion-asset-reopen hidden" title="展开资产列表">🗂</button>
+          <div class="bastion-web-wrap">
+            <div id="bastion-empty" class="bastion-empty">
+              <div class="be-title">🌐 堡垒机浏览器</div>
+              <div class="be-sub">在上方输入堡垒机 Web 地址,点「打开」开始</div>
+              <div class="be-sub">登录后在堡垒机里选主机 → 点连接 → 自动用本应用打开 SSH</div>
+              <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
+            </div>
+            <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
+            <webview id="bastion-webview" class="bastion-webview"></webview>
+          </div>
         </div>
         </section>
         </div>
@@ -512,6 +530,9 @@
       </label>
       <label class="field field-check"><span>会话日志(每个连接落盘为可读文本,「工具 → 打开会话日志目录」可查看)</span>
         <input type="checkbox" id="set-sessionlog" />
+      </label>
+      <label class="field field-check"><span>自动填充密码(终端出现 Password:/password: 提示时,自动发送该会话保存的密码)</span>
+        <input type="checkbox" id="set-autofillpw" />
       </label>
       <div class="settings-sec">安全</div>
       <label class="field"><span>闲置自动锁定(分钟,0=关闭)</span>

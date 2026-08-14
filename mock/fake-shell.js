@@ -38,6 +38,9 @@ function createFakeShell(stream, session, audit) {
   const user = session.account;
   let cwd = '/'; // 与 SFTP 根目录一致
   const history = [];
+  // 模拟 sudo 二次密码提示(测试「自动填充密码」用):收到正确密码才授权
+  const SUDO_PW = process.env.MOCK_SUDO_PW || 'admin123';
+  let sudoWait = false; // true = 正在等 sudo 密码,输入不回显
 
   const C = {
     reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
@@ -121,6 +124,10 @@ function createFakeShell(stream, session, audit) {
         out('Connection to JumpServer KoKo closed.\r\n');
         stream.exit(0);
         return;
+      case 'sudo':
+        sudoWait = true; // 转入密码等待:打印提示,不再打普通提示符
+        out(C.yellow + '[sudo] password for ' + user + ': ' + C.reset);
+        break;
       case 'ssh': {
         // 模拟从一个资产跳转到另一个资产(只换 hostname/OS 展示,文件系统不变)
         const target = args[0];
@@ -147,6 +154,26 @@ function createFakeShell(stream, session, audit) {
     const s = d.toString();
     audit.in(s);
     for (const ch of s) {
+      if (sudoWait) {
+        // sudo 密码模式:字符只收不显(和真实终端一致),回车时校验
+        if (ch === '\r' || ch === '\n') {
+          const pw = buf; buf = '';
+          if (pw === SUDO_PW) {
+            sudoWait = false;
+            out('\r\n' + C.green + '(sudo) 密码正确,已获得 root 权限' + C.reset + '\r\n');
+            console.log(`[SUDO] 密码正确(长度 ${pw.length},不回显明文)`);
+            out(prompt());
+          } else {
+            out('\r\n' + C.red + 'Sorry, try again.' + C.reset + '\r\n');
+            console.log(`[SUDO] 密码不匹配(收到=${JSON.stringify(pw)})`);
+            out(C.yellow + '[sudo] password for ' + user + ': ' + C.reset);
+            // sudoWait 保持 true,继续等下一次密码输入
+          }
+        } else {
+          buf += ch; // 收进缓冲,不回显
+        }
+        continue; // 密码字符不进入普通行缓冲,也不回显
+      }
       if (ch === '\r' || ch === '\n') {
         if (buf.trim()) {
           history.push(buf.trim());
@@ -154,7 +181,7 @@ function createFakeShell(stream, session, audit) {
           audit.cmd(buf.trim());
         }
         buf = '';
-        out(prompt());
+        if (!sudoWait) out(prompt()); // sudo 已转入密码等待,不再打普通提示符
       } else if (ch === '\x7f' || ch === '\b') {
         if (buf.length > 0) { buf = buf.slice(0, -1); out('\b \b'); }
       } else if (ch === '\x03') { // Ctrl+C

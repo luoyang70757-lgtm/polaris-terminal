@@ -216,6 +216,14 @@ const els = {
   bastionZoomOut: $('bastion-zoom-out'),
   bastionZoomLabel: $('bastion-zoom-label'),
   bastionWebview: document.getElementById('bastion-webview'),
+  bastionAssetSidebar: $('bastion-asset-sidebar'),
+  bastionAssetList: $('bastion-asset-list'),
+  bastionAssetCnt: $('bastion-asset-cnt'),
+  bastionAssetSrv: $('bastion-asset-srv'),
+  bastionAssetStatus: $('bastion-asset-status'),
+  bastionAssetRefresh: $('bastion-asset-refresh'),
+  bastionAssetCollapse: $('bastion-asset-collapse'),
+  bastionAssetReopen: $('bastion-asset-reopen'),
   // 锁定覆盖层(临时锁定)
   lockOverlay: $('lock-overlay'),
   loPw: $('lo-pw'),
@@ -360,6 +368,7 @@ const els = {
   cmdClose: $('cmd-close'),
   setCmdRecord: $('set-cmdrecord'),
   setSessionLog: $('set-sessionlog'),
+  setAutoFillPw: $('set-autofillpw'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
 
@@ -461,6 +470,7 @@ const state = {
     sessionLog: true,           // 会话日志落盘开关(默认开)
     settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
+    autoFillPassword: true,     // 自动填充密码:终端出现 Password: 提示时自动发会话保存的密码(默认开)
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
@@ -576,6 +586,7 @@ function openSettingsModal() {
   els.setRestore.checked = state.settings.restoreOnStartup !== false;
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
+  els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
   els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
   renderAnsiEditor();
   refreshLockNote();
@@ -3391,6 +3402,8 @@ async function jmsPersistConfig() {
   }));
   state.settings.jmsServers = servers;
   saveSettings();
+  // 双写:主进程落一份 jms-servers.json(localStorage 偶发丢失,文件保证重启不丢)
+  try { await window.api.jmsPersist(servers); } catch { /* 落盘失败不阻断 */ }
 }
 
 function openJmsModal() {
@@ -3606,6 +3619,7 @@ async function jmsLoadAssets() {
   jmsPersistConfig();
   jmsRenderServerSelect();
   renderSessionList(els.inputSessionSearch.value);
+  renderBastionAssetList(); // web 标签页资产列表同步
 }
 
 async function jmsRefreshActive() {
@@ -3615,6 +3629,7 @@ async function jmsRefreshActive() {
   if (!r.ok) { showJmsMsg(`刷新失败: ${r.error}`); return; }
   s.assets = r.assets || [];
   renderSessionList(els.inputSessionSearch.value);
+  renderBastionAssetList();
 }
 
 function jmsLogout() {
@@ -3648,6 +3663,7 @@ function jmsConnect(serverId, asset, accountName, openSftp) {
   };
   connectToServer(session);
   if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+  renderBastionAssetList(); // 连接后刷新侧边栏状态点
 }
 
 // 断开该 JumpServer 资产已打开的连接(标签保留,显示"已断开")
@@ -3884,7 +3900,44 @@ function renderJmsInSessionList(container, f) {
         { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
       ]));
     if (collapsed) continue;
-    for (const a of list) container.appendChild(makeJmsAssetRow(s, a));
+    if (kw) {
+      // 搜索:平铺匹配项
+      for (const a of list) container.appendChild(makeJmsAssetRow(s, a));
+      continue;
+    }
+    // 空搜索:按 JumpServer 节点分组——资产可能挂在多个节点下(如生产三+堡垒机),
+    // 在它所属的每个分组里都显示;无节点的归「未分组」(只出现一次)。
+    const groups = new Map();
+    const ungroupedSeen = new Set();
+    for (const a of list) {
+      const dirs = (a.nodes && a.nodes.length) ? a.nodes.map((n) => n.name).filter(Boolean) : [];
+      if (!dirs.length) {
+        if (!ungroupedSeen.has(a.id)) {
+          if (!groups.has('')) groups.set('', []);
+          groups.get('').push(a);
+          ungroupedSeen.add(a.id);
+        }
+        continue;
+      }
+      for (const dir of dirs) {
+        if (!groups.has(dir)) groups.set(dir, []);
+        groups.get(dir).push(a);
+      }
+    }
+    const keys = [...groups.keys()].sort((x, y) => {
+      if (!x) return 1; if (!y) return -1;
+      return x.localeCompare(y, 'zh');
+    });
+    for (const dir of keys) {
+      const arr = groups.get(dir);
+      const key = 'jms:' + s.id + ':' + (dir || '__ungrouped__');
+      const c2 = state.bastionDirCollapsed.has(key);
+      container.appendChild(makeSectionHead(`${dir ? '📁 ' + dir : '🗂 未分组'}(${arr.length})`, c2,
+        () => { c2 ? state.bastionDirCollapsed.delete(key) : state.bastionDirCollapsed.add(key); renderSessionList(els.inputSessionSearch.value); },
+        []));
+      if (c2) continue;
+      for (const a of arr) container.appendChild(makeJmsAssetRow(s, a));
+    }
   }
 }
 
@@ -3929,9 +3982,24 @@ function makeJmsAssetRow(s, a) {
 
 async function jmsRefreshServer(serverId) {
   const s = jmsFind(serverId);
-  if (!s || !s.token) return;
-  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
-  if (r.ok) { s.assets = r.assets || []; renderSessionList(els.inputSessionSearch.value); }
+  if (!s) return;
+  setStatus(`刷新「${s.name}」资产…`, 'var(--accent)');
+  let r = s.token ? await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }) : { ok: false };
+  // token 失效/未登录 → 用保存的密码静默重登后再拉(否则刷新会静默失败,用户以为没生效)
+  if (!r.ok && s.password) {
+    try {
+      const lg = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
+      if (lg.ok && lg.token) { s.token = lg.token; s.user = lg.user; r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }); }
+    } catch { /* 重登失败走下方报错 */ }
+  }
+  if (r.ok) {
+    s.assets = r.assets || [];
+    renderSessionList(els.inputSessionSearch.value);
+    renderBastionAssetList();
+    setStatus(`已刷新「${s.name}」资产(${s.assets.length} 台)`, 'var(--green)');
+  } else {
+    setStatus(`刷新「${s.name}」失败:${r.error || '未登录'}(请退出重登)`, 'var(--red)');
+  }
 }
 
 function jmsLogoutServer(serverId) {
@@ -3946,7 +4014,12 @@ function jmsLogoutServer(serverId) {
 async function jmsRestore() {
   if (state.jmsRestoreDone) return;
   state.jmsRestoreDone = true;
-  const saved = state.settings.jmsServers || [];
+  let saved = state.settings.jmsServers || [];
+  // 文件备份优先:localStorage 实测偶发丢失 jmsServers,主进程落盘的 jms-servers.json 更可靠
+  try {
+    const fb = await window.api.jmsRestore();
+    if (fb.ok && fb.servers && fb.servers.length) saved = fb.servers;
+  } catch { /* 文件读取失败回退 localStorage */ }
   if (!saved.length) return;
   for (const c of saved) {
     let pw = c.password;
@@ -3969,6 +4042,7 @@ async function jmsRestore() {
     } catch { /* 网络/超时,忽略 */ }
   }
   renderSessionList(els.inputSessionSearch.value);
+  renderBastionAssetList(); // web 标签页资产列表同步
 }
 
 // =====================================================================
@@ -3993,6 +4067,108 @@ function openBastionPanel() {
   else if (els.bastionWebview.src) els.bastionWebview.focus();
   else els.bastionUrl.focus();
   refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
+  renderBastionAssetList();
+}
+// 渲染堡垒机 web 标签页专属的资产列表:显示当前 web 标签页对应堡垒机(JMS)的资产,
+// 双击直接连 SSH(与左侧会话树 JMS 区块一致)。无登录的 JMS 服务器时隐藏侧边栏。
+// 头部显示服务器名 + 连接状态;资产行带连接状态点(●绿=该资产有已连接会话)。
+function renderBastionAssetList() {
+  const listEl = els.bastionAssetList;
+  if (!listEl) return;
+  const wvSrc = (els.bastionWebview && els.bastionWebview.src) || '';
+  let origin = '';
+  try { origin = new URL(wvSrc).origin; } catch { /* 空 URL */ }
+  // 优先:与 web 标签页同源的已登录 JMS 服务器;否则回退到任一已登录服务器
+  let s = state.jmsServers.find((x) => x.token && x.baseUrl && origin && x.baseUrl.replace(/\/+$/, '') === origin);
+  if (!s) s = state.jmsServers.find((x) => x.token) || null;
+  if (!s) {
+    els.bastionAssetSidebar.classList.add('hidden');
+    return;
+  }
+  els.bastionAssetSidebar.classList.remove('hidden');
+  els.bastionAssetReopen.classList.add('hidden');
+  if (state.settings.bastionAssetCollapsed) {
+    els.bastionAssetSidebar.classList.add('hidden');
+    els.bastionAssetReopen.classList.remove('hidden');
+  }
+  const assets = s.assets || [];
+  els.bastionAssetSrv.textContent = `🛡 ${s.name}`;
+  els.bastionAssetSrv.title = `${s.baseUrl || ''} · ${s.account || ''}`;
+  const statusEl = els.bastionAssetStatus;
+  statusEl.textContent = s.token ? '已连接' : '未登录';
+  statusEl.style.color = s.token ? 'var(--green)' : 'var(--orange)';
+  els.bastionAssetCnt.textContent = assets.length ? `(${assets.length})` : '';
+  listEl.innerHTML = '';
+  if (!assets.length) {
+    const hint = document.createElement('div');
+    hint.className = 'bastion-asset-hint';
+    hint.textContent = `「${s.name}」暂无资产,点「↻ 刷新」或重新登录 JumpServer。`;
+    listEl.appendChild(hint);
+    return;
+  }
+  // 按节点分组(资产可多节点,每个分组都显示)——与 renderJmsInSessionList 同逻辑
+  const groups = new Map();
+  const ungroupedSeen = new Set();
+  for (const a of assets) {
+    const dirs = (a.nodes && a.nodes.length) ? a.nodes.map((n) => n.name).filter(Boolean) : [];
+    if (!dirs.length) {
+      if (!ungroupedSeen.has(a.id)) {
+        if (!groups.has('')) groups.set('', []);
+        groups.get('').push(a);
+        ungroupedSeen.add(a.id);
+      }
+      continue;
+    }
+    for (const dir of dirs) {
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir).push(a);
+    }
+  }
+  const keys = [...groups.keys()].sort((x, y) => { if (!x) return 1; if (!y) return -1; return x.localeCompare(y, 'zh'); });
+  for (const dir of keys) {
+    const arr = groups.get(dir);
+    const head = document.createElement('div');
+    head.className = 'bastion-asset-group';
+    head.textContent = `${dir ? '📁 ' + dir : '🗂 未分组'}(${arr.length})`;
+    listEl.appendChild(head);
+    for (const a of arr) listEl.appendChild(makeBastionSidebarRow(s, a));
+  }
+}
+
+// web 标签侧边栏的资产行:与主会话树行一致,额外带连接状态点(该资产有已连接会话则绿点)
+function makeBastionSidebarRow(s, a) {
+  const item = document.createElement('div');
+  item.className = 'asset-item jms-asset-item';
+  item.title = `双击连 SSH → ${a.address}`;
+  const dot = document.createElement('span');
+  dot.className = 'bastion-asset-dot';
+  const connected = [...state.tabs.values()].some((t) =>
+    t.session && t.session.jmsKey && t.session.jmsKey.startsWith(`${s.id}|${a.address}|`) && t.status === 'connected');
+  dot.style.background = connected ? 'var(--green)' : 'var(--text-dim-2, #555)';
+  dot.title = connected ? '该资产有已连接会话' : '未连接';
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = '🖥';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = a.name;
+  const addr = document.createElement('span');
+  addr.className = 'addr jms-a-addr';
+  addr.textContent = a.address;
+  item.appendChild(dot);
+  item.appendChild(icon);
+  item.appendChild(name);
+  item.appendChild(addr);
+  item.addEventListener('dblclick', () => jmsConnect(s.id, a));
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '🔌 连接', action: () => jmsConnect(s.id, a) },
+      { label: '📤 传输文件(SFTP)', action: () => jmsConnect(s.id, a, null, true) },
+      { label: '🔌 断开连接', danger: true, action: () => jmsDisconnectAsset(s.id, a) },
+    ]);
+  });
+  return item;
 }
 // 最小化(收起面板,在会话列表显示入口;webview 会话保留,展开不用重登)
 function minimizeBastion() {
@@ -4920,7 +5096,10 @@ function initBastionWebview() {
     }
   });
   // 地址栏显示当前地址 + 页面标题(诊断空白页:能看到加载到哪个地址/标题)
-  wv.addEventListener('did-navigate', (e) => { try { if (e.url && e.url !== 'about:blank') els.bastionCurrent.textContent = e.url; } catch { /* ignore */ } });
+  wv.addEventListener('did-navigate', (e) => {
+    try { if (e.url && e.url !== 'about:blank') els.bastionCurrent.textContent = e.url; } catch { /* ignore */ }
+    renderBastionAssetList(); // web 标签页地址变化 → 刷新该标签页专属的资产列表
+  });
   wv.addEventListener('page-title-updated', (e) => {
     try {
       const title = (e.title || '').trim();
@@ -7000,6 +7179,19 @@ els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBac
 els.bastionForward.addEventListener('click', () => { try { els.bastionWebview.goForward(); } catch { /* ignore */ } });
 els.bastionReload.addEventListener('click', () => { try { els.bastionWebview.reload(); } catch { /* ignore */ } });
 els.bastionClose.addEventListener('click', closeBastionPanel); // ✕ 彻底关闭(与 — 最小化区分)
+// web 标签资产列表:刷新 / 收起 / 展开
+els.bastionAssetRefresh.addEventListener('click', () => {
+  const s = state.jmsServers.find((x) => x.token);
+  if (s) jmsRefreshServer(s.id); else setStatus('没有已登录的 JumpServer', 'var(--orange)');
+});
+els.bastionAssetCollapse.addEventListener('click', () => { toggleBastionAssetCollapsed(true); });
+els.bastionAssetReopen.addEventListener('click', () => { toggleBastionAssetCollapsed(false); });
+function toggleBastionAssetCollapsed(collapsed) {
+  state.settings.bastionAssetCollapsed = !!collapsed;
+  saveSettings();
+  els.bastionAssetSidebar.classList.toggle('hidden', !!collapsed);
+  els.bastionAssetReopen.classList.toggle('hidden', !collapsed);
+}
 // 画面缩放(支持 0.5~2.5,按住可连续缩放)
 els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
 els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
@@ -7120,6 +7312,10 @@ els.setCmdRecord.addEventListener('change', () => {
 });
 els.setSessionLog.addEventListener('change', () => {
   state.settings.sessionLog = els.setSessionLog.checked;
+  saveSettings();
+});
+els.setAutoFillPw.addEventListener('change', () => {
+  state.settings.autoFillPassword = els.setAutoFillPw.checked;
   saveSettings();
 });
 els.setLockIdle.addEventListener('change', () => {
@@ -7384,6 +7580,25 @@ window.api.onSshData((sessionId, data) => {
     if (typeof data === 'string') dlog('RECV', `${sessionId} +${data.length}B ${JSON.stringify(data.slice(0, 60))}${data.length > 60 ? '…' : ''}`);
     else dlog('RECV', `${sessionId} +${data.length}B [${Array.from(data.slice(0, 12)).map((b) => b.toString(16).padStart(2, '0')).join(' ')}${data.length > 12 ? ' …' : ''}]`);
   }
+  // ---- 自动填充密码:终端出现 Password:/password: 提示时,发送该会话保存的密码 ----
+  // 只对 SSH 会话启用(Telnet 的 login:/password: 自动登录已在主进程处理,避免重复发密码);
+  // 密码只发送、绝不写入调试日志/命令记录。
+  if ((t.session.protocol || 'ssh') !== 'telnet' && t.session && t.session.password &&
+      state.settings.autoFillPassword !== false) {
+    const raw = typeof data === 'string' ? data : (t.autoPwDec || (t.autoPwDec = new TextDecoder())).decode(new Uint8Array(data), { stream: true });
+    if (raw) {
+      // 剥 ANSI 转义(颜色/光标)+ 回车,避免打断"以 password: 结尾"的匹配
+      t.autoPwBuf = ((t.autoPwBuf || '') + raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r/g, '')).slice(-120);
+      const promptEnd = /(?:^|[^\w])(?:[Pp]assword|[Pp]asswd)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.autoPwBuf);
+      if (promptEnd && !t.autoPwSent) {
+        t.autoPwSent = true; // 同一提示分块到达时只发一次
+        dlog('AUTOFILL', `${sessionId} 检测到密码提示,自动发送(长度 ${t.session.password.length},不记明文)`);
+        window.api.sshWrite(sessionId, t.session.password + '\r');
+      } else if (!promptEnd) {
+        t.autoPwSent = false; // 提示后收到其它输出(密码被接受/命令结果)→ 武装好等下一次提示
+      }
+    }
+  }
   if (typeof data === 'string') {
     // 主进程已把 GBK/GB2312 转成 UTF-8 字符串,直接写
     t.term.write(state.settings.highlight ? highlightString(data) : data);
@@ -7471,6 +7686,7 @@ window.api.onSshStatus((sessionId, status) => {
     setTabStatus(sessionId, 'connected');
     t.manualDisconnect = false; // 已重新连接上,清掉手动断开标记
     t.reconnectAttempts = 0; // 连接成功,清零重连计数
+    t.autoPwBuf = ''; t.autoPwSent = false; // 重置自动填充密码状态,迎接新会话的提示
     if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
     if (dot) dot.title = '已连接';
     setStatus(`已连接: ${t.title}`, 'var(--green)');
@@ -7576,7 +7792,10 @@ window.addEventListener('error', (e) => console.warn('[渲染层]', e.message));
 
 loadSettings();
 resetIdleLock(); // 启动即开始闲置自动锁定计时
-jmsRestore();     // 启动恢复 JumpServer 登录(静默重登已登录过的服务器)
+jmsRestore(); // 启动恢复 JumpServer 登录(静默重登已登录过的服务器;localStorage 丢失时回退 jms-servers.json 文件备份)
+// 恢复堡垒机 web 标签页:保存过 bastionUrl(说明上次用了 web 堡垒机)→ 自动打开面板并加载。
+// 用 setTimeout 而非 jmsRestore().then,避免重登未完成/抛异常时恢复被跳过。
+setTimeout(() => { try { if (state.settings.bastionUrl) restoreBastion(); } catch { /* ignore */ } }, 600);
 updateConnectBtn(); // 初始化"连接/中断"二合一按钮状态
 applyTheme();
 applyPanelCollapsed();

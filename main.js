@@ -587,6 +587,32 @@ ipcMain.handle('jms:assets', async (_e, { baseUrl, token }) => {
   }
 });
 
+// JumpServer/堡垒机连接配置落盘:localStorage 偶发丢失(实测重启后 jmsServers 丢失),
+// 这里原子写一份到数据目录 jms-servers.json,启动时文件优先恢复,保证连接信息不丢。
+const jmsCfgFile = () => path.join(appLock.lockDir(), 'jms-servers.json');
+ipcMain.handle('jms:persist', async (_e, servers) => {
+  try {
+    const dir = appLock.lockDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const finalPath = path.join(dir, 'jms-servers.json');
+    const tmpPath = path.join(dir, `jms-servers.json.tmp-${process.pid}`);
+    fs.writeFileSync(tmpPath, JSON.stringify(servers || []), 'utf8');
+    fs.renameSync(tmpPath, finalPath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('jms:restore', async () => {
+  try {
+    const p = jmsCfgFile();
+    if (!fs.existsSync(p)) return { ok: true, servers: [] };
+    return { ok: true, servers: JSON.parse(fs.readFileSync(p, 'utf8')) || [] };
+  } catch (err) {
+    return { ok: false, error: err.message, servers: [] };
+  }
+});
+
 // ---------- IPC:H3C 堡垒机(accessclient:// token 解码) ----------
 // H3C Shterm 堡垒机用 accessclient://<base64(zlib(json))> 唤起外部工具,
 // 内含目标主机/账号/一次性密码。这里在主子进程解码(zlib 只在 Node 有)。
