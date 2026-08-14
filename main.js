@@ -58,6 +58,11 @@ process.on('uncaughtException', (e) => {
   if (e && e.code === 'EPIPE') return;
   try { __err.call(console, '[MAIN] 未捕获异常:', e); } catch { /* ignore */ }
 });
+// Promise 拒绝也要独立处理:不能只靠 uncaughtException 兜底(拒绝不会触发它)。
+// 错误要打日志(可观测),而不是静默吞掉 —— 桌面应用继续运行,不退出。
+process.on('unhandledRejection', (reason) => {
+  try { __err.call(console, '[MAIN] 未处理的 Promise 拒绝:', reason instanceof Error ? (reason.stack || reason.message) : reason); } catch { /* ignore */ }
+});
 
 // 堡垒机常用自签名证书/内网 CA,放行证书错误(否则内置浏览器打不开堡垒机 Web)
 // 与 jms-api 的 rejectUnauthorized:false、PuTTY/Xshell 的行为一致:内网工具不校验 CA
@@ -190,10 +195,16 @@ function flushSshData(sessionId) {
   if (!b) return;
   if (b.chunks.length) {
     const buf = Buffer.concat(b.chunks, b.total); // 拼成一大块一次发
-    // 录制打点:把"原始字节"存进录制文件(保留 GBK 等编码,回放时按 encoding 再解)
-    const rec = recSessions.get(sessionId);
-    if (rec) recorder.writeOutput(rec.file, Date.now() - rec.startTs, buf);
-    writeSessionOutput(sessionId, buf); // 会话日志:解码 + 剥 ANSI 后落盘
+    // 录制/日志写盘失败(磁盘满/权限)绝不能中断数据转发:
+    // 旧版 recorder.writeOutput 直接 appendFileSync,抛异常会跳过下面的
+    // dataBuffer.delete → 条目和 timer 泄漏,终端冻结、内存增长。
+    try {
+      const rec = recSessions.get(sessionId);
+      if (rec) recorder.writeOutput(rec.file, Date.now() - rec.startTs, buf);
+      writeSessionOutput(sessionId, buf); // 会话日志:解码 + 剥 ANSI 后落盘
+    } catch (err) {
+      console.warn('[MAIN] 录制/日志写盘失败(已跳过):', err.message);
+    }
     const dec = sshDecoders.get(sessionId);
     if (dec) {
       // 非 UTF-8 会话:主进程用流式解码器转成 UTF-8 字符串(跨块的中文字符不会丢)
@@ -1561,6 +1572,12 @@ ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resol
     autoLogin: (opts.username || opts.password) ? { username: opts.username, password: opts.password } : null,
     onConnect: () => {
       telnetConnected = true;
+      // 守卫:ssh:close 可能在 onConnect 之前到达(用户连接瞬间关标签)——
+      // 记录已被删除,此时不能再广播 connected(否则渲染层冒出"幽灵已连接"状态)
+      if (!telnetSessions.has(sessionId)) {
+        done({ ok: false, error: '连接已取消' });
+        return;
+      }
       const enc = opts.encoding || 'utf8';
       if (enc !== 'utf8') {
         try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
