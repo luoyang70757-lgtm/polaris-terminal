@@ -478,7 +478,9 @@ const state = {
   bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})
   bastionDirCollapsed: new Set(), // 折叠的业务目录名(分组视图)
   bastionGrouping: false,   // 是否正在后台逐目录补充分组
-  bastionUrl: '',           // 当前资产对应的堡垒机地址(持久化分组键)
+  bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
+  bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
+  bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
   bastionCollapsed: false, // H3C 堡垒机区是否折叠
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
@@ -1184,12 +1186,19 @@ async function restoreBastionAssets() {
     if (!r || !r.ok || !r.byUrl) return;
     const urls = Object.keys(r.byUrl);
     if (!urls.length) return;
-    // 有多个堡垒机时合并展示;记录当前来源地址
+    // 多个堡垒机合并展示;键用 origin 归一(旧数据可能是深链接 URL 存的,读回来统一成 origin,
+    // 这样 persist 时会写回归一后的键,不再分裂)
     const all = [];
+    const seen = new Set(); // 跨 URL 按 devId 去重(S2:同一设备在多个键下重复显示)
     for (const u of urls) {
       const favs = new Set(r.byUrl[u].filter((a) => a.favorite).map((a) => a.devId));
-      for (const a of r.byUrl[u]) all.push({ ...a, favorite: favs.has(a.devId) || !!a.favorite });
-      if (!state.bastionUrl) state.bastionUrl = u;
+      for (const a of r.byUrl[u]) {
+        const key = a.devId || (a.name + a.ip);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        all.push({ ...a, favorite: favs.has(a.devId) || !!a.favorite });
+      }
+      if (!state.bastionUrl) state.bastionUrl = bastionOrigin(u) || u;
     }
     if (all.length && JSON.stringify(all) !== JSON.stringify(state.bastionAssets)) {
       state.bastionAssets = all;
@@ -4132,19 +4141,21 @@ function bastionCfgDelete(id) {
   saveSettings();
   bastionRenderCfgList();
   bastionRenderServerSelect();
-  // 顺手清掉该堡垒机的持久化资产(重启后不再出现)
+  // 顺手清掉该堡垒机的持久化资产(重启后不再出现)。删除键与保存键统一用 origin ——
+  // 旧版删除用配置 URL、保存用深链接 URL,键对不上导致删了也"复活"。
   if (s && s.url && window.api.bastionDeleteAssets) {
-    window.api.bastionDeleteAssets(s.url.replace(/\/+$/, '')).catch(() => {});
+    window.api.bastionDeleteAssets(bastionOrigin(s.url)).catch(() => {});
   }
-  // 若删的是当前展示来源,清空内存里的资产
-  let host = '';
-  try { host = s && s.url ? new URL(s.url).host : ''; } catch { /* url 不规范则跳过 */ }
+  // 若删的是当前展示来源,清空内存里的资产与折叠状态
   const cur = state.bastionUrl || '';
-  if (s && host && cur.includes(host)) {
+  const delOrigin = bastionOrigin(s && s.url);
+  if (delOrigin && cur && cur === delOrigin) {
     state.bastionAssets = [];
     state.bastionTree = [];
     state.bastionFavSet = new Set();
     state.bastionFavTree = null;
+    state.bastionDirCollapsed.clear();
+    state.bastionAllFetched = false;
     renderSessionList(els.inputSessionSearch.value);
   }
 }
@@ -4327,7 +4338,7 @@ function injectBastionAssetHook() {
               return bdelay(150).then(function(){ return fetchRootDevs(rootName, page + 1); });
             }
             return true;
-          });
+          }).catch(function(){ return true; }); // M2:单页彻底失败(重试后仍挂)也继续后续 root/收藏,不中止整链
         }
         return bget('/shterm/api/asset/getAccessViewTree', { method: 'GET' }).then(function(t){
           var j = null; try { j = JSON.parse(t); } catch (e) {}
@@ -4349,17 +4360,49 @@ function injectBastionAssetHook() {
           });
         }).catch(function(){ window.__bastionFetchState.running = false; window.__bastionAllLoading = false; return false; });
       };
-      // ---- 后台按目录补充分组(并发 3 + 120ms 间隔渐进式;树节点 empty=true 跳过) ----
+      // ---- 后台按目录补充分组(串行 + 120ms 间隔渐进式,避免打爆堡垒机;树节点 empty=true 跳过) ----
       // 设备响应本身不带"所属业务目录",只能逐目录请求;结果渐进合并,完成前资产显示在"未分组"。
       window.__bastionFetchDirs = function() {
         if (window.__bastionFetchState.dirRunning) return Promise.resolve(false);
         var tree = window.__bastionTree || [];
         var dirs = [];
-        (function walk(ns){ (ns || []).forEach(function(n){ if (n.path && n.path.length && !n.empty) dirs.push(n); walk(n.children); }); })(tree);
+        // path.length >= 2 才算目录(根节点 path=[根] 只有 1 段,不是目录)
+        (function walk(ns){ (ns || []).forEach(function(n){ if (n.path && n.path.length >= 2 && !n.empty) dirs.push(n); walk(n.children); }); })(tree);
         if (!dirs.length) return Promise.resolve(false);
         window.__bastionFetchState.dirRunning = true;
         (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-start', dirs: dirs.length });
         var idx = 0, done = 0;
+        // 单个目录翻页拉全(M3:>100 台的目录旧版只拉 page0 会永久缺分组)
+        function fetchDirPages(n, page) {
+          page = page || 0;
+          var body = JSON.stringify({ page: page, size: 100, sort: 'name,asc', stateIn: '0', paths: n.path });
+          return window.fetch('/shterm/api/asset/getAccessViewDevs?page=' + page + '&size=100', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
+          }).then(function(r){ return r.text(); }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && j.content) {
+              var ids = {};
+              j.content.forEach(function(c){
+                var d = c.dev || {};
+                // devId 为空时用 name+ip 兜底,否则多台无 id 设备互相覆盖/无法归组
+                var key = String(d.id != null ? d.id : c.id || (d.name + d.ip));
+                if (key) ids[key] = 1;
+              });
+              var prev = window.__bastionAssets || [];
+              var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
+              map.forEach(function(x){
+                var k = x.devId || x.name + x.ip;
+                if (ids[k]) { x.dir = n.name; x.dirPath = n.path; }
+              });
+              window.__bastionAssets = Array.from(map.values());
+              done += Object.keys(ids).length;
+            }
+            if (j && j.last === false && j.totalPages && page + 1 < j.totalPages) {
+              return bdelay(120).then(function(){ return fetchDirPages(n, page + 1); });
+            }
+            return true;
+          }).catch(function(){ return true; }); // 该目录失败:跳过,不阻塞其他目录
+        }
         function one() {
           if (idx >= dirs.length) {
             (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-done', done: done });
@@ -4367,24 +4410,7 @@ function injectBastionAssetHook() {
             return Promise.resolve(true);
           }
           var n = dirs[idx++];
-          var body = JSON.stringify({ page: 0, size: 100, sort: 'name,asc', stateIn: '0', paths: n.path });
-          return window.fetch('/shterm/api/asset/getAccessViewDevs?page=0&size=100', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
-          }).then(function(r){ return r.text(); }).then(function(t){
-            var j = null; try { j = JSON.parse(t); } catch (e) {}
-            if (j && j.content) {
-              var ids = {};
-              j.content.forEach(function(c){ var d = c.dev || {}; var id = String(d.id != null ? d.id : c.id || ''); if (id) ids[id] = 1; });
-              var prev = window.__bastionAssets || [];
-              var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
-              map.forEach(function(x){
-                if (x.devId && ids[x.devId]) { x.dir = n.name; x.dirPath = n.path; }
-              });
-              window.__bastionAssets = Array.from(map.values());
-              done += Object.keys(ids).length;
-            }
-            return bdelay(120).then(one);
-          }).catch(function(){ return bdelay(120).then(one); });
+          return fetchDirPages(n).then(function(){ return bdelay(120).then(one); });
         }
         return one();
       };
@@ -4410,6 +4436,19 @@ function pollBastionAssets() {
       r = r || {};
       const list = r.assets || [];
       let changed = false; // 仅当数据真变化才重渲染(旧版无条件 renderSessionList,每 4s 全量重建 870 资产 DOM)
+      // 持久化键:随 webview 当前地址同步为 origin(S1/S2 修复——
+      // 旧版 state.bastionUrl 只在 restore 赋值永不更新,多堡垒机切换时 B 的数据写进 A 的键)
+      let curUrl = '';
+      try { if (wv.getURL && wv.getURL()) curUrl = wv.getURL(); } catch { /* ignore */ }
+      if (!curUrl && els.bastionCurrent) curUrl = els.bastionCurrent.textContent.split(' — ').pop() || '';
+      const curOrigin = bastionOrigin(curUrl);
+      if (curOrigin && curOrigin !== state.bastionUrl) {
+        state.bastionUrl = curOrigin;
+        // 换了堡垒机 → 清掉上一台的折叠状态与内存资产(避免跨堡垒机串扰/旧资产残留)
+        state.bastionDirCollapsed.clear();
+        state.bastionTree = [];
+        state.bastionFavTree = null;
+      }
       const json = JSON.stringify(list);
       if (list.length && json !== JSON.stringify(state.bastionAssets)) {
         state.bastionAssets = list;
@@ -4437,7 +4476,9 @@ function pollBastionAssets() {
       if (favTreeJson !== JSON.stringify(state.bastionFavTree)) { state.bastionFavTree = r.favTree; changed = true; }
       if (r.favs && r.favs.length) {
         const favSet = new Set(r.favs);
-        if (favSet.size !== state.bastionFavSet.size) {
+        // 对比用"排序后的内容",不能只比 size:数量不变但收藏内容变了(如 A→B)也要更新(M7)
+        const favKey = [...favSet].sort().join(',');
+        if (favKey !== [...state.bastionFavSet].sort().join(',')) {
           state.bastionFavSet = favSet;
           state.bastionAssets = state.bastionAssets.map((a) => ({ ...a, favorite: favSet.has(a.devId) || !!a.favorite }));
           persistBastionAssets();
@@ -4445,6 +4486,16 @@ function pollBastionAssets() {
         }
       }
       if (changed) renderSessionList(els.inputSessionSearch.value);
+      // SPA 登录后自动重触发(M8):H3C 控制台是 SPA,登录后不刷新页面 → 没有 did-stop-loading,
+      // 主动拉全量只在页面加载时触发一次。这里检测:钩子已注入、但从未拉成功过、且未在跑 → 每 10s 试一次
+      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running)) {
+        const now = Date.now();
+        if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 10000) {
+          state.bastionLastAutoFetch = now;
+          console.log('[堡垒机] SPA 页检测到未拉全量,自动重试拉取');
+          triggerBastionFullFetch();
+        }
+      }
     }).catch((e) => console.log('[堡垒机] pollBastionAssets 异常:', e && e.message));
   } catch { /* ignore */ }
 }
@@ -4459,8 +4510,12 @@ function triggerBastionFullFetch() {
     // 先注入钩子,400ms 后调用主动拉取(避免钩子未装好时 __bastionFetchAll 不存在)
     setTimeout(() => {
       wv.executeJavaScript('window.__bastionFetchAll && window.__bastionFetchAll()').then((ok) => {
-        if (ok) setStatus('堡垒机资产已拉取完成', 'var(--green)');
-        else setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+        if (ok) {
+          state.bastionAllFetched = true; // SPA 登录后 poll 据此不再反复重试
+          setStatus('堡垒机资产已拉取完成', 'var(--green)');
+        } else {
+          setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+        }
         setTimeout(pollBastionAssets, 1200);
       }).catch((e) => {
         console.log('[堡垒机] triggerBastionFullFetch 异常:', e && e.message);
@@ -4470,12 +4525,22 @@ function triggerBastionFullFetch() {
   } catch { /* ignore */ }
 }
 
-// 把当前资产持久化到 SQLite(按当前堡垒机地址分组;防抖,避免频繁写盘)
+// 把堡垒机地址规范化为持久化键:统一用 origin(协议+主机+端口),去掉路径/查询/斜杠差异。
+// 旧版直接用当前 URL(可能带 /shterm/ 深链接)当键,删除配置时又用配置 URL → 键不一致,
+// 删除后旧数据"复活"、同一设备在多个键下重复。origin 归一后所有读写走同一把钥匙。
+function bastionOrigin(url) {
+  const s = String(url || '').trim();
+  if (!s) return '';
+  try { return new URL(s).origin; } catch { return s.replace(/\/+$/, ''); }
+}
+
+// 把当前资产持久化到 SQLite(按当前堡垒机 origin 分组;防抖,避免频繁写盘)
 let bastionPersistTimer = null;
 function persistBastionAssets() {
   clearTimeout(bastionPersistTimer);
   bastionPersistTimer = setTimeout(() => {
-    const url = state.bastionUrl || (els.bastionCurrent ? els.bastionCurrent.textContent.split(' — ').pop() : '') || '';
+    // 键 = 当前展示来源的 origin(poll 会持续把 state.bastionUrl 同步成 webview 当前地址的 origin)
+    const url = state.bastionUrl || '';
     if (!url || !state.bastionAssets.length) return;
     window.api.bastionSaveAssets(url, state.bastionAssets).then((r) => {
       if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', r.error);
@@ -4585,16 +4650,14 @@ function renderBastionInSessionList(container, f) {
   const dirOf = (a) => a.dir || '';
   const map = new Map();
   for (const a of all) {
+    if (a.favorite) continue; // M4:收藏设备只出现在 ⭐收藏 置顶组,目录组/未分组不再重复渲染
     const d = dirOf(a);
     if (!map.has(d)) map.set(d, []);
     map.get(d).push(a);
   }
   for (const [d, arr] of map) dirs.push({ dir: d, assets: arr });
-  // 排序:收藏组置顶 → 有目录的按目录名 → 未分组最后
+  // 排序:有目录的按目录名 → 未分组最后
   dirs.sort((x, y) => {
-    const xFav = x.dir === '__fav__' ? 0 : 1;
-    const yFav = y.dir === '__fav__' ? 0 : 1;
-    if (xFav !== yFav) return xFav - yFav;
     if (!x.dir) return 1;
     if (!y.dir) return -1;
     return x.dir.localeCompare(y.dir, 'zh');
@@ -4604,7 +4667,7 @@ function renderBastionInSessionList(container, f) {
   if (favs.length) {
     const collapsed = state.bastionDirCollapsed.has('__fav__');
     container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
-      () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(''); },
+      () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(els.inputSessionSearch.value); },
       []));
     if (!collapsed) for (const a of favs) container.appendChild(makeBastionAssetItem(a));
   }
@@ -4614,7 +4677,7 @@ function renderBastionInSessionList(container, f) {
   for (const g of groupKeys) {
     const collapsed = state.bastionDirCollapsed.has(g.dir);
     container.appendChild(makeSectionHead(`📁 ${g.dir}(${g.assets.length})`, collapsed,
-      () => { collapsed ? state.bastionDirCollapsed.delete(g.dir) : state.bastionDirCollapsed.add(g.dir); renderSessionList(''); },
+      () => { collapsed ? state.bastionDirCollapsed.delete(g.dir) : state.bastionDirCollapsed.add(g.dir); renderSessionList(els.inputSessionSearch.value); },
       []));
     if (collapsed) continue;
     for (const a of g.assets) container.appendChild(makeBastionAssetItem(a));
@@ -4623,7 +4686,7 @@ function renderBastionInSessionList(container, f) {
   if (ungrouped && ungrouped.assets.length) {
     const collapsed = state.bastionDirCollapsed.has('__ungrouped__');
     container.appendChild(makeSectionHead(`🗂 未分组(${ungrouped.assets.length}${state.bastionGrouping ? ',分组中…' : ''})`, collapsed,
-      () => { collapsed ? state.bastionDirCollapsed.delete('__ungrouped__') : state.bastionDirCollapsed.add('__ungrouped__'); renderSessionList(''); },
+      () => { collapsed ? state.bastionDirCollapsed.delete('__ungrouped__') : state.bastionDirCollapsed.add('__ungrouped__'); renderSessionList(els.inputSessionSearch.value); },
       []));
     if (!collapsed) for (const a of ungrouped.assets) container.appendChild(makeBastionAssetItem(a));
   }
