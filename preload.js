@@ -107,6 +107,10 @@ contextBridge.exposeInMainWorld('api', {
   bastionProbe: (p) => ipcRenderer.invoke('bastion:probe', p),
   // 导出堡垒机资产诊断包(排查"资产不完整"用)
   exportBastionDiag: (data) => ipcRenderer.invoke('diag:exportBastion', data),
+  // 堡垒机资产持久化(SQLite 整库加密):整批保存 / 读出 / 删除
+  bastionSaveAssets: (url, assets) => ipcRenderer.invoke('bastion:saveAssets', { url, assets }),
+  bastionLoadAssets: () => ipcRenderer.invoke('bastion:loadAssets'),
+  bastionDeleteAssets: (url) => ipcRenderer.invoke('bastion:deleteAssets', url),
 
   // ---- 快速命令(命令收藏) ----
   quickList: () => ipcRenderer.invoke('quick:list'),

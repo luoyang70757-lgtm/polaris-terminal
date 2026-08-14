@@ -637,6 +637,9 @@ input[type="checkbox"] {
 .jms-asset-item:hover { background: var(--bg-hover); }
 .jms-asset-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jms-a-addr { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+/* 堡垒机收藏资产:星标 + 高亮底色 */
+.jms-asset-item.bastion-fav .name { color: #ffd700; }
+.jms-asset-item.bastion-fav { background: color-mix(in srgb, #ffd700 7%, transparent); }
 /* 堡垒机浏览器面板(右侧停靠,像个小窗口:工具栏单行 + 画面可缩放/调宽) */
 .bastion-panel {
   width: 560px; min-width: 380px;

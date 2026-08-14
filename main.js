@@ -685,6 +685,34 @@ ipcMain.handle('diag:exportBastion', (_e, data) => {
   }
 });
 
+// ---------- IPC:堡垒机资产缓存(SQLite 持久化,重启不丢) ----------
+// 渲染层捕获/刷新资产后整批写入;启动时读出恢复上次的资产列表。
+ipcMain.handle('bastion:saveAssets', (_e, { url, assets }) => {
+  try {
+    const n = sessionStore.saveBastionAssets(url, assets);
+    schedulePersist();
+    return { ok: true, count: n };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('bastion:loadAssets', () => {
+  try {
+    return { ok: true, byUrl: sessionStore.loadBastionAssets() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('bastion:deleteAssets', (_e, url) => {
+  try {
+    sessionStore.deleteBastionAssets(url);
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // 批量上传:选一个本地文件,上传到每个选中主机的远程目录
 ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
   try {

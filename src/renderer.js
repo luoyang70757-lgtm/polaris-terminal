@@ -473,6 +473,12 @@ const state = {
   jmsSeq: 0,         // 合成会话 id 全局计数器
   jmsRestoreDone: false, // 是否已做过持久登录恢复(避免重复登录)
   bastionAssets: [], // H3C 堡垒机资产(从 webview 拦截的资产 API 捕获)
+  bastionTree: [],   // H3C 堡垒机目录树(getAccessViewTree 捕获: [{name,id,path,empty,...}])
+  bastionFavSet: new Set(), // 收藏设备 devId 集合(getFavoriteDevices / userFav 捕获)
+  bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})
+  bastionDirCollapsed: new Set(), // 折叠的业务目录名(分组视图)
+  bastionGrouping: false,   // 是否正在后台逐目录补充分组
+  bastionUrl: '',           // 当前资产对应的堡垒机地址(持久化分组键)
   bastionCollapsed: false, // H3C 堡垒机区是否折叠
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
@@ -1132,9 +1138,33 @@ async function loadSessions() {
     }
     renderSessionList(els.inputSessionSearch.value);
     restoreSessions(); // 数据就绪后恢复上次打开的会话(默认关闭,restoreOnStartup=false 时直接跳过)
+    restoreBastionAssets(); // 恢复上次捕获的堡垒机资产(重启不丢;webview 连上后会刷新)
   } else {
     setStatus(`读取会话失败: ${res.error}`, 'var(--red)');
   }
+}
+
+// 从 SQLite 恢复上次捕获的堡垒机资产(重启不丢)。资产只含名称/IP/账号/目录/收藏,不含密码。
+async function restoreBastionAssets() {
+  try {
+    const r = await window.api.bastionLoadAssets();
+    if (!r || !r.ok || !r.byUrl) return;
+    const urls = Object.keys(r.byUrl);
+    if (!urls.length) return;
+    // 有多个堡垒机时合并展示;记录当前来源地址
+    const all = [];
+    for (const u of urls) {
+      const favs = new Set(r.byUrl[u].filter((a) => a.favorite).map((a) => a.devId));
+      for (const a of r.byUrl[u]) all.push({ ...a, favorite: favs.has(a.devId) || !!a.favorite });
+      if (!state.bastionUrl) state.bastionUrl = u;
+    }
+    if (all.length && JSON.stringify(all) !== JSON.stringify(state.bastionAssets)) {
+      state.bastionAssets = all;
+      for (const a of all) if (a.favorite) state.bastionFavSet.add(a.devId);
+      renderSessionList(els.inputSessionSearch.value);
+      console.log('[堡垒机] 已从本地恢复资产:', all.length);
+    }
+  } catch (e) { console.log('[堡垒机] 恢复资产失败:', e && e.message); }
 }
 
 // ---------- 最近连接(一键重连) ----------
@@ -4041,10 +4071,26 @@ function bastionCfgAdd() {
   showBastionCfgMsg(`✅ 已保存「${name || url}」${account ? '(含账号密码)' : ''}`);
 }
 function bastionCfgDelete(id) {
+  const s = bastionServers().find((x) => x.id === id);
   state.settings.bastionServers = bastionServers().filter((x) => x.id !== id);
   saveSettings();
   bastionRenderCfgList();
   bastionRenderServerSelect();
+  // 顺手清掉该堡垒机的持久化资产(重启后不再出现)
+  if (s && s.url && window.api.bastionDeleteAssets) {
+    window.api.bastionDeleteAssets(s.url.replace(/\/+$/, '')).catch(() => {});
+  }
+  // 若删的是当前展示来源,清空内存里的资产
+  let host = '';
+  try { host = s && s.url ? new URL(s.url).host : ''; } catch { /* url 不规范则跳过 */ }
+  const cur = state.bastionUrl || '';
+  if (s && host && cur.includes(host)) {
+    state.bastionAssets = [];
+    state.bastionTree = [];
+    state.bastionFavSet = new Set();
+    state.bastionFavTree = null;
+    renderSessionList(els.inputSessionSearch.value);
+  }
 }
 function showBastionCfgMsg(text) {
   els.bastionCfgMsg.textContent = text;
@@ -4068,13 +4114,59 @@ function injectBastionAssetHook() {
       ['pointerdown', 'mousedown'].forEach(function (ev) {
         document.addEventListener(ev, function () { window.__bastionFocusTs = Date.now(); }, true);
       });
+      function parseDevs(j) {
+        var out = [];
+        try {
+          if (j.content) { // getAccessViewDevs / getFavoriteDevices: { content:[{ id, dev:{id,name,ip,services,accounts}, recent:{account} }] }
+            out = j.content.map(function(c){
+              var d = c.dev || {};
+              var srv = (d.services && d.services.services) || {};
+              var accts = ((d.accounts && d.accounts.accounts) || []).map(function(a){ return a.name; }).filter(Boolean);
+              return {
+                name: d.name || c.name,
+                ip: d.ip || '',
+                id: d.id || c.id || '',
+                devId: String(d.id != null ? d.id : c.id || ''),
+                port: (srv.ssh && srv.ssh.port) || 22,
+                proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
+                accounts: accts,
+                recentAccount: (c.recent && c.recent.account) || '',
+                favorite: false, dir: ''
+              };
+            }).filter(function(d){ return d.name; });
+          } else if (j.children) { // 树结构:递归收集设备(有 ip 的节点)
+            (function walk(nodes){
+              for (var i = 0; i < (nodes || []).length; i++) {
+                var n = nodes[i];
+                if (n.ip) out.push({ name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '' });
+                if (n.children) walk(n.children);
+              }
+            })(j.children);
+          }
+        } catch (e) {}
+        return out;
+      }
+      // 合并进 __bastionAssets:按 devId 去重(保留已有 dir/收藏标记,新数据覆盖)
+      function mergeDevs(list) {
+        var prev = window.__bastionAssets || [];
+        var map = new Map(prev.map(function(d){ return [d.devId || d.name + d.ip, d]; }));
+        (list || []).forEach(function(d){
+          var k = d.devId || d.name + d.ip;
+          var old = map.get(k);
+          if (old && old.dir && !d.dir) d.dir = old.dir;
+          if (old && old.dirPath && !d.dirPath) d.dirPath = old.dirPath;
+          if (old && old.favorite) d.favorite = true;
+          map.set(k, d);
+        });
+        window.__bastionAssets = Array.from(map.values());
+      }
       function capture(url, text, body) {
         if (!url || !text) return;
-        const matched = /getAccessViewDevs|getAccessViewTree/.test(url);
+        const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\/getTree/.test(url);
         // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
-        const broad = /accessView|device|tree|asset|host|group/i.test(url);
+        const broad = /accessView|device|tree|asset|host|group|fav/i.test(url);
         if (!matched && !broad) return;
-        const rec = { ts: Date.now(), url: url.slice(0, 250), len: text.length, matched };
+        const rec = { ts: Date.now(), url: String(url).slice(0, 250), len: text.length, matched };
         let j = null;
         try { j = JSON.parse(text); } catch (e) {}
         if (j && typeof j === 'object') {
@@ -4085,15 +4177,20 @@ function injectBastionAssetHook() {
           rec.devs = Array.isArray(j.content) ? j.content.length
             : (j.children ? (function countIp(ns){ var c2 = 0; (ns || []).forEach(function(n){ if (n.ip) c2++; if (n.children) c2 += countIp(n.children); }); return c2; })(j.children) : -1);
         }
-        rec.preview = text.slice(0, 300);
+        rec.preview = String(text).slice(0, 300);
         const diag = window.__bastionDiag || [];
         diag.push(rec);
         if (diag.length > 200) diag.shift();
         window.__bastionDiag = diag;
         if (!matched || !j) return; // 没匹配到已知资产 API:只记录(供判断真实接口名),不并入资产
+        // 目录树:getAccessViewTree → 存树结构(分组展示 + 逐目录请求用)
+        if (/getAccessViewTree/.test(url) && j.children) { window.__bastionTree = j.children; return; }
+        // 收藏夹树:userFav/getTree → {name, children:[{name,...}]}
+        if (/userFav\/getTree/.test(url) && (j.children || j.name)) { window.__bastionFavTree = j; return; }
         // 分页拉全量:H3C 前端默认只请求 page=0(size=20),totalPages>1 时按原请求体主动翻页补齐
         // (真实堡垒机 totalElements=870 / 44 页,只捕获第 0 页 20 台 = "资产不完整"根因)
-        if (j.last === false && Array.isArray(j.content) && j.totalPages && j.totalPages > 1 && !window.__bastionAllLoading) {
+        // 仅 getAccessViewDevs 触发;收藏接口一次 100 条,不翻页
+        if (/getAccessViewDevs/.test(url) && j.last === false && Array.isArray(j.content) && j.totalPages && j.totalPages > 1 && !window.__bastionAllLoading) {
           window.__bastionAllLoading = true;
           window.__bastionFetchedPages = window.__bastionFetchedPages || {};
           let pb = null;
@@ -4120,39 +4217,14 @@ function injectBastionAssetHook() {
             } catch (e) { next(); }
           })(1);
         }
-        try {
-          let devs = [];
-          if (j.content) { // getAccessViewDevs: { content:[{ id, dev:{id,name,ip,services,accounts}, recent:{account} }] }
-            devs = j.content.map(function(c){
-              const d = c.dev || {};
-              const srv = (d.services && d.services.services) || {};
-              const accts = ((d.accounts && d.accounts.accounts) || []).map(function(a){ return a.name; }).filter(Boolean);
-              return {
-                name: d.name || c.name,
-                ip: d.ip || '',
-                id: d.id || c.id || '',
-                devId: d.id || c.id || '',
-                port: (srv.ssh && srv.ssh.port) || 22,
-                proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
-                accounts: accts,
-                recentAccount: (c.recent && c.recent.account) || '',
-              };
-            }).filter(function(d){ return d.name; });
-          } else if (j.children) { // 树结构:递归收集设备(有 ip 的节点)
-            (function walk(nodes){
-              for (const n of nodes || []) {
-                if (n.ip) devs.push({ name: n.name, ip: n.ip, id: n.id, devId: n.id, port: 22, proto: 'ssh', accounts: [], recentAccount: '' });
-                if (n.children) walk(n.children);
-              }
-            })(j.children);
-          }
-          if (devs.length) {
-            const prev = window.__bastionAssets || [];
-            const map = new Map(prev.map(d => [d.name+d.ip, d]));
-            devs.forEach(d => map.set(d.name+d.ip, d));
-            window.__bastionAssets = [...map.values()];
-          }
-        } catch(e) {}
+        // 解析并合并设备
+        const devs = parseDevs(j);
+        if (/getFavoriteDevices/.test(url)) {
+          devs.forEach(function(d){ d.favorite = true; });
+          const favs = window.__bastionFavSet || (window.__bastionFavSet = new Set());
+          devs.forEach(function(d){ if (d.devId) favs.add(d.devId); });
+        }
+        if (devs.length) mergeDevs(devs);
       }
       // 钩 XMLHttpRequest
       const oOpen = XMLHttpRequest.prototype.open;
@@ -4171,27 +4243,184 @@ function injectBastionAssetHook() {
           return r;
         });
       };
+      // ---- 主动拉全量(宿主触发,不依赖前端 UI 行为;失败单页重试 2 次,串行 150ms 防压垮堡垒机) ----
+      window.__bastionFetchState = { running: false, dirRunning: false };
+      function bdelay(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+      function bget(url, init, retries) {
+        retries = retries || 0;
+        return window.fetch(url, init).then(function(r){ return r.text(); }).catch(function(err){
+          if (retries < 2) return bget(url, init, retries + 1);
+          throw err;
+        });
+      }
+      window.__bastionFetchAll = function() {
+        if (window.__bastionFetchState.running) return Promise.resolve(false);
+        window.__bastionFetchState.running = true;
+        window.__bastionAllLoading = true;
+        (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-start' });
+        function fetchRootDevs(rootName, page) {
+          page = page || 0;
+          var size = 100;
+          var body = JSON.stringify({ page: page, size: size, sort: 'name,asc', stateIn: '0', paths: [rootName] });
+          return bget('/shterm/api/asset/getAccessViewDevs?page=' + page + '&size=' + size, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
+          }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (!j || !j.content) return true; // 该页失败:跳过(已有结果保留,不阻塞整体)
+            if (j.last === false && j.totalPages && page + 1 < j.totalPages) {
+              return bdelay(150).then(function(){ return fetchRootDevs(rootName, page + 1); });
+            }
+            return true;
+          });
+        }
+        return bget('/shterm/api/asset/getAccessViewTree', { method: 'GET' }).then(function(t){
+          var j = null; try { j = JSON.parse(t); } catch (e) {}
+          if (!j || !j.children) { window.__bastionFetchState.running = false; window.__bastionAllLoading = false; return false; }
+          window.__bastionTree = j.children;
+          var roots = {};
+          (function walk(ns){ (ns || []).forEach(function(n){ roots[(n.path && n.path[0]) || n.name] = 1; walk(n.children); }); })(j.children);
+          var rootNames = Object.keys(roots);
+          var p = Promise.resolve();
+          rootNames.forEach(function(rn){ p = p.then(function(){ return fetchRootDevs(rn); }); });
+          return p.then(function(){
+            // 收藏设备也主动拉一次(带 cookie,前端同源)
+            return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'GET' }).catch(function(){ return ''; });
+          }).then(function(){
+            (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
+            window.__bastionFetchState.running = false;
+            window.__bastionAllLoading = false;
+            return true;
+          });
+        }).catch(function(){ window.__bastionFetchState.running = false; window.__bastionAllLoading = false; return false; });
+      };
+      // ---- 后台按目录补充分组(并发 3 + 120ms 间隔渐进式;树节点 empty=true 跳过) ----
+      // 设备响应本身不带"所属业务目录",只能逐目录请求;结果渐进合并,完成前资产显示在"未分组"。
+      window.__bastionFetchDirs = function() {
+        if (window.__bastionFetchState.dirRunning) return Promise.resolve(false);
+        var tree = window.__bastionTree || [];
+        var dirs = [];
+        (function walk(ns){ (ns || []).forEach(function(n){ if (n.path && n.path.length && !n.empty) dirs.push(n); walk(n.children); }); })(tree);
+        if (!dirs.length) return Promise.resolve(false);
+        window.__bastionFetchState.dirRunning = true;
+        (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-start', dirs: dirs.length });
+        var idx = 0, done = 0;
+        function one() {
+          if (idx >= dirs.length) {
+            (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-done', done: done });
+            window.__bastionFetchState.dirRunning = false;
+            return Promise.resolve(true);
+          }
+          var n = dirs[idx++];
+          var body = JSON.stringify({ page: 0, size: 100, sort: 'name,asc', stateIn: '0', paths: n.path });
+          return window.fetch('/shterm/api/asset/getAccessViewDevs?page=0&size=100', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
+          }).then(function(r){ return r.text(); }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && j.content) {
+              var ids = {};
+              j.content.forEach(function(c){ var d = c.dev || {}; var id = String(d.id != null ? d.id : c.id || ''); if (id) ids[id] = 1; });
+              var prev = window.__bastionAssets || [];
+              var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
+              map.forEach(function(x){
+                if (x.devId && ids[x.devId]) { x.dir = n.name; x.dirPath = n.path; }
+              });
+              window.__bastionAssets = Array.from(map.values());
+              done += Object.keys(ids).length;
+            }
+            return bdelay(120).then(one);
+          }).catch(function(){ return bdelay(120).then(one); });
+        }
+        return one();
+      };
     })()`).catch(() => {});
   } catch { /* ignore */ }
 }
 
-// 从 webview 读取捕获的资产,刷新会话列表
+// 从 webview 读取捕获的资产(资产+目录树+收藏),刷新会话列表并持久化
 function pollBastionAssets() {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板已收起:不打扰后台 webview,恢复展开后再轮询
   try {
-    // webview.executeJavaScript 直接 resolve 为脚本结果(数组)
-    wv.executeJavaScript(`window.__bastionAssets || []`).then((list) => {
-      list = list || [];
-      console.log('[堡垒机] pollBastionAssets 读到资产数:', list.length, JSON.stringify(list).slice(0,120));
-      if (list.length && JSON.stringify(list) !== JSON.stringify(state.bastionAssets)) {
+    wv.executeJavaScript(`(function(){
+      return {
+        assets: window.__bastionAssets || [],
+        tree: window.__bastionTree || [],
+        favTree: window.__bastionFavTree || null,
+        favs: Array.from(window.__bastionFavSet || []),
+        fetchState: window.__bastionFetchState || { running: false, dirRunning: false }
+      };
+    })()`).then((r) => {
+      r = r || {};
+      const list = r.assets || [];
+      const json = JSON.stringify(list);
+      if (list.length && json !== JSON.stringify(state.bastionAssets)) {
         state.bastionAssets = list;
-        renderSessionList(els.inputSessionSearch.value);
+        persistBastionAssets(); // 异步持久化,不阻塞渲染
         console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
       }
+      // 目录树 / 收藏夹树变化也同步
+      const treeJson = JSON.stringify(r.tree);
+      if (treeJson && treeJson !== JSON.stringify(state.bastionTree)) {
+        state.bastionTree = r.tree;
+        // 拿到树后自动后台补充分组(仅一次;失败/已跑则不重复)
+        if (!state.bastionGrouping && !(r.fetchState && r.fetchState.dirRunning)) {
+          state.bastionGrouping = true;
+          try { wv.executeJavaScript('window.__bastionFetchDirs && window.__bastionFetchDirs()').then(() => setTimeout(pollBastionAssets, 3000)); } catch { state.bastionGrouping = false; }
+        }
+      }
+      // 目录分组跑完 → 复位"分组中…"提示并刷新
+      if (state.bastionGrouping && !(r.fetchState && r.fetchState.dirRunning)) {
+        state.bastionGrouping = false;
+        renderSessionList(els.inputSessionSearch.value);
+      }
+      const favTreeJson = JSON.stringify(r.favTree);
+      if (favTreeJson !== JSON.stringify(state.bastionFavTree)) state.bastionFavTree = r.favTree;
+      if (r.favs && r.favs.length) {
+        const favSet = new Set(r.favs);
+        if (favSet.size !== state.bastionFavSet.size) {
+          state.bastionFavSet = favSet;
+          state.bastionAssets = state.bastionAssets.map((a) => ({ ...a, favorite: favSet.has(a.devId) || !!a.favorite }));
+          persistBastionAssets();
+        }
+      }
+      renderSessionList(els.inputSessionSearch.value);
     }).catch((e) => console.log('[堡垒机] pollBastionAssets 异常:', e && e.message));
   } catch { /* ignore */ }
+}
+
+// 主动拉全量:页面就绪/点击刷新时调用,不依赖前端是否请求过资产 API
+function triggerBastionFullFetch() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.executeJavaScript) return;
+  injectBastionAssetHook(); // 确保钩子已注入(换页后 guest 环境重置);注入是异步的,稍等再触发
+  setStatus('正在拉取堡垒机全部资产…', 'var(--accent)');
+  try {
+    // 先注入钩子,400ms 后调用主动拉取(避免钩子未装好时 __bastionFetchAll 不存在)
+    setTimeout(() => {
+      wv.executeJavaScript('window.__bastionFetchAll && window.__bastionFetchAll()').then((ok) => {
+        if (ok) setStatus('堡垒机资产已拉取完成', 'var(--green)');
+        else setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+        setTimeout(pollBastionAssets, 1200);
+      }).catch((e) => {
+        console.log('[堡垒机] triggerBastionFullFetch 异常:', e && e.message);
+        setStatus('堡垒机资产拉取失败: ' + ((e && e.message) || '未知错误'), 'var(--red)');
+      });
+    }, 400);
+  } catch { /* ignore */ }
+}
+
+// 把当前资产持久化到 SQLite(按当前堡垒机地址分组;防抖,避免频繁写盘)
+let bastionPersistTimer = null;
+function persistBastionAssets() {
+  clearTimeout(bastionPersistTimer);
+  bastionPersistTimer = setTimeout(() => {
+    const url = state.bastionUrl || (els.bastionCurrent ? els.bastionCurrent.textContent.split(' — ').pop() : '') || '';
+    if (!url || !state.bastionAssets.length) return;
+    window.api.bastionSaveAssets(url, state.bastionAssets).then((r) => {
+      if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', r.error);
+    }).catch(() => {});
+  }, 800);
 }
 
 // 堡垒机连接链路诊断(主渲染进程;webview 的资产请求记录在 __bastionDiag,连接在 __bastionConnLog)
@@ -4216,6 +4445,9 @@ function exportBastionDiag() {
       webviewUrl: els.bastionCurrent ? els.bastionCurrent.textContent : '',
       assetCount: (state.bastionAssets || []).length,
       assets: state.bastionAssets,
+      tree: state.bastionTree || [],
+      favTree: state.bastionFavTree || null,
+      favCount: state.bastionFavSet ? state.bastionFavSet.size : 0,
       diag: diag || [],
       connLog: window.__bastionConnLog || [],
     };
@@ -4228,55 +4460,112 @@ function exportBastionDiag() {
 }
 
 // 会话列表里的"🌐 H3C 堡垒机"资产区(双击连 SSH;右键:连接/账号/SFTP/断开)
+// 单个堡垒机资产行(双击连 SSH;右键:连接/账号/SFTP/断开)
+function makeBastionAssetItem(a) {
+  const item = document.createElement('div');
+  item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '');
+  const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
+  item.title = `双击连 SSH → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}`;
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = a.favorite ? '⭐' : '🖥';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = a.name;
+  const addr = document.createElement('span');
+  addr.className = 'addr jms-a-addr';
+  addr.textContent = a.ip || '';
+  item.appendChild(icon);
+  item.appendChild(name);
+  item.appendChild(addr);
+  item.addEventListener('dblclick', () => bastionConnect(a));
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const items = [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }];
+    const accts = (a.accounts || []).filter(Boolean);
+    if (accts.length > 1) {
+      items.push({ label: '账号', separatorLabel: true });
+      for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => bastionConnect(a, un) });
+    }
+    items.push({ separator: true });
+    items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
+    items.push({ separator: true });
+    items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    items.push({ separator: true });
+    items.push({ label: '🔄 刷新资产', action: () => triggerBastionFullFetch() });
+    showCtxMenu(e.clientX, e.clientY, items);
+  });
+  return item;
+}
+
+// 会话列表里的"🌐 H3C 堡垒机"资产区:
+// 空搜索 → 按目录分组展示(⭐收藏置顶 + 业务目录组,可折叠);有搜索词 → 平铺匹配项(性能考虑)
 function renderBastionInSessionList(container, f) {
   const all = state.bastionAssets;
   const kw = (f || '').toLowerCase();
   // 搜索:按 名称/IP/账号 过滤;空搜索 = 全显示;空格分隔多关键词
   const list = all.filter((a) => bastionAssetMatch(a, kw));
   if (!list.length) return;
-  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${list.length}${kw ? '/' + all.length : ''})`, state.bastionCollapsed,
+  const favCount = all.filter((a) => a.favorite).length;
+  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${list.length}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
-      { label: '🔄 刷新资产', action: () => { injectBastionAssetHook(); setTimeout(pollBastionAssets, 600); } },
+      { label: '🔄 拉取全部资产', action: () => triggerBastionFullFetch() },
       { label: '📤 导出诊断包', action: () => exportBastionDiag() },
       { label: '🔌 断开全部堡垒机连接', action: () => disconnectBastionAll() },
     ]));
   if (state.bastionCollapsed) return;
-  for (const a of list) {
-    const item = document.createElement('div');
-    item.className = 'asset-item jms-asset-item';
-    const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
-    item.title = `双击连 SSH → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}`;
-    const icon = document.createElement('span');
-    icon.className = 'icon';
-    icon.textContent = '🖥';
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = a.name;
-    const addr = document.createElement('span');
-    addr.className = 'addr jms-a-addr';
-    addr.textContent = a.ip || '';
-    item.appendChild(icon);
-    item.appendChild(name);
-    item.appendChild(addr);
-    item.addEventListener('dblclick', () => bastionConnect(a));
-    item.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      const items = [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }];
-      const accts = (a.accounts || []).filter(Boolean);
-      if (accts.length > 1) {
-        items.push({ label: '账号', separatorLabel: true });
-        for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => bastionConnect(a, un) });
-      }
-      items.push({ separator: true });
-      items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
-      items.push({ separator: true });
-      items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
-      items.push({ separator: true });
-      items.push({ label: '🔄 刷新资产', action: () => { injectBastionAssetHook(); setTimeout(pollBastionAssets, 600); } });
-      showCtxMenu(e.clientX, e.clientY, items);
-    });
-    container.appendChild(item);
+  if (kw) {
+    // 搜索:平铺匹配项(星标保留)
+    for (const a of list) container.appendChild(makeBastionAssetItem(a));
+    return;
+  }
+  // ---- 空搜索:分组展示 ----
+  const dirs = [];
+  const dirOf = (a) => a.dir || '';
+  const map = new Map();
+  for (const a of all) {
+    const d = dirOf(a);
+    if (!map.has(d)) map.set(d, []);
+    map.get(d).push(a);
+  }
+  for (const [d, arr] of map) dirs.push({ dir: d, assets: arr });
+  // 排序:收藏组置顶 → 有目录的按目录名 → 未分组最后
+  dirs.sort((x, y) => {
+    const xFav = x.dir === '__fav__' ? 0 : 1;
+    const yFav = y.dir === '__fav__' ? 0 : 1;
+    if (xFav !== yFav) return xFav - yFav;
+    if (!x.dir) return 1;
+    if (!y.dir) return -1;
+    return x.dir.localeCompare(y.dir, 'zh');
+  });
+  // 收藏组(置顶,独立分组,可折叠)
+  const favs = all.filter((a) => a.favorite);
+  if (favs.length) {
+    const collapsed = state.bastionDirCollapsed.has('__fav__');
+    container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
+      () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(''); },
+      []));
+    if (!collapsed) for (const a of favs) container.appendChild(makeBastionAssetItem(a));
+  }
+  // 按目录分组
+  const groupKeys = dirs.filter((g) => g.dir && g.dir !== '__fav__');
+  const ungrouped = dirs.find((g) => !g.dir);
+  for (const g of groupKeys) {
+    const collapsed = state.bastionDirCollapsed.has(g.dir);
+    container.appendChild(makeSectionHead(`📁 ${g.dir}(${g.assets.length})`, collapsed,
+      () => { collapsed ? state.bastionDirCollapsed.delete(g.dir) : state.bastionDirCollapsed.add(g.dir); renderSessionList(''); },
+      []));
+    if (collapsed) continue;
+    for (const a of g.assets) container.appendChild(makeBastionAssetItem(a));
+  }
+  // 未分组(目录请求未完成或该设备不在任何目录)
+  if (ungrouped && ungrouped.assets.length) {
+    const collapsed = state.bastionDirCollapsed.has('__ungrouped__');
+    container.appendChild(makeSectionHead(`🗂 未分组(${ungrouped.assets.length}${state.bastionGrouping ? ',分组中…' : ''})`, collapsed,
+      () => { collapsed ? state.bastionDirCollapsed.delete('__ungrouped__') : state.bastionDirCollapsed.add('__ungrouped__'); renderSessionList(''); },
+      []));
+    if (!collapsed) for (const a of ungrouped.assets) container.appendChild(makeBastionAssetItem(a));
   }
 }
 
@@ -4441,6 +4730,8 @@ function initBastionWebview() {
     injectBastionAssetHook();
     if (!bastionManualZoom) setTimeout(bastionFitToWidth, 250);
     setTimeout(pollBastionAssets, 1200);
+    // 页面就绪后主动拉一次全量(不依赖前端是否请求过资产 API;未登录时接口会失败,静默跳过)
+    setTimeout(triggerBastionFullFetch, 3500);
     if (bastionPendingFill) {
       const s = bastionPendingFill;
       setTimeout(() => { bastionAutoFill(s); }, 800);

@@ -6,6 +6,10 @@ build-out*/
 logs/
 *.log
 
+# ---- 编辑器残留 / mock 运行时数据 ----
+*.swp
+mock/sftp-root/
+
 # ---- macOS ----
 .DS_Store
 
