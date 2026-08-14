@@ -1183,9 +1183,15 @@ async function loadSessions() {
 async function restoreBastionAssets() {
   try {
     const r = await window.api.bastionLoadAssets();
-    if (!r || !r.ok || !r.byUrl) return;
+    if (!r || !r.ok || !r.byUrl) {
+      console.log('[堡垒机] restore: 读取失败或空', r && r.error);
+      return;
+    }
     const urls = Object.keys(r.byUrl);
-    if (!urls.length) return;
+    if (!urls.length) {
+      console.log('[堡垒机] restore: SQLite 里没有堡垒机资产(键:', JSON.stringify(state.bastionUrl), ')');
+      return;
+    }
     // 多个堡垒机合并展示;键用 origin 归一(旧数据可能是深链接 URL 存的,读回来统一成 origin,
     // 这样 persist 时会写回归一后的键,不再分裂)
     const all = [];
@@ -4455,6 +4461,10 @@ function pollBastionAssets() {
         persistBastionAssets(); // 异步持久化,不阻塞渲染
         changed = true;
         console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
+      } else {
+        // 诊断:资产没更新的原因(列表空 vs 内容没变 vs 面板收起)
+        console.log('[堡垒机] poll: webview资产', list.length, '| state资产', state.bastionAssets.length,
+          '| origin', state.bastionUrl, '| collapsed', state.bastionCollapsed, '| grouping', state.bastionGrouping);
       }
       // 目录树 / 收藏夹树变化也同步
       const treeJson = JSON.stringify(r.tree);
@@ -4528,10 +4538,14 @@ function triggerBastionFullFetch() {
 // 把堡垒机地址规范化为持久化键:统一用 origin(协议+主机+端口),去掉路径/查询/斜杠差异。
 // 旧版直接用当前 URL(可能带 /shterm/ 深链接)当键,删除配置时又用配置 URL → 键不一致,
 // 删除后旧数据"复活"、同一设备在多个键下重复。origin 归一后所有读写走同一把钥匙。
+// 注意:about:blank / 无效 URL 的 origin 是字符串 "null",绝不能拿来当键(会污染持久化数据)。
 function bastionOrigin(url) {
   const s = String(url || '').trim();
   if (!s) return '';
-  try { return new URL(s).origin; } catch { return s.replace(/\/+$/, ''); }
+  let u;
+  try { u = new URL(s); } catch { return s.replace(/\/+$/, ''); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return ''; // about: 等非 http 协议 → 不作为键
+  return u.origin;
 }
 
 // 把当前资产持久化到 SQLite(按当前堡垒机 origin 分组;防抖,避免频繁写盘)
