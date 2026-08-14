@@ -65,7 +65,10 @@ const termText = async (c, sid) => {
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    // 锁屏两种形态:首次设置(≥8位)/ 已设密解锁;全新 POLARIS_LOCK_DIR 是首次设置
+    const isSetup = await ev(lock, `document.getElementById('btn').textContent.includes('设置')`);
+    const lockPw = isSetup ? 'x12345678' : 'x1234';
+    await ev(lock, `document.getElementById('pw').value='${lockPw}'; document.getElementById('pw2').value='${lockPw}'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) { await sleep(500); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { main = m; break; } }
     c = await connect(main.webSocketDebuggerUrl);
