@@ -61,10 +61,31 @@ function runInjected(mockFetch) {
   // 另外 capture() 读的是 r.url(真实 Response 自带),mock 的返回对象必须补上 url 字段,
   // 否则 capture 因 url 为 undefined 直接跳过解析(assets 恒为空)。
   const wrapped = (url, init) => Promise.resolve(mockFetch(url, init)).then((r) => Object.assign({}, r, { url: String(url) }));
+  // 注入脚本的 fetchAll/fetchDirs 改用 XHR 发请求(bxhr),FakeXHR 要把响应分发到 onload,
+  // 同时触发注入脚本 hook 加的 'load' 监听(capture 合并资产也走这条)。
+  function FakeXHR() { this._headers = {}; }
+  FakeXHR.prototype = {
+    open(m, u) { this._m = m; this._u = u; },
+    setRequestHeader(k, v) { this._headers[k] = v; },
+    addEventListener(ev, fn) { (this._listeners = this._listeners || {})[ev] = fn; },
+    send(body) {
+      const self = this;
+      const init = { method: this._m, headers: this._headers };
+      if (body !== undefined && body !== null) init.body = body;
+      Promise.resolve(wrapped(this._u, init))
+        .then((r) => (r && r.text ? r.text() : String(r || '')))
+        .then((text) => {
+          self.responseText = text;
+          // 注入脚本 hook 的 send 里 addEventListener('load', function(){ capture(this.__u, ...) })
+          // —— 回调里 this 必须是 XHR 实例,否则 __u 是 undefined,capture 直接跳过
+          try { self._listeners && self._listeners.load && self._listeners.load.call(self); } catch (e) { /* capture 内部容错 */ }
+          if (self.onload) self.onload.call(self);
+        })
+        .catch(() => { if (self.onerror) self.onerror(new Error('mock xhr error')); });
+    },
+  };
   const windowObj = { fetch: wrapped };
   const documentObj = { addEventListener: () => {} };
-  function FakeXHR() {}
-  FakeXHR.prototype = { open() {}, send() {}, addEventListener() {} };
   const fn = new Function('window', 'document', 'XMLHttpRequest', 'fetch', 'console',
     code + '\n;return window;');
   return fn(windowObj, documentObj, FakeXHR, wrapped, console);

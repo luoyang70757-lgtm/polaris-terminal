@@ -4322,9 +4322,26 @@ function injectBastionAssetHook() {
       // ---- 主动拉全量(宿主触发,不依赖前端 UI 行为;失败单页重试 2 次,串行 150ms 防压垮堡垒机) ----
       window.__bastionFetchState = { running: false, dirRunning: false };
       function bdelay(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+      // 网络层用 XHR 而非 window.fetch:SPA 前端框架可能覆盖 window.fetch
+      // (注入的 fetch 钩子会因此失效),XHR 我们只加捕获监听、不改行为,最可靠。
+      // XHR 发出的请求同样会被钩子捕获(capture 合并资产),与 fetch 版等效。
+      function bxhr(method, url, bodyStr) {
+        return new Promise(function(resolve, reject) {
+          try {
+            var x = new XMLHttpRequest();
+            x.open(method, url, true);
+            if (bodyStr !== undefined) x.setRequestHeader('Content-Type', 'application/json');
+            x.onload = function() { resolve(x.responseText || ''); };
+            x.onerror = function() { reject(new Error('XHR 请求失败: ' + url)); };
+            x.send(bodyStr);
+          } catch (e) { reject(e); }
+        });
+      }
       function bget(url, init, retries) {
         retries = retries || 0;
-        return window.fetch(url, init).then(function(r){ return r.text(); }).catch(function(err){
+        var method = (init && init.method) || 'GET';
+        var body = (init && init.body) !== undefined ? (init && init.body) : undefined;
+        return bxhr(method, url, body).catch(function(err){
           if (retries < 2) return bget(url, init, retries + 1);
           throw err;
         });
@@ -4385,9 +4402,7 @@ function injectBastionAssetHook() {
         function fetchDirPages(n, page) {
           page = page || 0;
           var body = JSON.stringify({ page: page, size: 100, sort: 'name,asc', stateIn: '0', paths: n.path });
-          return window.fetch('/shterm/api/asset/getAccessViewDevs?page=' + page + '&size=100', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
-          }).then(function(r){ return r.text(); }).then(function(t){
+          return bxhr('PUT', '/shterm/api/asset/getAccessViewDevs?page=' + page + '&size=100', body).then(function(t){
             var j = null; try { j = JSON.parse(t); } catch (e) {}
             if (j && j.content) {
               var ids = {};
@@ -4439,12 +4454,24 @@ function pollBastionAssets() {
         tree: window.__bastionTree || [],
         favTree: window.__bastionFavTree || null,
         favs: Array.from(window.__bastionFavSet || []),
-        fetchState: window.__bastionFetchState || { running: false, dirRunning: false }
+        fetchState: window.__bastionFetchState || { running: false, dirRunning: false },
+        hookAlive: typeof window.__bastionFetchAll === 'function'
       };
     })()`).then((r) => {
       r = r || {};
       const list = r.assets || [];
       let changed = false; // 仅当数据真变化才重渲染(旧版无条件 renderSessionList,每 4s 全量重建 870 资产 DOM)
+      // 钩子存活检测:SPA 页面登录跳转/整页重载会重置 guest 环境(__bastionHookInjected 和
+      // __bastionFetchAll 全丢)→ 前端资产请求不被捕获、fetchAll 也不存在,资产区静默消失
+      // 且提示"拉取未完成"。检测到丢失就重新注入,并触发一次主动拉取。
+      if (!r.hookAlive) {
+        console.log('[堡垒机] webview 钩子丢失(页面可能重载),重新注入');
+        injectBastionAssetHook();
+        if (!state.bastionLastAutoFetch || Date.now() - state.bastionLastAutoFetch > 5000) {
+          state.bastionLastAutoFetch = Date.now();
+          triggerBastionFullFetch();
+        }
+      }
       // 持久化键:随 webview 当前地址同步为 origin(S1/S2 修复——
       // 旧版 state.bastionUrl 只在 restore 赋值永不更新,多堡垒机切换时 B 的数据写进 A 的键)
       let curUrl = '';
