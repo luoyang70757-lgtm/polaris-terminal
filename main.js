@@ -1395,8 +1395,8 @@ function makeHostVerifier(host, port) {
       if (r === 0) { knownHosts.set(id, fp); return true; }
       return false;
     } catch (err) {
-      console.warn('[MAIN] 指纹校验异常,放行:', err.message);
-      return true;
+      console.warn('[MAIN] 指纹校验异常,拒绝连接:', err.message);
+      return false;
     }
   };
 }
