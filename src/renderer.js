@@ -1321,7 +1321,10 @@ function renderSessionList(filter) {
   // 会话下方显示 JMS/H3C 堡垒机资产:有搜索词时按关键词过滤,无搜索词时全显示。
   // 注意必须在这里渲染一次(视图函数内部不再渲染)——否则无搜索词时资产区丢失,
   // 或有搜索词时出现"全量 + 过滤"两份区块(旧版 bug:视图函数末尾各渲染了一次全量)。
-  renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f);
+  // 两个渲染块用 try/catch 隔离:JMS 渲染异常不能拖垮 H3C 区块,反之亦然,
+  // 异常会打到控制台供诊断(旧版一处崩溃 = 两个区块都消失且无任何报错提示)。
+  try { renderJmsInSessionList(els.sessionTree, f); } catch (e) { console.warn('[堡垒机] JMS 区块渲染异常:', e); }
+  try { renderBastionInSessionList(els.sessionTree, f); } catch (e) { console.warn('[堡垒机] H3C 区块渲染异常:', e); }
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
 }
 
@@ -4552,15 +4555,23 @@ function bastionOrigin(url) {
 let bastionPersistTimer = null;
 function persistBastionAssets() {
   clearTimeout(bastionPersistTimer);
-  bastionPersistTimer = setTimeout(() => {
-    // 键 = 当前展示来源的 origin(poll 会持续把 state.bastionUrl 同步成 webview 当前地址的 origin)
-    const url = state.bastionUrl || '';
-    if (!url || !state.bastionAssets.length) return;
-    window.api.bastionSaveAssets(url, state.bastionAssets).then((r) => {
-      if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', r.error);
-    }).catch(() => {});
-  }, 800);
+  // 首次变化立即落盘一次(不等 800ms),防抖只压后续高频变化 —— 否则捕获资产后
+  // 很快退出应用,防抖 timer 没触发,资产根本没进 SQLite,重启后恢复不到
+  flushBastionAssets();
+  bastionPersistTimer = setTimeout(flushBastionAssets, 800);
 }
+function flushBastionAssets() {
+  const url = state.bastionUrl || '';
+  if (!url || !state.bastionAssets.length) return;
+  window.api.bastionSaveAssets(url, state.bastionAssets).then((r) => {
+    if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', r.error);
+  }).catch(() => {});
+}
+// 应用退出前立即冲刷未落盘的资产(不等防抖 timer;防抖期间退出 = 数据丢失)
+window.addEventListener('beforeunload', () => {
+  if (bastionPersistTimer) { clearTimeout(bastionPersistTimer); bastionPersistTimer = null; }
+  flushBastionAssets();
+});
 
 // 堡垒机连接链路诊断(主渲染进程;webview 的资产请求记录在 __bastionDiag,连接在 __bastionConnLog)
 window.__bastionConnLog = [];
