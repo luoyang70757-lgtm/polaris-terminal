@@ -215,7 +215,7 @@
           <button id="bastion-load" class="btn-mini" title="加载当前堡垒机并自动填充账号密码">加载</button>
           <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
           <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
-          <button id="bastion-close" class="btn-mini" title="关闭(最小化到会话列表)">✕</button>
+          <button id="bastion-close" class="btn-mini" title="关闭堡垒机面板">✕</button>
         </div>
         <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
         <div class="bastion-body">
@@ -464,6 +464,13 @@
       <div class="settings-sec">外观</div>
       <label class="field"><span>主题</span>
         <select id="set-theme" class="select"></select>
+      </label>
+      <label class="field"><span>启动过场动画</span>
+        <select id="set-bootintro" class="select">
+          <option value="full">完整(2.4s,科幻感)</option>
+          <option value="short">缩短(0.8s,推荐,打开更快)</option>
+          <option value="skip">跳过(不播放)</option>
+        </select>
       </label>
       <label class="field field-check"><span>终端关键字高亮(error / warning / fail 等着色)</span>
         <input type="checkbox" id="set-highlight" />

@@ -23,6 +23,9 @@ const SearchAddonClass =
   (window.SearchAddon && window.SearchAddon.SearchAddon) ||
   window.SearchAddon;
 
+// 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
+const __bootT0 = performance.now();
+
 // ---- 主题预设(参考 Netcatty 的个性化)----
 // term = 终端配色;css = 应用外壳的 CSS 变量(--term-bg 是终端区域底色)
 const THEMES = {
@@ -235,6 +238,7 @@ const els = {
   debugClear: $('debug-clear'),
   debugClose: $('debug-close'),
   setTheme: $('set-theme'),
+  setBootIntro: $('set-bootintro'),
   setHighlight: $('set-highlight'),
   setFontSize: $('set-font-size'),
   setFontFamily: $('set-font-family'),
@@ -442,7 +446,7 @@ const state = {
     highlightKeywords: ['error', 'warning', 'fail', 'failed', 'fatal'],
     aiKey: '',           // (兼容旧数据)AI API Key —— 新结构见 aiVendors
     aiVendor: '',        // (兼容旧数据)模型厂商名 —— 新结构见 aiVendors
-    aiUrl: 'https://api.anthropic.com/v1/messages', // (兼容旧数据)
+    aiUrl: 'https://api.deepseek.com/anthropic', // (兼容旧数据)新默认:DeepSeek Anthropic 兼容端点
     aiModel: 'deepseek-v4-flash', // (兼容旧数据)
     aiModels: ['deepseek-v4-flash', 'deepseek-v4-pro'], // (兼容旧数据)
     aiFormat: 'anthropic',      // (兼容旧数据)
@@ -455,12 +459,14 @@ const state = {
     restoreOnStartup: false,    // 启动时恢复上次打开的会话(默认关,不自动连)
     restoreSessions: [],        // 上次打开的会话 id 列表
     sessionLog: true,           // 会话日志落盘开关(默认开)
-    settingsVersion: 2,         // 设置结构版本(用于一次性的默认值迁移)
+    settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
     sessionView: 'tree',        // 会话列表视图: 'tree'树形 | 'list'列表 | 'grid'网格
+    debugPanelPos: null,        // 调试日志面板位置 {x, y}(null=默认右下角)
+    bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
   jmsServers: [],   // JumpServer 服务器列表: [{ id, name, baseUrl, sshHost, sshPort, account, password, token, user, assets, seq }]
   jmsActiveId: null, // 当前正在管理/登录的服务器 id
@@ -518,6 +524,12 @@ function loadSettings() {
     saveSettings();
   }
   migrateAiVendors(); // 旧版单厂商配置 → 新版多厂商结构
+  // v3 迁移:把"没配过 / 还是旧默认 Anthropic 地址"的厂商 url 修正为 DeepSeek Anthropic 兼容端点
+  if (!state.settings.settingsVersion || state.settings.settingsVersion < 3) {
+    migrateDeepSeekUrl();
+    state.settings.settingsVersion = 3;
+    saveSettings();
+  }
 }
 function saveSettings() {
   try { localStorage.setItem('jms-settings', JSON.stringify(state.settings)); } catch { /* ignore */ }
@@ -547,6 +559,7 @@ function openSettingsModal() {
     els.setTheme.appendChild(opt);
   }
   els.setTheme.value = THEMES[state.settings.theme] ? state.settings.theme : 'dark';
+  els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
   els.setFontFamily.value = state.settings.fontFamily || '';
@@ -726,6 +739,17 @@ function migrateAiVendors() {
   }
   if (!s.aiActiveVendor || !vendors[s.aiActiveVendor]) {
     s.aiActiveVendor = Object.keys(vendors)[0] || '';
+  }
+}
+
+// v3 迁移:默认厂商接入 DeepSeek。旧默认 url 指到 Anthropic 官网,模型却是 deepseek-*(对不上),
+// 这里只修正"没配过 / 还是旧默认地址"的厂商 url,不碰用户自己填的其他厂商。
+function migrateDeepSeekUrl() {
+  const vendors = state.settings.aiVendors && typeof state.settings.aiVendors === 'object' ? state.settings.aiVendors : {};
+  const OLD_ANTHROPIC = 'https://api.anthropic.com/v1/messages';
+  for (const v of Object.values(vendors)) {
+    const url = String(v.url || '').trim();
+    if (!url || url === OLD_ANTHROPIC) v.url = 'https://api.deepseek.com/anthropic';
   }
 }
 
@@ -1901,7 +1925,9 @@ function showCtxMenu(x, y, items) {
   dlog('MENU', `open: ${items.map((i) => (i.separator ? '---' : i.label)).join(' | ')}`);
 }
 function closeCtxMenu() {
-  dlog('MENU', 'close');
+  // 只在菜单确实开着时记日志:window click/blur 会频繁触发本函数,
+  // 若无条件 dlog 会让调试日志被一堆"空关"刷屏(看不到真正的 open/close 配对)
+  if (!els.ctxMenu.classList.contains('hidden')) dlog('MENU', 'close');
   els.ctxMenu.classList.add('hidden');
 }
 
@@ -1920,11 +1946,67 @@ function dlog(kind, msg) {
 function renderDebugBody() {
   if (els.debugBody) { els.debugBody.textContent = termDebug.lines.join('\n'); els.debugBody.scrollTop = els.debugBody.scrollHeight; }
 }
+// 未捕获异常 / Promise 拒绝 → 也进调试日志(排查 bug 的关键来源;任何时刻都记录,不受面板开关影响)
+window.addEventListener('error', (e) => {
+  dlog('ERROR', `未捕获异常: ${e.message || e}${e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''}`);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  dlog('ERROR', `未处理Promise拒绝: ${(r && r.message) || String(r)}`);
+});
 function toggleDebugPanel() {
   const hidden = els.debugPanel.classList.contains('hidden');
   els.debugPanel.classList.toggle('hidden', !hidden);
   els.btnDebug.classList.toggle('active', hidden);
-  if (!hidden) renderDebugBody();
+  if (!hidden) {
+    positionDebugPanel(); // 打开时放到记忆位置(默认右下角)
+    renderDebugBody();
+  }
+}
+// 把调试面板放到记忆位置 / 默认右下角,并钳回可见区域内
+function positionDebugPanel() {
+  const panel = els.debugPanel;
+  if (!panel || panel.classList.contains('hidden')) return;
+  const saved = state.settings.debugPanelPos;
+  const w = panel.offsetWidth, h = panel.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let x, y;
+  if (saved) {
+    x = Math.min(Math.max(0, saved.x), Math.max(0, vw - w));
+    y = Math.min(Math.max(0, saved.y), Math.max(0, vh - h));
+  } else {
+    x = Math.max(0, vw - w - 12);
+    y = Math.max(0, vh - h - 12);
+  }
+  panel.style.left = x + 'px';
+  panel.style.top = y + 'px';
+}
+// 调试面板:按住头部可拖动(点按钮不触发),位置记忆到设置;窗口尺寸变化时钳回可见区
+function initDebugPanelDrag() {
+  const panel = els.debugPanel;
+  const head = panel && panel.querySelector('.debug-head');
+  if (!head) return;
+  head.addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return; // 头部按钮不触发拖拽
+    const startX = e.clientX, startY = e.clientY;
+    const startLeft = panel.offsetLeft, startTop = panel.offsetTop;
+    const move = (ev) => {
+      const x = Math.min(Math.max(0, startLeft + ev.clientX - startX), Math.max(0, window.innerWidth - panel.offsetWidth));
+      const y = Math.min(Math.max(0, startTop + ev.clientY - startY), Math.max(0, window.innerHeight - panel.offsetHeight));
+      panel.style.left = x + 'px';
+      panel.style.top = y + 'px';
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      state.settings.debugPanelPos = { x: panel.offsetLeft, y: panel.offsetTop };
+      saveSettings();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+  window.addEventListener('resize', positionDebugPanel);
 }
 function termElInfo(el) {
   if (!el) return 'null';
@@ -3818,7 +3900,13 @@ function minimizeBastion() {
   els.bastionMini.classList.remove('hidden');
   refitAll(); // 面板收起后终端区恢复全宽,重排 xterm
 }
-function closeBastionPanel() { minimizeBastion(); }
+// 关闭:彻底收起面板,连会话列表里的小入口也不留(与「— 最小化」区分)。
+// webview 会话保留,之后用工具栏 🛡 堡垒机 → H3C 重新打开无需重登。
+function closeBastionPanel() {
+  els.bastionSlot.classList.add('hidden');
+  els.bastionMini.classList.add('hidden');
+  refitAll(); // 面板收起后终端区恢复全宽,重排 xterm
+}
 function restoreBastion() { openBastionPanel(); }
 
 // 更新最小化入口:显示从堡垒机连了几台终端
@@ -5105,6 +5193,7 @@ function connectInto(tab, session, isReconnect) {
   }
   tab.encoding = session.encoding || 'utf8'; // 终端编码(GBK 时主进程会转码)
   const fail = (res) => {
+    dlog('CONN', `${tab.sessionId} 连接失败: ${res.error}`);
     // 连接失败:写入真实原因;若是重连失败,继续安排下一次
     setTabStatus(tab.sessionId, 'closed');
     tab.term.write(`\r\n\x1b[31m[连接失败] ${res.error}\x1b[0m\r\n`);
@@ -5114,6 +5203,7 @@ function connectInto(tab, session, isReconnect) {
     if (isReconnect) scheduleReconnect(tab);
   };
   const isTelnet = (session.protocol || 'ssh') === 'telnet';
+  dlog('CONN', `${session.name} 发起连接 ${session.username || ''}@${session.host}:${session.port || (isTelnet ? 23 : 22)} (${isTelnet ? 'telnet' : 'ssh'}${session.jump && session.jump.host ? ' · 经跳板 ' + session.jump.host : ''})`);
   const p = isTelnet
     ? window.api.telnetConnect(tab.sessionId, {
         host: session.host,
@@ -6411,7 +6501,7 @@ els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.
 els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
 els.bastionForward.addEventListener('click', () => { try { els.bastionWebview.goForward(); } catch { /* ignore */ } });
 els.bastionReload.addEventListener('click', () => { try { els.bastionWebview.reload(); } catch { /* ignore */ } });
-els.bastionClose.addEventListener('click', minimizeBastion);
+els.bastionClose.addEventListener('click', closeBastionPanel); // ✕ 彻底关闭(与 — 最小化区分)
 // 画面缩放(支持 0.5~2.5,按住可连续缩放)
 els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
 els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
@@ -6476,6 +6566,7 @@ document.addEventListener('click', (e) => {
 // 设置
 els.btnSettings.addEventListener('click', openSettingsModal);
 // 终端调试日志面板
+initDebugPanelDrag(); // 面板头部可拖动 + 位置记忆
 els.btnDebug.addEventListener('click', toggleDebugPanel);
 els.debugClose.addEventListener('click', () => { els.debugPanel.classList.add('hidden'); els.btnDebug.classList.remove('active'); });
 els.debugClear.addEventListener('click', () => { termDebug.lines.length = 0; renderDebugBody(); });
@@ -6493,6 +6584,10 @@ els.setTheme.addEventListener('change', () => {
   state.settings.theme = els.setTheme.value;
   saveSettings();
   applyTheme();
+});
+els.setBootIntro.addEventListener('change', () => {
+  state.settings.bootIntro = els.setBootIntro.value;
+  saveSettings();
 });
 els.setHighlight.addEventListener('change', () => {
   state.settings.highlight = els.setHighlight.checked;
@@ -6780,6 +6875,9 @@ async function detectOsForTab(t) {
   t.os = res.name;
 }
 
+// 主进程日志 → 调试面板(MAIN/MAIN·错误 前缀;主进程启动、SSH 连接、异常等)
+window.api.onMainLog((level, msg) => dlog(level === 'error' ? 'MAIN·错误' : 'MAIN', msg));
+
 window.api.onSshData((sessionId, data) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
@@ -6978,6 +7076,17 @@ syncPanelButtons();   // 面板开关按钮激活态
   if (new URLSearchParams(location.search).get('boot') !== '1') return;
   const ov = document.getElementById('boot-overlay');
   if (!ov) return;
+  // 过场动画设置:'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过(设置 → 外观 → 启动过场动画)
+  const mode = state.settings.bootIntro || 'short';
+  if (mode === 'skip') {
+    ov.remove();
+    dlog('BOOT', `过场动画:设置已跳过 +${Math.round(performance.now() - __bootT0)}ms`);
+    return;
+  }
+  const IS_FULL = mode === 'full';
+  const TYP = IS_FULL ? 420 : 160;      // 状态行切换间隔
+  const PAUSE = IS_FULL ? 550 : 250;    // 最后一行停留
+  const FALLBACK = IS_FULL ? 2400 : 900; // 兜底总时长
   ov.classList.remove('hidden'); // 揭开过场(正式版;dev 测试不播,overlay 保持 hidden 不挡界面)
   const line = document.getElementById('boot-line');
   const rain = document.getElementById('boot-rain');
@@ -7012,6 +7121,7 @@ syncPanelButtons();   // 面板开关按钮激活态
     done = true;
     if (raf) cancelAnimationFrame(raf);
     ov.classList.add('boot-done');
+    dlog('BOOT', `过场动画结束(点击/按键可跳过) +${Math.round(performance.now() - __bootT0)}ms`);
     setTimeout(() => ov.remove(), 500);
   }
   ov.addEventListener('click', skip);
@@ -7023,20 +7133,22 @@ syncPanelButtons();   // 面板开关按钮激活态
   const typer = setInterval(() => {
     if (i >= statuses.length) {
       clearInterval(typer);
-      setTimeout(skip, 550); // ACCESS GRANTED 停留片刻再淡出
+      setTimeout(skip, PAUSE); // ACCESS GRANTED 停留片刻再淡出
       return;
     }
     line.textContent = statuses[i];
     if (i === statuses.length - 1) line.style.color = 'var(--green)'; // 最后一行高亮绿色
     i++;
-  }, 420);
-  setTimeout(skip, 2400); // 兜底:无论如何 2.4s 内结束
+  }, TYP);
+  setTimeout(skip, FALLBACK); // 兜底:到点必结束
 })();
 loadCmdHistory();   // 加载持久化的命令记录
 loadRecent();       // 加载最近连接
+dlog('BOOT', `脚本初始化完成(设置/最近/命令已加载) +${Math.round(performance.now() - __bootT0)}ms`);
 // 终端字体(如 SF Mono)加载完后再重适配一次,避免字体未就绪时算错行高、终端只占一半
-if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { refitAll(); packToolbar(); });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { refitAll(); packToolbar(); dlog('BOOT', `字体就绪,终端重排完成 +${Math.round(performance.now() - __bootT0)}ms`); });
 packToolbar(); // 初始按当前窗口宽度算好工具栏间距(字体就绪后再算一次)
 loadSessions();
 updateTerminalVisibility();
 setStatus('就绪');
+dlog('BOOT', `主界面就绪(会话列表渲染完成) +${Math.round(performance.now() - __bootT0)}ms`);

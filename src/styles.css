@@ -1578,8 +1578,11 @@ input[type="checkbox"] {
   font-size: 13px;
   font-weight: 600;
   border-bottom: 1px solid var(--border);
+  cursor: move; /* 可拖动 */
+  user-select: none;
+  -webkit-user-select: none;
 }
-.debug-head .btn-mini { padding: 3px 8px; font-size: 12px; }
+.debug-head .btn-mini { padding: 3px 8px; font-size: 12px; cursor: pointer; }
 .debug-body {
   flex: 1;
   overflow: auto;

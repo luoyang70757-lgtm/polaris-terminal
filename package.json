@@ -7,7 +7,8 @@
     "start": "electron .",
     "mock": "node mock/mock-server.js",
     "dev": "electron . --dev",
-    "dist": "electron-builder"
+    "clean": "node clean-release.js",
+    "dist": "npm run clean && electron-builder"
   },
   "author": "jms",
   "license": "MIT",
@@ -53,13 +54,8 @@
     },
     "win": {
       "target": [
-        "nsis",
         "portable"
       ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
     }
   }
 }

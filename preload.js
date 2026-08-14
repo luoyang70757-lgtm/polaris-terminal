@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('api', {
   // ---- 主进程事件(终端数据、连接状态) ----
   onSshData: (cb) => ipcRenderer.on('ssh:data', (_e, sessionId, data) => cb(sessionId, data)),
   onSshStatus: (cb) => ipcRenderer.on('ssh:status', (_e, sessionId, status) => cb(sessionId, status)),
+  // 主进程日志 → 渲染层调试面板(MAIN 前缀,排查主进程问题)
+  onMainLog: (cb) => ipcRenderer.on('main:log', (_e, level, msg) => cb(level, msg)),
   // keyboard-interactive 认证:主进程推提示 → 弹窗 → 应答
   onSshKbd: (cb) => ipcRenderer.on('ssh:kbd-interactive', (_e, sessionId, data) => cb(sessionId, data)),
   sshKbdRespond: (id, answers, cancelled) => ipcRenderer.send('ssh:kbd-respond', id, answers, cancelled),

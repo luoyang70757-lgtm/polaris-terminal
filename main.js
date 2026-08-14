@@ -37,8 +37,22 @@ const __log = console.log, __err = console.error;
 function __safeLog(fn) {
   return function () { try { return fn.apply(console, arguments); } catch { /* stdout 已关闭,忽略 */ } };
 }
-console.log = __safeLog(__log);
-console.error = __safeLog(__err);
+const __safeLogImpl = __safeLog(__log);
+const __safeErrImpl = __safeLog(__err);
+// 主进程日志转发到渲染层调试面板(排查主进程侧问题:启动慢/连接失败/崩溃)。
+// 渲染层自己的 console 会被 mainWindow 的 console-message 打回来(带 [RENDERER] 前缀),
+// 渲染层已自行记录,这里过滤掉避免重复刷屏。
+function __forwardMainLog(level, args) {
+  try {
+    const msg = Array.from(args).map(String).join(' ');
+    if (level === 'log' && msg.startsWith('[RENDERER]')) return;
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('main:log', level, msg);
+    }
+  } catch { /* ignore */ }
+}
+console.log = function () { __forwardMainLog('log', arguments); return __safeLogImpl.apply(console, arguments); };
+console.error = function () { __forwardMainLog('error', arguments); return __safeErrImpl.apply(console, arguments); };
 // 兜底:其他 EPIPE 未捕获异常忽略,非 EPIPE 打印到 stderr 继续运行(桌面应用不因日志崩溃退出)
 process.on('uncaughtException', (e) => {
   if (e && e.code === 'EPIPE') return;

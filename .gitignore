@@ -1,6 +1,8 @@
 # ---- 依赖 / 构建产物 ----
 node_modules/
 release/
+release*/
+build-out*/
 logs/
 *.log
 
