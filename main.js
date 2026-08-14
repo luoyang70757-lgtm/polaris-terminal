@@ -19,7 +19,7 @@ const { createStore } = require('./lib/session-store');
 const crypto = require('./lib/crypto'); // safeStorage 密码加密
 const knownHosts = require('./lib/known-hosts'); // 主机指纹校验
 const iconv = require('iconv-lite'); // 终端编码转换(GBK/GB2312 → UTF-8)
-const { isDangerousCommand } = require('./lib/dangerous'); // 危险命令识别(AI 审批用)
+const dangerousLib = require('./lib/dangerous'); // 危险命令识别与分级(AI 审批用)
 const { callAiStream, normalizeAiUrl } = require('./lib/ai-stream'); // AI 流式调用(SSE 解析)
 const dbCrypto = require('./lib/db-crypto'); // 数据库整库加密(AES-256-GCM)
 const appLock = require('./lib/app-lock'); // App 打开密码锁
@@ -928,12 +928,16 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
           send({ type: 'tool', command: cmd || '' }); // 告诉界面 AI 要执行什么
           // 危险命令审批(借鉴 Claude Code 的 permission 机制):
           // AI 想执行 rm -rf / reboot 等,先弹窗让用户拍板,拒绝就把"用户拒绝"反馈给模型。
-          if (isDangerousCommand(cmd || '')) {
+          // v2:analyzeCommand 返回分级与命中原因,文案更明确(critical 严重 / high 危险)
+          const an = dangerousLib.analyzeCommand(cmd || '');
+          if (an.level !== 'safe') {
+            const label = an.level === 'critical' ? '🔴 严重危险' : '🟠 危险';
+            const reasons = an.findings.map((f) => `  · ${f.name}`).join('\n');
             const { response } = await dialog.showMessageBox(mainWindow, {
-              type: 'warning',
+              type: an.level === 'critical' ? 'error' : 'warning',
               title: 'AI 危险命令审批',
-              message: 'AI 想执行危险命令,要允许吗?',
-              detail: String(cmd || ''),
+              message: `${label}: AI 想执行危险命令,要允许吗?`,
+              detail: `${String(cmd || '')}\n\n命中:\n${reasons}`,
               buttons: ['允许执行', '拒绝'],
               defaultId: 1,
               cancelId: 1,

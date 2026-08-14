@@ -886,7 +886,17 @@ const aiHistory = []; // 对话历史 [{ role, content }]
 // 历史上限:只留最近 100 条,防止长时间对话内存无限增长(性能优化)
 function pushAiHistory(msg) {
   aiHistory.push(msg);
-  if (aiHistory.length > 100) aiHistory.splice(0, aiHistory.length - 100);
+  if (aiHistory.length > 100) {
+    const removed = aiHistory.length - 100;
+    aiHistory.splice(0, removed);
+    // 上下文截断提示(借鉴 Chaterm ContextManager):粗暴裁剪会让 AI 不知道历史被删,
+    // 对早前内容产生幻觉。插入一条显式提示,并让 AI 在必要时请用户补充背景。
+    // 用 role:'user' 而非 'system':Anthropic 的 system 走独立参数,混在 messages 里会报错。
+    aiHistory.unshift({
+      role: 'user',
+      content: `[系统提示:为节省上下文,较早的 ${removed} 条对话已被截断。不要臆测截断前的内容;如果执行任务需要那些背景,请主动询问用户补充。]`,
+    });
+  }
 }
 let aiBusy = false;
 let aiSentHistory = [];   // AI 输入框历史(用户发过的提问),↑↓ 调出
@@ -2869,16 +2879,70 @@ async function importFromExcel() {
 // 标签页 + 终端
 // =====================================================================
 // ---- 生产环境保护:危险命令确认(参考 Xshell/SecureCRT 的保命功能) ----
+// 注意:此副本必须与 lib/dangerous.js 保持同步(回车确认是同步交互,不能走 IPC)。
+// v2:命令解析(引号/转义/复合命令拆分)+ 分级(critical 直接拦 / high 必问)。
+function splitCommands(line) {
+  const parts = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) { cur += ch; if (ch === quote) quote = null; continue; }
+    if (ch === '\\') { cur += ch; i++; if (i < line.length) cur += line[i]; continue; }
+    if (ch === '"' || ch === "'") { cur += ch; quote = ch; continue; }
+    if (ch === ';' || ch === '\n') { if (cur.trim()) parts.push(cur.trim()); cur = ''; continue; }
+    if (ch === '&' || ch === '|') {
+      if (cur.trim()) parts.push(cur.trim());
+      cur = '';
+      if (i + 1 < line.length && line[i + 1] === ch) i++;
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+function stripQuotes(s) {
+  return s.replace(/\\(.)/g, '$1').replace(/"([^"]*)"/g, '$1').replace(/'([^']*)'/g, '$1');
+}
 const DANGEROUS_CMDS = [
-  /rm\s+-[a-zA-Z]*rf[a-zA-Z]*\b/i,   // rm -rf(含 -rfv 等变体)
-  /rm\s+-[a-zA-Z]*fr[a-zA-Z]*\b/i,   // rm -fr
-  /\bshutdown\b/i, /\breboot\b/i, /\bhalt\b/i, /\bpoweroff\b/i,
-  /\binit\s+[06]\b/i, /\bmkfs(\s|\b)/i, /\bfdisk\b/i, /\bparted\b/i,
-  /\bdd\s+if=.*\bof=\/dev\//i, /\bformat\b/i,
-  />\s*\/dev\/(sda|sdb|sdc|nvme)/i, /:\(\)\s*\{/i, /:\|:/i, // 写盘 / fork 炸弹
+  // critical:根目录破坏 / 整盘写 / 分区格式化 / fork 炸弹
+  // 根目录判定要严格:rm 的目标必须是"独立参数 /"(行尾/空白后)、/* 或 --no-preserve-root,
+  // 否则 `rm -rf /tmp/x`、`rm /tmp/x.txt` 这种普通路径会被误判为删根
+  { level: 'critical', name: '删除根目录', re: /\brm\b[\s\S]*?(\s\/\s*$|\s\/\*\s*|\s--no-preserve-root\b)/i },
+  { level: 'critical', name: '整盘写入(dd)', re: /\bdd\s+.*\bof=\/dev\/(sd|nvme|vd|hd)[a-z]+\d*/i },
+  { level: 'critical', name: '格式化分区', re: /\bmkfs(\.\w+)?(\s|\b)/i },
+  { level: 'critical', name: '分区操作(fdisk/parted)', re: /\b(fdisk|parted|gdisk|sfdisk)\b/i },
+  { level: 'critical', name: '写入块设备', re: />\s*\/dev\/(sd|nvme|vd|hd)[a-z]+\d*/i },
+  { level: 'critical', name: 'fork 炸弹', re: /:\s*\(\s*\)\s*\{|:\s*\|\s*:/i },
+  // high:必须询问
+  { level: 'high', name: '递归强制删除(rm -rf)', re: /\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\b/i },
+  { level: 'high', name: '关机/重启', re: /\b(shutdown|reboot|halt|poweroff)\b/i },
+  { level: 'high', name: '切换运行级别(init)', re: /\binit\s+[06]\b/i },
+  { level: 'high', name: '格式化命令', re: /\bformat\b/i },
 ];
+function analyzeCommand(line) {
+  const segments = splitCommands(String(line || ''));
+  const findings = [];
+  let worst = 'safe';
+  for (const seg of segments) {
+    const norm = stripQuotes(seg);
+    for (const rule of DANGEROUS_CMDS) {
+      if (rule.re.test(norm)) {
+        findings.push({ command: seg, level: rule.level, name: rule.name });
+        if (rule.level === 'critical') worst = 'critical';
+        else if (rule.level === 'high' && worst !== 'critical') worst = 'high';
+      }
+    }
+  }
+  return { level: worst, segments, findings };
+}
 function isDangerousCommand(line) {
-  return DANGEROUS_CMDS.some((re) => re.test(line));
+  return analyzeCommand(line).level !== 'safe';
+}
+// 危险级别 → 提示文案
+function dangerousLabel(level) {
+  return level === 'critical' ? '🔴 严重危险' : (level === 'high' ? '🟠 危险' : (level === 'medium' ? '🟡 注意' : ''));
 }
 // 会话所在分组是否标记为生产
 function isSessionProd(s) {
@@ -5741,13 +5805,18 @@ async function connectToServer(session) {
         } catch { /* ignore */ }
       }
     }
-    // 生产环境保护:危险命令先弹确认
-    if (lineOnEnter != null && (state.broadcast ? hasProdSession() : isSessionProd(session)) && isDangerousCommand(lineOnEnter)) {
-      const ok = confirm(
-        `⚠️ 危险命令!\n确定要在生产环境执行吗?\n\n${lineOnEnter}\n\n` +
-        (state.broadcast ? '(广播模式:会发到所有已连接会话)' : `目标: ${session.host}`)
-      );
-      if (!ok) return; // 拒绝则吞掉(命令不执行)
+    // 生产环境保护:危险命令先弹确认(分级:critical 严重 / high 危险,原因细化)
+    if (lineOnEnter != null && (state.broadcast ? hasProdSession() : isSessionProd(session))) {
+      const an = analyzeCommand(lineOnEnter);
+      if (an.level !== 'safe') {
+        const label = dangerousLabel(an.level);
+        const reasons = an.findings.map((f) => `  · ${f.name}`).join('\n');
+        const ok = confirm(
+          `${label}!确定要在生产环境执行吗?\n\n${lineOnEnter}\n\n命中: \n${reasons}\n\n` +
+          (state.broadcast ? '(广播模式:会发到所有已连接会话)' : `目标: ${session.host}`)
+        );
+        if (!ok) return; // 拒绝则吞掉(命令不执行)
+      }
     }
     dlog('SEND', `${sessionId} ${JSON.stringify(String(data).slice(0, 80))}${data.length > 80 ? '…' : ''}`);
     sendInput(sessionId, data); // 普通输入照发(广播模式也走这里)
