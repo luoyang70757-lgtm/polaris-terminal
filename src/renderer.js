@@ -4869,7 +4869,7 @@ function closeReplay() {
 // 收起输入侧栏(纯看终端画面)
 function closeReplaySide() { els.replayInputSide.classList.add('hidden'); }
 
-function connectToServer(session) {
+async function connectToServer(session) {
   const sessionId = `sess-${++sessionSeq}`;
   const title = session.name; // 标签只显示名称,去掉 username@host,更紧凑
 
@@ -5063,6 +5063,23 @@ function connectToServer(session) {
   renderLayout();
   activateTab(sessionId);
   scheduleRefit(tab, 200); // 连接后延迟重适配:等布局/字体稳定,确保终端填满(防止只占上半部分)
+
+  // ---- 等 xterm 量出字符尺寸,再按真实终端尺寸发起连接 ----
+  // term.open 时 paneEl 还没挂进 DOM,渲染器量不到字符宽高,fit 会 bailed 保持默认 80x24;
+  // 此时把 80x24 发给主进程,服务器 PTY 就按 80x24 创建 → 高窗口里 vim 只占上半屏。
+  // 挂上 DOM 后要等 xterm 渲染器跑完一帧、量出 actualCellWidth 才肯 resize,于是逐帧重试 fit,
+  // 直到拿到真实 cols/rows(探针实证:80x24 → 94x44)。
+  await new Promise((resolve) => {
+    let tries = 0;
+    const settle = () => { try { tab.fit.fit(); } catch { /* ignore */ } resolve(); };
+    const to = setTimeout(settle, 200); // 兜底:窗口后台化 rAF 不触发时也不卡住连接
+    const attempt = () => {
+      try { tab.fit.fit(); } catch { /* ignore */ }
+      if (tab.term.cols > 80 || tab.term.rows > 24 || ++tries >= 6) { clearTimeout(to); return settle(); }
+      requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(attempt);
+  });
 
   // ---- 发起 SSH 直连 ----
   connectInto(tab, session);
