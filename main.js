@@ -130,8 +130,15 @@ function persistDb() {
   try {
     const bytes = Buffer.from(sessionStore.serialize());
     const blob = dbCrypto.encryptBytes(bytes, dbPassword);
-    fs.mkdirSync(appLock.lockDir(), { recursive: true });
-    fs.writeFileSync(path.join(appLock.lockDir(), 'data.bin'), blob);
+    const dir = appLock.lockDir();
+    fs.mkdirSync(dir, { recursive: true });
+    // 原子写:先写临时文件再 rename(同目录 rename 是原子的)。
+    // 旧版直接 writeFileSync 覆盖 data.bin:中途崩溃/断电会留下半截文件,
+    // 而 data.bin 是整库加密、无任何损坏恢复机制 → 一次写一半 = 全部数据不可解密。
+    const finalPath = path.join(dir, 'data.bin');
+    const tmpPath = path.join(dir, `data.bin.tmp-${process.pid}`);
+    fs.writeFileSync(tmpPath, blob);
+    fs.renameSync(tmpPath, finalPath);
   } catch (err) {
     console.warn('[MAIN] 保存数据库失败:', err.message);
   }
@@ -1544,6 +1551,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
 ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resolve) => {
   if (telnetSessions.has(sessionId)) { resolve({ ok: false, error: `会话 ${sessionId} 已存在` }); return; }
   let settled = false;
+  let telnetConnected = false; // onConnect 后置 true:区分"连接阶段失败"与"已连接后的错误"
   const done = (r) => { if (!settled) { settled = true; resolve(r); } };
   const tel = telnetClient.connect({
     host: opts.host,
@@ -1552,6 +1560,7 @@ ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resol
     cols: opts.cols, rows: opts.rows,
     autoLogin: (opts.username || opts.password) ? { username: opts.username, password: opts.password } : null,
     onConnect: () => {
+      telnetConnected = true;
       const enc = opts.encoding || 'utf8';
       if (enc !== 'utf8') {
         try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
@@ -1564,7 +1573,22 @@ ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resol
     },
     onData: (chunk) => pushSshData(sessionId, chunk),
     onError: (err) => {
-      // 连接阶段失败(超时/拒连)返回给调用方;已连接后的错误走 ssh:status
+      // 连接阶段失败(超时/拒连):只回错误给调用方,不触发收尾(此时无录制/日志/解码器)
+      if (!telnetConnected) {
+        telnetSessions.delete(sessionId);
+        done({ ok: false, error: err.message });
+        return;
+      }
+      // 已连接后的错误:必须完整收尾,与 onClose 一致(冲刷数据/清解码器/收录制收日志)+
+      // 广播 closed —— 否则渲染层标签永久假活、不触发自动重连,录制/日志句柄泄漏(旧版 bug)。
+      flushSshData(sessionId);
+      cleanupSshDecoder(sessionId);
+      finalizeRecording(sessionId); // 幂等
+      finalizeSessionLog(sessionId); // 幂等
+      if (!closedBroadcast.has(sessionId)) {
+        closedBroadcast.add(sessionId);
+        broadcast('ssh:status', sessionId, { status: 'closed' });
+      }
       telnetSessions.delete(sessionId);
       done({ ok: false, error: err.message });
     },
@@ -2229,10 +2253,15 @@ app.on('before-quit', () => {
   finalizeAllRecordings(); // 退出前把没停的录制都收尾(否则文件成孤儿)
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
   persistDb();             // 再确保数据库落盘
+  // 收尾全部完成后才关库:close 之后 sessionStore 的所有方法(如 addRecording)都会抛错
+  if (sessionStore) { try { sessionStore.close(); } catch { /* ignore */ } }
+  sessionStore = null;
 });
 
 app.on('window-all-closed', () => {
+  // 注意:这里不能 close sessionStore!窗口关闭 → app.quit() → before-quit 里还要
+  // finalizeAllRecordings(往 recordings 表写元数据)+ persistDb,提前关库会让这两步
+  // 全部静默失败(旧版 bug:窗口关闭路径退出时录制元数据丢失、最后 400ms 数据丢失)。
   persistDb();
-  if (sessionStore) { try { sessionStore.close(); } catch { /* ignore */ } }
   app.quit();
 });

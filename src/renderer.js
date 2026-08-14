@@ -792,7 +792,13 @@ function fillAiConfig() {
   els.aiVendor.value = state.settings.aiActiveVendor || '';
   els.aiUrl.value = v.url || '';
   els.aiFormat.value = v.format || 'anthropic';
-  els.aiKey.value = v.key || '';
+  // 密文解密后显示明文供编辑;老明文(无 enc:v1: 前缀)原样显示
+  els.aiKey.value = '';
+  if (v.key) {
+    decryptSecret(v.key).then((plain) => {
+      if (els.aiKey.value === '' && activeAiVendor() === v) els.aiKey.value = plain || '';
+    });
+  }
   fillModelSelect();
 }
 
@@ -847,6 +853,22 @@ function closeSettingsModal() {
 // =====================================================================
 // AI 运维助手(参考 Netcatty 的 Catty Agent)
 // =====================================================================
+
+// ---- 凭据安全存储(与 JMS 密码一致,safeStorage 加密;enc:v1: 前缀标识密文)----
+// 之前 H3C 堡垒机密码与 AI Key 明文存 localStorage(设置文件是明文 LevelDB,
+// 任何能读 userData 的进程都能拿到)。这里统一:落盘前加密,读取时解密,老明文兼容。
+async function encryptSecret(plain) {
+  if (!plain) return '';
+  if (plain.startsWith('enc:v1:')) return plain; // 已是密文,不重复加密
+  try { const r = await window.api.cryptoEncrypt(plain); return (r && r.value) || plain; } catch { return plain; }
+}
+async function decryptSecret(secret) {
+  if (secret && secret.startsWith('enc:v1:')) {
+    try { const r = await window.api.cryptoDecrypt(secret); return (r && r.value) || secret; } catch { return secret; }
+  }
+  return secret || ''; // 老明文/空串原样返回
+}
+
 const aiHistory = []; // 对话历史 [{ role, content }]
 // 历史上限:只留最近 100 条,防止长时间对话内存无限增长(性能优化)
 function pushAiHistory(msg) {
@@ -993,15 +1015,26 @@ async function aiSend() {
   els.aiSend.disabled = true;
   els.aiStop.classList.remove('hidden'); // 显示"停止"按钮
 
-  const res = await window.api.aiChat({
-    apiKey: av.key,
-    url: av.url,
-    model: av.model,
-    format: av.format,
-    messages: aiHistory,
-    hosts, // 多主机:每项含连接信息 + sessionId(命令同步到这些终端)
-    requestId, // 流事件用它对应到本条消息
-  });
+  let res = null;
+  try {
+    res = await window.api.aiChat({
+      apiKey: await decryptSecret(av.key), // 存的是 safeStorage 密文,发送前解密成明文
+      url: av.url,
+      model: av.model,
+      format: av.format,
+      messages: aiHistory,
+      hosts, // 多主机:每项含连接信息 + sessionId(命令同步到这些终端)
+      requestId, // 流事件用它对应到本条消息
+    });
+  } catch (e) {
+    // 主进程抛异常(invoke reject):必须复位 busy 与按钮,否则 AI 面板永久禁用
+    aiBusy = false;
+    els.aiSend.disabled = false;
+    els.aiStop.classList.add('hidden');
+    if (activeAiStream && activeAiStream.bodyEl) activeAiStream.bodyEl.textContent = `⚠️ 请求异常: ${(e && e.message) || '未知错误'}`;
+    activeAiStream = null;
+    return;
+  }
   aiBusy = false;
   els.aiSend.disabled = false;
   els.aiStop.classList.add('hidden');
@@ -1270,8 +1303,10 @@ function renderSessionList(filter) {
   if (view === 'grid') renderSessionsGrid(sessions);
   else if (view === 'list') renderSessionsList(sessions);
   else renderSessionsTree(sessions);
-  // 有搜索词时:会话下方也显示匹配的 JMS/H3C 堡垒机资产(搜索同时对资产生效)
-  if (f) { renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f); }
+  // 会话下方显示 JMS/H3C 堡垒机资产:有搜索词时按关键词过滤,无搜索词时全显示。
+  // 注意必须在这里渲染一次(视图函数内部不再渲染)——否则无搜索词时资产区丢失,
+  // 或有搜索词时出现"全量 + 过滤"两份区块(旧版 bug:视图函数末尾各渲染了一次全量)。
+  renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f);
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
 }
 
@@ -1497,7 +1532,6 @@ function renderSessionsTree(sessions) {
     }
   };
   for (const g of childrenOf.get(null) || []) renderNode(g, 0);
-  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
 }
 
 // 列表视图:分组作为节标题(不折叠),会话平铺
@@ -1542,7 +1576,6 @@ function renderSessionsList(sessions) {
       els.sessionTree.appendChild(r);
     }
   }
-  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
 }
 
 // 网格视图:会话卡片
@@ -1590,7 +1623,6 @@ function renderSessionsGrid(sessions) {
     wrap.appendChild(card);
   }
   els.sessionTree.appendChild(wrap);
-  renderJmsInSessionList(els.sessionTree); renderBastionInSessionList(els.sessionTree);
 }
 
 // 切换会话列表视图(网格/列表/树形)
@@ -2100,12 +2132,13 @@ function setupImeGuard(term) {
   ta.addEventListener('compositionstart', () => {
     composing = true;
     clearTimer();
-    // 兜底:组合若卡死(长时间无任何输入),3s 后强制复位,避免候选窗永久弹不出。
-    // 正常打字时每次 compositionupdate 都会重置计时,不会误杀。
-    timer = setTimeout(resetStuck, 3000);
+    // 兜底:组合若卡死(长时间无任何输入),10s 后强制复位,避免候选窗永久弹不出。
+    // 正常打字时每次 compositionupdate 都会重置计时;10s 足够慢速拼音(边想边打)不被误杀
+    // (旧版 3s 会打断候选窗停留 >3s 的输入)。
+    timer = setTimeout(resetStuck, 10000);
   });
   ta.addEventListener('compositionupdate', () => {
-    if (composing) { clearTimer(); timer = setTimeout(resetStuck, 3000); }
+    if (composing) { clearTimer(); timer = setTimeout(resetStuck, 10000); }
   });
   ta.addEventListener('compositionend', () => { composing = false; clearTimer(); });
   ta.addEventListener('blur', resetStuck); // 切标签 / 焦点被 UI 顶掉 时组合未结束 → 复位
@@ -2567,6 +2600,9 @@ async function removeSession(id) {
     async () => {
       const res = await window.api.removeSession(id);
       if (!res.ok) alert(`删除失败: ${res.error}`);
+      // 单删会话后清掉批量勾选残留,否则批量条计数虚高、与勾选框不符
+      state.selectedForBatch.delete(id);
+      updateBatchBar();
       loadSessions();
     }
   );
@@ -3176,11 +3212,16 @@ async function runBatchExec() {
   }));
   els.batchRun.disabled = true;
   els.batchRun.textContent = '⏳ 执行中…';
-  const res = await window.api.batchExec({ hosts, command: cmd });
-  els.batchRun.disabled = false;
-  els.batchRun.textContent = '▶ 执行';
-  if (res && res.ok) renderBatchResults(res.results);
-  else alert(res && res.error ? res.error : '执行失败');
+  try {
+    const res = await window.api.batchExec({ hosts, command: cmd });
+    if (res && res.ok) renderBatchResults(res.results);
+    else alert(res && res.error ? res.error : '执行失败');
+  } catch (e) {
+    alert('批量执行异常: ' + ((e && e.message) || '未知错误'));
+  } finally {
+    els.batchRun.disabled = false;
+    els.batchRun.textContent = '▶ 执行'; // 异常也要复位按钮,否则永久卡在"执行中…"
+  }
 }
 
 // =====================================================================
@@ -3471,27 +3512,33 @@ async function jmsDoLogin() {
   showJmsMsg('');
   els.jmsLoginBtn.disabled = true;
   els.jmsLoginBtn.textContent = '登录中…';
-  const r = await window.api.jmsLogin({ baseUrl, username: account, password });
-  if (!r.ok) { showJmsMsg(`登录失败: ${r.error}`); els.jmsLoginBtn.disabled = false; els.jmsLoginBtn.textContent = '连接 JumpServer'; return; }
-  if (r.mfaRequired) {
-    server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
-    jmsPersistConfig();
-    jmsRenderServerSelect(); // 先刷新下拉(会重置表单),再显示 OTP
-    els.jmsOtpWrap.style.display = '';
-    els.jmsOtp.value = '';
-    els.jmsOtp.focus();
+  try {
+    const r = await window.api.jmsLogin({ baseUrl, username: account, password });
+    if (!r.ok) { showJmsMsg(`登录失败: ${r.error}`); els.jmsLoginBtn.disabled = false; els.jmsLoginBtn.textContent = '连接 JumpServer'; return; }
+    if (r.mfaRequired) {
+      server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
+      jmsPersistConfig();
+      jmsRenderServerSelect(); // 先刷新下拉(会重置表单),再显示 OTP
+      els.jmsOtpWrap.style.display = '';
+      els.jmsOtp.value = '';
+      els.jmsOtp.focus();
+      els.jmsLoginBtn.disabled = false;
+      els.jmsLoginBtn.textContent = '验证并登录';
+      showJmsMsg('该账号开启了双因素认证,请输入验证码');
+      return;
+    }
+    server.token = r.token; server.user = r.user;
+    els.jmsOtpWrap.style.display = 'none';
     els.jmsLoginBtn.disabled = false;
-    els.jmsLoginBtn.textContent = '验证并登录';
-    showJmsMsg('该账号开启了双因素认证,请输入验证码');
-    return;
+    els.jmsLoginBtn.textContent = '连接 JumpServer';
+    jmsPersistConfig();
+    jmsRenderServerSelect();
+    await jmsLoadAssets();
+  } catch (e) {
+    showJmsMsg('登录异常: ' + ((e && e.message) || '未知错误'));
+    els.jmsLoginBtn.disabled = false;
+    els.jmsLoginBtn.textContent = '连接 JumpServer'; // 异常也要复位,否则永久卡在"登录中…"
   }
-  server.token = r.token; server.user = r.user;
-  els.jmsOtpWrap.style.display = 'none';
-  els.jmsLoginBtn.disabled = false;
-  els.jmsLoginBtn.textContent = '连接 JumpServer';
-  jmsPersistConfig();
-  jmsRenderServerSelect();
-  await jmsLoadAssets();
 }
 
 // 提交双因素验证码 → 完成登录 → 拉资产
@@ -3504,25 +3551,31 @@ async function jmsDoMfa() {
   showJmsMsg('');
   els.jmsLoginBtn.disabled = true;
   els.jmsLoginBtn.textContent = '验证中…';
-  const r = await window.api.jmsMfa({
-    baseUrl: s.baseUrl, cookie: s.mfaCookie, challengeUrl: s.mfaUrl,
-    type: s.mfaType, code, username: s.account, password: s.password,
-  });
-  if (!r.ok) {
-    showJmsMsg(`验证失败: ${r.error}`);
+  try {
+    const r = await window.api.jmsMfa({
+      baseUrl: s.baseUrl, cookie: s.mfaCookie, challengeUrl: s.mfaUrl,
+      type: s.mfaType, code, username: s.account, password: s.password,
+    });
+    if (!r.ok) {
+      showJmsMsg(`验证失败: ${r.error}`);
+      els.jmsLoginBtn.disabled = false;
+      els.jmsLoginBtn.textContent = '验证并登录';
+      els.jmsOtp.select();
+      return;
+    }
+    s.token = r.token; s.user = r.user; s.mfaCookie = null; s.mfaUrl = null;
+    els.jmsOtpWrap.style.display = 'none';
+    els.jmsOtp.value = '';
     els.jmsLoginBtn.disabled = false;
-    els.jmsLoginBtn.textContent = '验证并登录';
-    els.jmsOtp.select();
-    return;
+    els.jmsLoginBtn.textContent = '连接 JumpServer';
+    jmsPersistConfig();
+    jmsRenderServerSelect();
+    await jmsLoadAssets();
+  } catch (e) {
+    showJmsMsg('验证异常: ' + ((e && e.message) || '未知错误'));
+    els.jmsLoginBtn.disabled = false;
+    els.jmsLoginBtn.textContent = '验证并登录'; // 异常也要复位按钮
   }
-  s.token = r.token; s.user = r.user; s.mfaCookie = null; s.mfaUrl = null;
-  els.jmsOtpWrap.style.display = 'none';
-  els.jmsOtp.value = '';
-  els.jmsLoginBtn.disabled = false;
-  els.jmsLoginBtn.textContent = '连接 JumpServer';
-  jmsPersistConfig();
-  jmsRenderServerSelect();
-  await jmsLoadAssets();
 }
 
 async function jmsLoadAssets() {
@@ -3987,9 +4040,11 @@ function bastionLoadSelected() {
 }
 
 // 在堡垒机登录页自动填充账号密码(尽力而为:H3C 等浏览器登录)
-function bastionAutoFill(s) {
+async function bastionAutoFill(s) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
+  // 存的密码是 safeStorage 密文,填充前先解密(老明文无前缀直接通过)
+  const password = await decryptSecret(s.password || '');
   try {
     wv.executeJavaScript(`(function(){
       try {
@@ -4004,7 +4059,7 @@ function bastionAutoFill(s) {
         }
         if (!user && cands.length) user = cands[0]; // 退而求其次:第一个文本框
         if (user) { user.value = ${JSON.stringify(s.account || '')}; user.dispatchEvent(new Event('input', {bubbles:true})); }
-        pw.value = ${JSON.stringify(s.password || '')};
+        pw.value = ${JSON.stringify(password || '')};
         pw.dispatchEvent(new Event('input', {bubbles:true}));
         return true;
       } catch(e) { return false; }
@@ -4056,14 +4111,15 @@ function bastionRenderCfgList() {
   }
 }
 
-function bastionCfgAdd() {
+async function bastionCfgAdd() {
   const name = els.bastionCfgName.value.trim();
   let url = els.bastionCfgUrl.value.trim();
   const account = els.bastionCfgAccount.value.trim();
   const password = els.bastionCfgPass.value;
   if (!url) { showBastionCfgMsg('请填 Web 地址'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
-  bastionServers().push({ id: `bastion-cfg-${++state.jmsSeq}`, name: name || url, url, account, password });
+  // 密码 safeStorage 加密落盘(与 JMS 一致;之前明文存 localStorage,任何能读 userData 的进程可窃取)
+  bastionServers().push({ id: `bastion-cfg-${++state.jmsSeq}`, name: name || url, url, account, password: await encryptSecret(password) });
   state.settings.bastionServers = bastionServers();
   saveSettings();
   bastionRenderCfgList();
@@ -4353,16 +4409,19 @@ function pollBastionAssets() {
     })()`).then((r) => {
       r = r || {};
       const list = r.assets || [];
+      let changed = false; // 仅当数据真变化才重渲染(旧版无条件 renderSessionList,每 4s 全量重建 870 资产 DOM)
       const json = JSON.stringify(list);
       if (list.length && json !== JSON.stringify(state.bastionAssets)) {
         state.bastionAssets = list;
         persistBastionAssets(); // 异步持久化,不阻塞渲染
+        changed = true;
         console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
       }
       // 目录树 / 收藏夹树变化也同步
       const treeJson = JSON.stringify(r.tree);
       if (treeJson && treeJson !== JSON.stringify(state.bastionTree)) {
         state.bastionTree = r.tree;
+        changed = true;
         // 拿到树后自动后台补充分组(仅一次;失败/已跑则不重复)
         if (!state.bastionGrouping && !(r.fetchState && r.fetchState.dirRunning)) {
           state.bastionGrouping = true;
@@ -4372,19 +4431,20 @@ function pollBastionAssets() {
       // 目录分组跑完 → 复位"分组中…"提示并刷新
       if (state.bastionGrouping && !(r.fetchState && r.fetchState.dirRunning)) {
         state.bastionGrouping = false;
-        renderSessionList(els.inputSessionSearch.value);
+        changed = true;
       }
       const favTreeJson = JSON.stringify(r.favTree);
-      if (favTreeJson !== JSON.stringify(state.bastionFavTree)) state.bastionFavTree = r.favTree;
+      if (favTreeJson !== JSON.stringify(state.bastionFavTree)) { state.bastionFavTree = r.favTree; changed = true; }
       if (r.favs && r.favs.length) {
         const favSet = new Set(r.favs);
         if (favSet.size !== state.bastionFavSet.size) {
           state.bastionFavSet = favSet;
           state.bastionAssets = state.bastionAssets.map((a) => ({ ...a, favorite: favSet.has(a.devId) || !!a.favorite }));
           persistBastionAssets();
+          changed = true;
         }
       }
-      renderSessionList(els.inputSessionSearch.value);
+      if (changed) renderSessionList(els.inputSessionSearch.value);
     }).catch((e) => console.log('[堡垒机] pollBastionAssets 异常:', e && e.message));
   } catch { /* ignore */ }
 }
@@ -5091,6 +5151,13 @@ function renderReplayInputs(items, playingIndex) {
 
 // 打开回放弹窗:读录制文件 → 建独立 xterm → 铺好播放器状态
 async function openReplay(recordId) {
+  // 打开新回放前先收掉上一个:dispose 旧 term + 清掉播放定时器,否则旧 interval 永久空转、
+  // 旧 xterm 的 ResizeObserver/canvas 引用泄漏
+  if (replay) {
+    if (replay.timer) { clearInterval(replay.timer); replay.timer = null; }
+    try { replay.term && replay.term.dispose(); } catch { /* ignore */ }
+    replay = null;
+  }
   const res = await window.api.recReplay(recordId);
   if (!res || !res.ok) { alert(res && res.error ? res.error : '回放加载失败'); return; }
   const { meta, events } = res;
@@ -5477,12 +5544,21 @@ function scheduleRefit(tab, delay) {
 
 // 把会话连进指定标签(首次连接 和 断线重连 共用)
 function connectInto(tab, session, isReconnect) {
+  // 守卫:发起连接前标签可能已被用户关闭(fit 等待期间点了 ✕)。
+  // 此时 tab 已 dispose 且不在 state.tabs 里,继续连会产生无人监听的"幽灵连接",
+  // 主进程连接池里永久挂一个 sessionId,数据没人收、日志持续写。
+  // 正确做法:让主进程把还没建立的连接关掉,直接放弃本次连接。
+  if (!state.tabs.has(tab.sessionId)) {
+    window.api.sshClose(tab.sessionId);
+    return;
+  }
   setTabStatus(tab.sessionId, 'connecting');
   if (isReconnect) {
     try { tab.term.reset(); } catch { /* ignore */ } // 重连前清屏:避免新旧输出叠在一起(字符重影/重复)
     tab.term.write('\r\n\x1b[36m[正在尝试重连...]\x1b[0m\r\n');
   }
   tab.encoding = session.encoding || 'utf8'; // 终端编码(GBK 时主进程会转码)
+  tab.decoder = new TextDecoder(); // 重置流式解码器:断线瞬间残留的多字节序列状态不能带到重连后首块(否则首字符偶发乱码)
   const fail = (res) => {
     dlog('CONN', `${tab.sessionId} 连接失败: ${res.error}`);
     // 连接失败:写入真实原因;若是重连失败,继续安排下一次
@@ -5522,7 +5598,10 @@ function connectInto(tab, session, isReconnect) {
         sessionLog: state.settings.sessionLog !== false, // 会话日志开关
         jump: session.jump && session.jump.host ? session.jump : null, // 跳板机(SSH 代理),直连则为 null
       });
-  p.then((res) => { if (res && !res.ok) fail(res); });
+  p.then((res) => { if (res && !res.ok) fail(res); })
+   // 主进程 handler 抛异常(如 DB 锁、参数异常)时 invoke 会 reject:
+   // 不 catch 的话标签永远停在 connecting、终端无任何提示、也不触发重连。
+   .catch((e) => fail({ error: (e && e.message) || '连接异常' }));
 }
 
 // ---- 断线自动重连(参考 Netcatty 的长驻工作流) ----
@@ -5608,6 +5687,11 @@ function closeTab(sessionId) {
   state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
   updateRecordBtn();
   window.api.sshClose(sessionId);
+  kbdCancelSession(sessionId); // 关标签时取消该会话挂起的 keyboard-interactive 认证挑战
+  // 批量/AI 面板里残留该标签的勾选与分屏尺寸,一并清掉,避免计数虚高/集合增长
+  state.batchHosts.delete(sessionId);
+  state.aiSelectedHosts.delete(sessionId);
+  delete state.splitSizes[sessionId];
   t.el.remove();
   try { t.term.dispose(); } catch { /* ignore */ }
   t.paneEl.remove();
@@ -6576,8 +6660,10 @@ function openTermSearch() {
   els.termSearchInput.value = '';
   els.termSearchCount.textContent = '';
   try {
-    // 实时显示 "第几个/总数"
-    t.searchAddon.onDidChangeResults(({ resultCount, resultIndex }) => {
+    // 实时显示 "第几个/总数";onDidChangeResults 返回 disposable,重复注册前先释放旧的
+    // (旧版每次打开都注册新回调,同一标签反复搜索会累积回调重复写计数)
+    if (t._searchDisposable) { try { t._searchDisposable.dispose(); } catch { /* ignore */ } }
+    t._searchDisposable = t.searchAddon.onDidChangeResults(({ resultCount, resultIndex }) => {
       els.termSearchCount.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : '0/0';
     });
   } catch { /* 兼容旧版 */ }
@@ -6821,7 +6907,7 @@ function bastionFocusCheck() {
     }).catch(() => {});
   } catch { /* 导航中 executeJavaScript 可能短暂不可用,忽略 */ }
 }
-setInterval(bastionFocusCheck, 150); // 点进 guest 后 ~150ms 内把键盘焦点补回 webview
+setInterval(bastionFocusCheck, 500); // 点进 guest 后 ~0.5s 内把键盘焦点补回 webview(150ms 太频,IPC 往返过多)
 updateBastionMini();
 els.jmsServerSelect.addEventListener('change', () => jmsSelectServer(els.jmsServerSelect.value));
 els.jmsServerAdd.addEventListener('click', jmsAddServer);
@@ -6921,9 +7007,9 @@ els.setLockIdle.addEventListener('change', () => {
   resetIdleLock(); // 改完立即按新间隔重新计时
 });
 // 字段 blur 自动保存 → 写进"当前厂商"的配置(每家独立)
-els.aiKey.addEventListener('change', () => {
+els.aiKey.addEventListener('change', async () => {
   const v = activeAiVendor();
-  if (v) { v.key = els.aiKey.value.trim(); saveSettings(); }
+  if (v) { v.key = await encryptSecret(els.aiKey.value.trim()); saveSettings(); }
 });
 els.aiUrl.addEventListener('change', () => {
   const v = activeAiVendor();
@@ -6944,7 +7030,7 @@ els.aiVendorSelect.addEventListener('change', () => selectAiVendor(els.aiVendorS
 
 // 「保存配置」:编辑的是"当前激活厂商"。
 // 改厂商名 = 给当前厂商改名(配置跟着走,不产生孤儿);新增用「＋ 新增厂商」。
-els.aiConfigSave.addEventListener('click', () => {
+els.aiConfigSave.addEventListener('click', async () => {
   const vendors = state.settings.aiVendors || (state.settings.aiVendors = {});
   const oldName = state.settings.aiActiveVendor;
   const name = els.aiVendor.value.trim();
@@ -6955,7 +7041,7 @@ els.aiConfigSave.addEventListener('click', () => {
     delete vendors[oldName]; // 改名:旧名字的配置挪到新名字
   }
   v.url = els.aiUrl.value.trim();
-  v.key = els.aiKey.value.trim();
+  v.key = await encryptSecret(els.aiKey.value.trim()); // safeStorage 加密落盘
   v.format = els.aiFormat.value;
   if (!Array.isArray(v.models)) v.models = [];
   const mdl = els.aiModel.value;
@@ -7302,20 +7388,20 @@ window.api.onSshStatus((sessionId, status) => {
 // =====================================================================
 // keyboard-interactive 认证弹窗(域认证 / 双密码 / OTP 挑战)
 // =====================================================================
-let kbdWaiter = null; // { id, sessionId }
-window.api.onSshKbd((sessionId, data) => {
-  const t = state.tabs.get(sessionId);
-  if (!t) { window.api.sshKbdRespond(data.id, [], true); return; }
-  kbdWaiter = { id: data.id, sessionId };
-  const desc = (data.instructions || '').trim() || (data.name || '服务器要求额外的验证信息');
-  els.kbdDesc.textContent = desc;
+// keyboard-interactive 认证:多个会话可能同时发起挑战(如批量连接域认证主机)。
+// 用 Map<sessionId, {id}> 排队,弹窗一次只处理队首;应答/关标签后自动切下一个。
+// 旧版用单例 kbdWaiter:后到的挑战覆盖先到,先到连接永久挂起。
+const kbdWaiters = new Map();
+function kbdShowNext() {
+  const w = kbdWaiters.values().next().value;
+  if (!w) { els.kbdModal.classList.add('hidden'); return; }
+  els.kbdDesc.textContent = w.desc;
   els.kbdFields.innerHTML = '';
-  const prompts = data.prompts || [];
-  prompts.forEach((p, i) => {
+  for (const p of w.prompts || []) {
     const wrap = document.createElement('label');
     wrap.className = 'field';
     const span = document.createElement('span');
-    span.textContent = (p.prompt || '').trim() || `第 ${i + 1} 项验证信息`;
+    span.textContent = (p.prompt || '').trim() || `第 ${w.prompts.indexOf(p) + 1} 项验证信息`;
     const input = document.createElement('input');
     input.type = p.echo ? 'text' : 'password'; // echo=false → 密码框
     input.autocomplete = 'off';
@@ -7323,23 +7409,41 @@ window.api.onSshKbd((sessionId, data) => {
     wrap.appendChild(span);
     wrap.appendChild(input);
     els.kbdFields.appendChild(wrap);
-  });
+  }
   els.kbdModal.classList.remove('hidden');
   const first = els.kbdFields.querySelector('input');
   if (first) first.focus();
+}
+window.api.onSshKbd((sessionId, data) => {
+  const t = state.tabs.get(sessionId);
+  if (!t) { window.api.sshKbdRespond(data.id, [], true); return; } // 标签已关:直接取消挑战
+  const desc = (data.instructions || '').trim() || (data.name || '服务器要求额外的验证信息');
+  kbdWaiters.set(sessionId, { id: data.id, sessionId, desc, prompts: data.prompts || [] });
+  if (els.kbdModal.classList.contains('hidden')) kbdShowNext(); // 弹窗空闲才显示;忙则排队
 });
 function kbdSubmit(cancelled) {
-  if (!kbdWaiter) return;
-  const w = kbdWaiter;
-  kbdWaiter = null;
+  const w = kbdWaiters.values().next().value;
+  if (!w) return;
+  kbdWaiters.delete(w.sessionId);
   const answers = cancelled ? [] : [...els.kbdFields.querySelectorAll('input')].map((i) => i.value);
   window.api.sshKbdRespond(w.id, answers, cancelled);
-  els.kbdModal.classList.add('hidden');
+  kbdShowNext(); // 显示队列里下一个(没有则关弹窗)
+}
+// 关闭标签/断开时,取消该会话挂起的认证挑战(否则主进程侧一直等应答直到超时)
+function kbdCancelSession(sessionId) {
+  const w = kbdWaiters.get(sessionId);
+  if (w) {
+    kbdWaiters.delete(sessionId);
+    window.api.sshKbdRespond(w.id, [], true);
+  }
+  if (kbdWaiters.size === 0) els.kbdModal.classList.add('hidden');
+  else kbdShowNext();
 }
 els.kbdOk.addEventListener('click', () => kbdSubmit(false));
 els.kbdCancel.addEventListener('click', () => kbdSubmit(true));
-// 回车提交;取消时保持关闭
+// 回车提交;取消时保持关闭(注意 isComposing:输入法选字回车不应提交)
 els.kbdFields.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); kbdSubmit(false); }
 });
 
