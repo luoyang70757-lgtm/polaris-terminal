@@ -4376,8 +4376,13 @@ function injectBastionAssetHook() {
           var p = Promise.resolve();
           rootNames.forEach(function(rn){ p = p.then(function(){ return fetchRootDevs(rn); }); });
           return p.then(function(){
-            // 收藏设备也主动拉一次(带 cookie,前端同源)
-            return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'GET' }).catch(function(){ return ''; });
+            // 收藏设备主动拉一次(真实接口是 PUT + body {favId:null},不是 GET ——
+            // 用 GET 会被拒/返回空,收藏永远拉不到;来自 10.204.240.4-5.har 实测)
+            var favBody = JSON.stringify({ page: 0, size: 100, favId: null });
+            return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).catch(function(){ return ''; });
+          }).then(function(){
+            // 收藏夹树(userFav/getTree)主动拉一次,前端不一定每次都会发
+            return bget('/shterm/api/userFav/getTree', { method: 'GET' }).catch(function(){ return ''; });
           }).then(function(){
             (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
             window.__bastionFetchState.running = false;
