@@ -470,7 +470,7 @@ const state = {
   groups: [],            // 分组列表 [{ id, name }]
   collapsedGroups: new Set(), // 被折叠的分组 id 集合
   collapsedTopHost: false,   // 顶级"🖥 主机"分组是否折叠
-  collapsedTopBastion: true, // 顶级"🛡 堡垒机"分组是否折叠(默认收起)
+  collapsedTopBastion: false, // 顶级"🛡 堡垒机"分组是否折叠(默认展开,让已保存连接可见)
   searchScope: 'all',        // 搜索/显示范围:all=全部 | host=仅主机 | bastion=仅堡垒机
   recentCollapsed: false, // "最近连接"分组是否折叠(点三角切换)
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
@@ -4546,6 +4546,7 @@ async function bastionCfgAdd() {
   saveSettings();
   bastionRenderServerSelect();
   bastionRenderTabs(); // 标签栏同步新堡垒机
+  state.collapsedTopBastion = false; // 展开「🛡 堡垒机」分组,让新建的连接立刻可见
   renderSessionList(els.inputSessionSearch.value); // 左侧堡垒机分组同步显示新连接
   closeBastionCfg(); // 保存后直接关闭弹窗
   // 新增成功即打开右侧浏览器并加载该站点;编辑则回到列表
