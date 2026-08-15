@@ -80,6 +80,8 @@ const els = {
   toolbarStatus: $('toolbar-status'),
   btnNewSession: $('btn-new-session'),
   inputSessionSearch: $('input-session-search'),
+  scopeHost: $('scope-host'),
+  scopeBastion: $('scope-bastion'),
   sessionTree: $('session-tree'),
   tabBar: $('tab-bar'),
   tabScrollLeft: $('tab-scroll-left'),
@@ -470,6 +472,8 @@ const state = {
   collapsedGroups: new Set(), // 被折叠的分组 id 集合
   collapsedTopHost: false,   // 顶级"🖥 主机"分组是否折叠
   collapsedTopBastion: true, // 顶级"🛡 堡垒机"分组是否折叠(默认收起)
+  searchScopeHost: true,     // 搜索/显示范围:是否显示「🖥 主机」分组
+  searchScopeBastion: true,  // 是否显示「🛡 堡垒机」分组
   recentCollapsed: false, // "最近连接"分组是否折叠(点三角切换)
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
   selectedForBatch: new Set(), // 多选用于批量操作的会话 id 集合
@@ -1404,35 +1408,39 @@ function renderSessionList(filter) {
   };
 
   // ---- 🖥 主机分组 ----
-  const hostContainer = document.createElement('div');
-  hostContainer.className = 'top-group-container';
-  els.sessionTree.appendChild(mkTopHead('🖥 主机', 'host'));
-  if (!topCollapsed.host) {
-    if (sessions.length === 0) {
-      // 无普通会话:主机分组下提示
-      const empty = document.createElement('div');
-      empty.className = 'asset-group';
-      empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
-      hostContainer.appendChild(empty);
-    } else {
-      const view = state.settings.sessionView || 'tree';
-      if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
-      else if (view === 'list') renderSessionsList(sessions, hostContainer);
-      else renderSessionsTree(sessions, hostContainer);
+  if (state.searchScopeHost) {
+    const hostContainer = document.createElement('div');
+    hostContainer.className = 'top-group-container';
+    els.sessionTree.appendChild(mkTopHead('🖥 主机', 'host'));
+    if (!topCollapsed.host) {
+      if (sessions.length === 0) {
+        // 无普通会话:主机分组下提示
+        const empty = document.createElement('div');
+        empty.className = 'asset-group';
+        empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
+        hostContainer.appendChild(empty);
+      } else {
+        const view = state.settings.sessionView || 'tree';
+        if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
+        else if (view === 'list') renderSessionsList(sessions, hostContainer);
+        else renderSessionsTree(sessions, hostContainer);
+      }
+      els.sessionTree.appendChild(hostContainer);
     }
-    els.sessionTree.appendChild(hostContainer);
   }
 
   // ---- 🛡 堡垒机分组 ----
-  els.sessionTree.appendChild(mkTopHead('🛡 堡垒机', 'bastion'));
-  if (!topCollapsed.bastion) {
-    const bastionContainer = document.createElement('div');
-    bastionContainer.className = 'top-group-container';
-    // 已保存的堡垒机连接(配置弹窗创建)最前;JMS/H3C 资产随后。各渲染块 try/catch 隔离。
-    try { renderBastionSavedSessions(bastionContainer, f); } catch (e) { console.warn('[堡垒机] 已保存连接渲染异常:', e); }
-    try { renderJmsInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] JMS 区块渲染异常:', e); }
-    try { renderBastionInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] H3C 区块渲染异常:', e); }
-    els.sessionTree.appendChild(bastionContainer);
+  if (state.searchScopeBastion) {
+    els.sessionTree.appendChild(mkTopHead('🛡 堡垒机', 'bastion'));
+    if (!topCollapsed.bastion) {
+      const bastionContainer = document.createElement('div');
+      bastionContainer.className = 'top-group-container';
+      // 已保存的堡垒机连接(配置弹窗创建)最前;JMS/H3C 资产随后。各渲染块 try/catch 隔离。
+      try { renderBastionSavedSessions(bastionContainer, f); } catch (e) { console.warn('[堡垒机] 已保存连接渲染异常:', e); }
+      try { renderJmsInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] JMS 区块渲染异常:', e); }
+      try { renderBastionInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] H3C 区块渲染异常:', e); }
+      els.sessionTree.appendChild(bastionContainer);
+    }
   }
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
 }
@@ -8956,6 +8964,9 @@ els.inputSessionSearch.addEventListener('input', () => {
   sessionSearchTimer = setTimeout(() => renderSessionList(els.inputSessionSearch.value), 80);
 });
 els.btnSelectAllFiltered.addEventListener('click', toggleSelectAllFiltered);
+// 搜索范围:主机 / 堡垒机 复选框(勾选显示哪个顶级分组)
+els.scopeHost.addEventListener('change', () => { state.searchScopeHost = els.scopeHost.checked; renderSessionList(els.inputSessionSearch.value); });
+els.scopeBastion.addEventListener('change', () => { state.searchScopeBastion = els.scopeBastion.checked; renderSessionList(els.inputSessionSearch.value); });
 // 点会话列表"空白处"(容器本身,不是分组头/会话行)→ 取消分组选中,之后全选=所有分组的主机
 els.sessionTree.addEventListener('click', (e) => {
   if (e.target === els.sessionTree && state.activeGroupId != null) {
