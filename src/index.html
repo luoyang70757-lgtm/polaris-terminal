@@ -83,6 +83,27 @@
           <span>👋 双击左侧会话连接,或点 <b>➕ 新建</b> 添加服务器</span>
         </div>
         <div id="session-tree" class="asset-tree"></div>
+        <!-- 内嵌堡垒机浏览器(整合自右侧面板):点堡垒机连接/资产时在左侧展开 -->
+        <div id="bastion-slot" class="bastion-inline hidden">
+          <div class="bastion-inline-bar">
+            <span class="bastion-inline-title" title="堡垒机浏览器">🌐 堡垒机</span>
+            <span class="spacer"></span>
+            <button id="bastion-back" class="btn-mini" title="后退">←</button>
+            <button id="bastion-forward" class="btn-mini" title="前进">→</button>
+            <button id="bastion-reload" class="btn-mini" title="刷新">↻</button>
+            <button id="bastion-clear" class="btn-mini" title="清除历史">🧹</button>
+            <button id="bastion-close" class="btn-mini" title="收起浏览器">✕</button>
+          </div>
+          <div id="bastion-current" class="bastion-inline-current dim"></div>
+          <div id="bastion-body" class="bastion-inline-body">
+            <div id="bastion-empty" class="bastion-inline-empty">
+              <div class="be-title">🌐 堡垒机浏览器</div>
+              <div class="be-sub">在左侧堡垒机连接上双击打开,或从资产行打开</div>
+            </div>
+            <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
+            <webview id="bastion-webview" class="bastion-webview" partition="persist:bastion"></webview>
+          </div>
+        </div>
         <div class="asset-footer dim">双击会话连接 · 右键删除 · 会话数据已加密存储</div>
       </aside>
 
@@ -192,57 +213,7 @@
       <!-- ============ AI 运维助手面板(右侧,可收起) ============
            注意:这个面板放在所有面板最后 → DOM 顺序决定它在 .main-body
            flex 布局里永远是最右一列(即使命令记录面板也开着,AI 也在最右) -->
-      <!-- ============ 堡垒机浏览器区域(右侧停靠,像个小窗口:左右拖分隔条调宽、拖底边调高,可最小化) ============ -->
-      <div id="bastion-slot" class="bastion-slot hidden">
-        <!-- 竖分隔条:左右拖动调面板宽度 -->
-        <div id="divider-bastion" class="divider-v" title="左右拖动调整堡垒机面板宽度"></div>
-        <div class="bastion-col">
-        <!-- 堡垒机浏览器面板(可调宽/调高) -->
-        <section id="bastion-panel" class="bastion-panel">
-        <!-- 堡垒机标签栏:每个已保存堡垒机一个标签,点击切换(各自保持登录态);➕ 新建 -->
-        <div id="bastion-tabs" class="bastion-tabs">
-          <div id="bastion-tabs-list" class="bastion-tabs-list"></div>
-          <button id="bastion-tab-add" class="btn-mini bastion-tab-add" title="添加堡垒机站点">＋</button>
-        </div>
-        <div class="bastion-bar">
-          <span class="bastion-title dim" title="堡垒机浏览器">🌐 堡垒机</span>
-          <select id="bastion-server-select" class="select bastion-server-select" title="已保存的堡垒机,选一个加载"></select>
-          <span class="bastion-nav" title="浏览导航(可拖左侧分隔条调面板宽度)">
-            <button id="bastion-back" class="btn-mini" title="后退">←</button>
-            <button id="bastion-forward" class="btn-mini" title="前进">→</button>
-            <button id="bastion-reload" class="btn-mini" title="刷新">↻</button>
-          </span>
-          <div class="bastion-addr">
-            <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://10.204.240.4" />
-            <button id="bastion-go" class="btn-mini" title="打开堡垒机">打开</button>
-          </div>
-          <span class="bastion-zoom" title="画面缩放">
-            <button id="bastion-zoom-out" class="btn-mini" title="缩小画面">A−</button>
-            <span id="bastion-zoom-label" class="bastion-zoom-label">100%</span>
-            <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
-          </span>
-          <button id="bastion-load" class="btn-mini" title="加载当前堡垒机并自动填充账号密码">加载</button>
-          <button id="bastion-clear" class="btn-mini" title="清除堡垒机浏览器历史记录(浏览历史/登录态/表单,下次需重新登录)">🧹 清除历史</button>
-          <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
-          <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
-          <button id="bastion-close" class="btn-mini" title="关闭堡垒机面板">✕</button>
-        </div>
-        <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
-        <div class="bastion-body">
-          <div class="bastion-web-wrap">
-            <div id="bastion-empty" class="bastion-empty">
-              <div class="be-title">🌐 堡垒机浏览器</div>
-              <div class="be-sub">在上方输入堡垒机 Web 地址,点「打开」开始</div>
-              <div class="be-sub">登录后在堡垒机里选主机 → 点连接 → 自动用本应用打开 SSH</div>
-              <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
-            </div>
-            <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
-            <webview id="bastion-webview" class="bastion-webview" partition="persist:bastion"></webview>
-          </div>
-        </div>
-        </section>
-        </div>
-      </div>
+
 
       <section id="ai-panel" class="ai-panel hidden">
         <div class="ai-header">

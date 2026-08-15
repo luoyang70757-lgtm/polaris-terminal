@@ -3635,7 +3635,7 @@ async function openJmsWeb() {
   openBastionPanel();
   const base = s.baseUrl.replace(/\/+$/, '');
   const home = `${base}/ui/`;
-  els.bastionUrl.value = home;
+  if (els.bastionUrl) els.bastionUrl.value = home;
   loadBastion(home);
   setStatus('打开 JumpServer Web 控制台', 'var(--green)');
   // 等页面起来:停在登录页则自动填账号密码并提交(登录后即到控制台首页)
@@ -4236,27 +4236,22 @@ async function jmsRestore() {
 // 面板默认宽度:未手动拖过(无持久化宽度)时默认占屏一半,保证堡垒机完整页面不被右侧遮挡
 function applyBastionDefaultWidth() {
   const saved = Number(state.settings.bastionWidth) || 0;
-  if (saved >= 300) els.bastionPanel.style.width = `${saved}px`;
-  else els.bastionPanel.style.width = `${Math.max(420, Math.round(window.innerWidth * 0.5))}px`;
+  if (els.bastionPanel) {
+    if (saved >= 300) els.bastionPanel.style.width = `${saved}px`;
+    else els.bastionPanel.style.width = `${Math.max(420, Math.round(window.innerWidth * 0.5))}px`;
+  }
 }
 function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
   els.bastionMini.classList.add('hidden');
-  applyBastionDefaultWidth();
-  bastionRenderTabs(); // 渲染堡垒机标签栏
-  bastionRenderServerSelect();
-  const saved = state.settings.bastionUrl || '';
-  if (saved) els.bastionUrl.value = saved;
   // 有已保存堡垒机且无激活标签 → 自动选第一个(像主机连接一样开箱即用)
   if (!bastionActiveTabId && bastionServers().length) {
     bastionSwitchTab(bastionServers()[0].id);
   }
   // 键盘焦点:webview 已加载 → 焦点给 webview(否则点击 guest 页面时,宿主焦点停在地址框,
-  // 按键会被地址框吞掉、输入框"打不进去";见 bastion-focus-fix)。空 webview 才聚焦地址框让用户输地址。
-  if (!els.bastionWebview.src && saved) loadBastion(saved);
-  else if (els.bastionWebview.src) els.bastionWebview.focus();
-  else els.bastionUrl.focus();
-  refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
+  // 按键会被地址框吞掉、输入框"打不进去";见 bastion-focus-fix)。
+  if (els.bastionWebview.src) els.bastionWebview.focus();
+  refitAll(); // 面板打开后布局变化,重排 xterm
 }
 // 渲染堡垒机 web 标签页专属的资产列表:显示当前 web 标签页对应堡垒机(JMS)的资产,
 // 双击直接连 SSH(与左侧会话树 JMS 区块一致)。无登录的 JMS 服务器时隐藏侧边栏。
@@ -4328,7 +4323,7 @@ function bastionSwitchTab(id) {
   const s = bastionServers().find((x) => x.id === id);
   if (!s) return;
   bastionActiveTabId = id;
-  els.bastionUrl.value = s.url || '';
+  if (els.bastionUrl) els.bastionUrl.value = s.url || ''; // 内嵌版无地址栏,容错
   if (s.url) loadBastion(s.url);
   bastionPendingFill = (s.account || s.password) ? s : null; // 加载后自动填充账号密码
   bastionRenderTabs();
@@ -4373,6 +4368,7 @@ function bastionSelectableServers() {
 
 function bastionRenderServerSelect() {
   const sel = els.bastionServerSelect;
+  if (!sel) return; // 内嵌版无下拉(已删除),容错
   sel.innerHTML = '';
   for (const s of bastionSelectableServers()) {
     const opt = document.createElement('option');
@@ -4393,7 +4389,7 @@ let bastionPendingFill = null;
 function bastionSelectServer(id) {
   const s = bastionSelectableServers().find((x) => x.id === id);
   if (!s) return;
-  els.bastionUrl.value = s.url;
+  if (els.bastionUrl) els.bastionUrl.value = s.url;
   loadBastion(s.url);
   // JMS 服务器用其保存的账号密码自动登录;堡垒机配置同前
   bastionPendingFill = (s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null;
@@ -4402,9 +4398,10 @@ function bastionSelectServer(id) {
 
 // 工具栏「加载」:加载当前选中的已保存堡垒机并自动填充账号密码;无选中则加载地址栏输入的地址
 function bastionLoadSelected() {
+  if (!els.bastionServerSelect) { alert('请先在左侧堡垒机连接上双击打开'); return; }
   const id = els.bastionServerSelect.value;
   if (id) { bastionSelectServer(id); return; }
-  const url = els.bastionUrl.value.trim();
+  const url = (els.bastionUrl ? els.bastionUrl.value.trim() : '');
   if (url) loadBastion(url);
   else alert('请先选一个已保存的堡垒机,或输入 Web 地址');
 }
@@ -5343,8 +5340,9 @@ function renderBastionSavedSessions(container, f) {
             row.appendChild(ic);
             row.appendChild(nm);
             row.appendChild(ad);
-            // 双击:通过该堡垒机连 SSH(复用 JMS 复合用户名走 KoKo 网关)
-            row.addEventListener('dblclick', () => {
+            // 双击:通过该堡垒机连 SSH(复用 JMS 复合用户名走 KoKo 网关);
+            // 未登录时自动用保存的账号密码登录(不必手动刷新)
+            row.addEventListener('dblclick', async () => {
               const jmsServer = {
                 id: 'saved-' + s.id, name: s.name, baseUrl: s.url,
                 sshHost: s.sshHost || (() => { try { return new URL(s.url).hostname; } catch { return ''; } })(),
@@ -5352,11 +5350,26 @@ function renderBastionSavedSessions(container, f) {
                 account: s.account || '', password: s.password || '', token: s.token || null, user: s.user || null,
               };
               if (!jmsServer.token) {
-                // 无登录态 → 提示先加载资产(自动登录)或检查账号
-                setStatus(`「${s.name}」未登录,右键「🔄 刷新资产」后重试`, 'var(--orange)');
-                return;
+                setStatus(`正在登录「${s.name}」…`, 'var(--accent)');
+                try {
+                  const pw = await decryptSecret(s.password || '');
+                  if (!s.account || !pw) {
+                    setStatus(`「${s.name}」未配置账号密码,无法登录`, 'var(--red)');
+                    return;
+                  }
+                  const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
+                  if (!lg.ok || !lg.token) {
+                    setStatus(`登录「${s.name}」失败: ${lg.error || '未知错误'}`, 'var(--red)');
+                    return;
+                  }
+                  s.token = lg.token; s.user = lg.user; // 存回连接,后续直接可用
+                  jmsServer.token = lg.token; jmsServer.user = lg.user;
+                } catch (e) {
+                  setStatus(`登录「${s.name}」失败: ${e.message}`, 'var(--red)');
+                  return;
+                }
               }
-              jmsConnect(jmsServer.id, a);
+              await bastionConnectAsset(s, a); // 不经过 jmsFind(该连接不在 state.jmsServers)
             });
             assetsWrap.appendChild(row);
           }
@@ -5371,6 +5384,35 @@ function renderBastionSavedSessions(container, f) {
       container.appendChild(assetsWrap);
     }
   }
+}
+
+// 通过已保存堡垒机连接连某资产 SSH(复用 JMS 复合用户名走 KoKo 网关)。
+// 不经过 jmsFind:该连接存于 bastionServers,不在 state.jmsServers。
+async function bastionConnectAsset(bastionServer, asset, accountName) {
+  const s = bastionServer;
+  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
+  const account = accountName || (asset.accounts && asset.accounts[0] && asset.accounts[0].username) || 'root';
+  const jmsUser = (s.user && s.user.username) || s.account || 'admin';
+  const username = `${jmsUser}@${protocol}@${account}@${asset.address}`;
+  const sshHost = s.sshHost || (() => { try { return new URL(s.url).hostname; } catch { return ''; } })();
+  // 密码是 safeStorage 密文(enc:v1:),连接前必须解密——否则 KoKo 收到密文 → 认证失败
+  const password = await decryptSecret(s.password || '');
+  const session = {
+    id: `jms-${++state.jmsSeq}`,
+    name: asset.name,
+    host: sshHost,
+    port: s.sshPort || 2222,
+    username,
+    password,
+    encoding: 'utf8',
+    tag_color: '',
+    jmsKey: `saved-${s.id}|${asset.address}|${account}`,
+    displayHost: asset.address || asset.ip || '',
+    displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
+  };
+  connectToServer(session);
+  setStatus(`连接 ${asset.name}(${account})…`, 'var(--accent)');
 }
 
 // 懒加载已保存堡垒机的资产:用保存的账号登录 JumpServer 拉资产列表
@@ -7928,13 +7970,6 @@ const wvShowAfterDrag = () => { els.bastionWebview.style.visibility = ''; };
 
 // 堡垒机面板分隔条:拖动左右调面板宽度(范围 300~1200px),宽度持久化
 // reverse=true:面板在分隔条右侧 → 往左拖 = 面板变宽(符合直觉)
-applyBastionDefaultWidth();
-makeResizer(els.dividerBastion, 'x',
-  () => els.bastionPanel.offsetWidth,
-  (w) => { els.bastionPanel.style.width = `${w}px`; },
-  300, 1200, true,
-  () => { wvShowAfterDrag(); state.settings.bastionWidth = els.bastionPanel.offsetWidth; saveSettings(); },
-  wvHideWhileDrag);
 
 // 堡垒机面板高度:固定撑满整个区域(不再提供横分隔条上下拖动)
 
@@ -8229,7 +8264,7 @@ els.btnBastion2.addEventListener('click', (e) => {
   ]);
 });
 els.bastionMini.addEventListener('click', restoreBastion);
-els.bastionCfg.addEventListener('click', openBastionCfg);
+els.bastionCfg && els.bastionCfg.addEventListener('click', openBastionCfg);
 // 🧹 清除历史:清空堡垒机浏览器全部记录(浏览历史/登录态/表单),webview 回到空白页
 els.bastionClear.addEventListener('click', async () => {
   if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单与缓存。所有堡垒机站点需重新登录。')) return;
@@ -8238,14 +8273,14 @@ els.bastionClear.addEventListener('click', async () => {
     // webview 回到空白页
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
-    els.bastionUrl.value = '';
+    if (els.bastionUrl) els.bastionUrl.value = '';
     setStatus('堡垒机浏览器历史已清除,所有站点需重新登录', 'var(--green)');
   } catch (e) {
     setStatus('清除失败: ' + (e && e.message), 'var(--red)');
   }
 });
-els.bastionLoad.addEventListener('click', bastionLoadSelected);
-els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
+els.bastionLoad && els.bastionLoad.addEventListener('click', bastionLoadSelected);
+els.bastionEmptyCfg && els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 // "从左侧现有堡垒机选择":选中后自动填表单(名称/地址/账号/密码)
@@ -8287,19 +8322,19 @@ els.bastionCfgSelect.addEventListener('change', () => {
     }
   }
 });
-els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
+els.bastionServerSelect && els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 // ➕ 添加堡垒机标签:打开配置弹窗,保存后自动生成标签
-els.bastionTabAdd.addEventListener('click', () => { openBastionCfg(); els.bastionCfgUrl.focus(); });
-els.bastionGo.addEventListener('click', () => loadBastion(els.bastionUrl.value.trim()));
-els.bastionMin.addEventListener('click', minimizeBastion);
-els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });
+els.bastionTabAdd && els.bastionTabAdd.addEventListener('click', () => { openBastionCfg(); els.bastionCfgUrl.focus(); });
+els.bastionGo && els.bastionGo.addEventListener('click', () => loadBastion((els.bastionUrl ? els.bastionUrl.value.trim() : '')));
+els.bastionMin && els.bastionMin.addEventListener('click', minimizeBastion);
+els.bastionUrl && els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion((els.bastionUrl ? els.bastionUrl.value.trim() : '')); });
 els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
 els.bastionForward.addEventListener('click', () => { try { els.bastionWebview.goForward(); } catch { /* ignore */ } });
 els.bastionReload.addEventListener('click', () => { try { els.bastionWebview.reload(); } catch { /* ignore */ } });
 els.bastionClose.addEventListener('click', closeBastionPanel); // ✕ 彻底关闭(与 — 最小化区分)
 // 画面缩放(支持 0.5~2.5,按住可连续缩放)
-els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
-els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
+els.bastionZoomIn && els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
+els.bastionZoomOut && els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
 applyBastionZoom(); // 应用持久化的缩放级别
 initBastionWebview();
 // 低频兜底:15s 才轮询一次 H3C 资产(用户操作页面时由 bastionFocusCheck 事件驱动快速同步;
