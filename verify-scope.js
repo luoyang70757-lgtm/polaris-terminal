@@ -1,8 +1,8 @@
 'use strict';
 /**
- * verify-scope.js — 验证搜索框前的「主机/堡垒机」范围复选框:
- *  ① 两个复选框存在且默认勾选
- *  ② 取消「主机」→ 🖥主机分组隐藏;取消「堡垒机」→ 🛡堡垒机分组隐藏
+ * verify-scope.js — 验证搜索框前的「全部/主机/堡垒机」下拉范围选择:
+ *  ① 下拉存在且默认「全部」,两个顶级分组都在
+ *  ② 选「主机」→ 🛡堡垒机分组隐藏;选「堡垒机」→ 🖥主机分组隐藏;选「全部」→ 都显示
  * 运行: node verify-scope.js(需 9365 空闲;--dev 临时数据目录)
  */
 const { spawn } = require('child_process');
@@ -22,9 +22,11 @@ let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e : '')); };
 async function check(c, name, expr, expect = true) { try { const v = await ev(c, expr); if (v === expect) ok(name); else bad(name, `got ${JSON.stringify(v)}`); } catch (e) { bad(name, e.message); } }
+const groupVisible = (label) => `(function(){var h=document.querySelectorAll('.asset-group-head .asset-group-name');for(var i=0;i<h.length;i++){if(h[i].textContent.indexOf('${label}')===0)return true;}return false;})()`;
+const setScope = (v) => `(function(){var s=document.getElementById('scope-select');s.value='${v}';s.dispatchEvent(new Event('change'));})()`;
 
 (async () => {
-  console.log('\n=== 搜索范围复选框(主机/堡垒机) ===\n');
+  console.log('\n=== 搜索范围下拉(全部/主机/堡垒机) ===\n');
   try {
     const ts0 = await listTargets();
     const lockT = ts0.find((t) => /解锁/.test(t.title || '')) || ts0.find((t) => t.type === 'page');
@@ -35,22 +37,23 @@ async function check(c, name, expr, expect = true) { try { const v = await ev(c,
     for (let i = 0; i < 30; i++) { await sleep(400); const t2 = await listTargets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { c = await connect(m.webSocketDebuggerUrl); break; } }
     if (!c) throw new Error('主窗口未就绪');
 
-    await check(c, '两个复选框存在且默认勾选', `(function(){return !!document.getElementById('scope-host') && !!document.getElementById('scope-bastion') && document.getElementById('scope-host').checked && document.getElementById('scope-bastion').checked;})()`);
-    const groupVisible = (label) => `(function(){var h=document.querySelectorAll('.asset-group-head .asset-group-name');for(var i=0;i<h.length;i++){if(h[i].textContent.indexOf('${label}')===0)return true;}return false;})()`;
+    await check(c, '下拉存在且默认「全部」', `(function(){var s=document.getElementById('scope-select');return !!s && s.value==='all' && s.options.length===3;})()`);
     await check(c, '默认两个分组都在(🖥 主机)', groupVisible('🖥 主机'));
     await check(c, '默认两个分组都在(🛡 堡垒机)', groupVisible('🛡 堡垒机'));
 
-    // 取消「主机」→ 🖥 主机分组隐藏
-    await ev(c, `document.getElementById('scope-host').checked=false; document.getElementById('scope-host').dispatchEvent(new Event('change'));`);
+    await ev(c, setScope('host'));
     await sleep(150);
-    await check(c, '取消「主机」后 🖥 主机分组隐藏', groupVisible('🖥 主机'), false);
-    await check(c, '取消「主机」后 🛡 堡垒机仍在', groupVisible('🛡 堡垒机'));
+    await check(c, '选「主机」→ 🖥 主机显示', groupVisible('🖥 主机'));
+    await check(c, '选「主机」→ 🛡 堡垒机隐藏', groupVisible('🛡 堡垒机'), false);
 
-    // 恢复主机,取消「堡垒机」→ 🛡 堡垒机分组隐藏
-    await ev(c, `document.getElementById('scope-host').checked=true; document.getElementById('scope-host').dispatchEvent(new Event('change')); document.getElementById('scope-bastion').checked=false; document.getElementById('scope-bastion').dispatchEvent(new Event('change'));`);
+    await ev(c, setScope('bastion'));
     await sleep(150);
-    await check(c, '取消「堡垒机」后 🛡 堡垒机分组隐藏', groupVisible('🛡 堡垒机'), false);
-    await check(c, '取消「堡垒机」后 🖥 主机仍在', groupVisible('🖥 主机'));
+    await check(c, '选「堡垒机」→ 🛡 堡垒机显示', groupVisible('🛡 堡垒机'));
+    await check(c, '选「堡垒机」→ 🖥 主机隐藏', groupVisible('🖥 主机'), false);
+
+    await ev(c, setScope('all'));
+    await sleep(150);
+    await check(c, '选「全部」→ 两个分组都显示', `(${groupVisible('🖥 主机')}) && (${groupVisible('🛡 堡垒机')})`);
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) { console.error('\n测试异常:', e && e.message); failed++; console.log(`\n结果: ${passed} 通过, ${failed} 失败`); }

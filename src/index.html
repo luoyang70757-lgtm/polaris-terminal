@@ -64,8 +64,11 @@
           <button id="vs-tree" class="vs-btn" title="树形视图(按分组)">⛁ 树形</button>
         </div>
         <div class="asset-search">
-          <label class="scope-cb" title="显示/搜索主机分组"><input id="scope-host" type="checkbox" checked />主机</label>
-          <label class="scope-cb" title="显示/搜索堡垒机分组"><input id="scope-bastion" type="checkbox" checked />堡垒机</label>
+          <select id="scope-select" class="scope-select" title="搜索/显示范围">
+            <option value="all">全部</option>
+            <option value="host">主机</option>
+            <option value="bastion">堡垒机</option>
+          </select>
           <input id="input-session-search" type="text" placeholder="搜索名称 / IP(空格多词)…" />
           <button id="btn-select-all-filtered" class="btn-mini" title="全选当前搜索出的主机(再点一次取消全选)">全选</button>
         </div>

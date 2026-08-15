@@ -250,14 +250,13 @@ select.select:focus { border-color: var(--accent); }
 .asset-search { padding: 0 12px 8px; display: flex; gap: 6px; align-items: center; }
 .asset-search input { padding: 5px 8px; font-size: 12px; flex: 1; min-width: 0; }
 .asset-search .btn-mini { flex-shrink: 0; padding: 4px 8px; font-size: 12px; }
-/* 搜索框前的主机/堡垒机范围选择 */
-.asset-search .scope-cb {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 11px; color: var(--text-dim); cursor: pointer; flex-shrink: 0;
-  white-space: nowrap; user-select: none;
+/* 搜索框前的主机/堡垒机范围下拉选择 */
+.asset-search .scope-select {
+  flex-shrink: 0; height: 26px; padding: 0 6px; font-size: 12px;
+  background: var(--input-bg, #1a1b1e); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;
 }
-.asset-search .scope-cb input { width: auto; flex: none; margin: 0; padding: 0; cursor: pointer; }
-.asset-search .scope-cb:hover { color: var(--text); }
+.asset-search .scope-select:focus { border-color: var(--accent); }
 
 .asset-tree { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
 
