@@ -4007,6 +4007,42 @@ function makeSectionHead(label, collapsed, onToggle, menuItems) {
   return head;
 }
 
+// 批量打开连接:依次连接一组 JMS 资产(走 KoKo 网关,300ms 错峰避免压网关)
+function batchJmsConnect(s, assets) {
+  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  const list = (assets || []).filter(Boolean);
+  if (!list.length) return;
+  setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
+  list.forEach((a, i) => setTimeout(() => jmsConnect(s.id, a), i * 300));
+}
+
+// 批量打开连接:依次连接一组 H3C 资产(走 accessclient,500ms 错峰)
+function batchBastionConnect(assets) {
+  const list = (assets || []).filter(Boolean);
+  if (!list.length) return;
+  if (!els.bastionWebview || !els.bastionWebview.src) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录'); openBastionPanel(); return; }
+  setStatus(`批量连接 H3C 资产 ${list.length} 台…`, 'var(--accent)');
+  list.forEach((a, i) => setTimeout(() => bastionConnect(a), i * 500));
+}
+
+// 批量打开连接:依次连接一组「已保存堡垒机连接」的资产(未登录先自动登录)
+async function batchSavedAssetConnect(s, assets) {
+  const list = (assets || []).filter(Boolean);
+  if (!list.length) return;
+  if (!s.user || !s.token) {
+    setStatus(`正在登录「${s.name}」…`, 'var(--accent)');
+    try {
+      const pw = await decryptSecret(s.password || '');
+      if (!s.account || !pw) { alert(`「${s.name}」未配置账号密码,无法登录`); return; }
+      const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
+      if (!lg.ok || !lg.token) { alert(`登录「${s.name}」失败: ${lg.error || '未知错误'}`); return; }
+      s.token = lg.token; s.user = lg.user;
+    } catch (e) { alert(`登录「${s.name}」失败: ${e.message}`); return; }
+  }
+  setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
+  list.forEach((a, i) => setTimeout(() => bastionConnectAsset(s, a), i * 300));
+}
+
 function renderJmsInSessionList(container, f) {
   const logged = state.jmsServers.filter((s) => s.token && s.user);
   if (!logged.length) return;
@@ -4019,6 +4055,7 @@ function renderJmsInSessionList(container, f) {
     container.appendChild(makeSectionHead(`🛡 ${s.name}(${list.length}${kw ? '/' + s.assets.length : ''})`, collapsed,
       () => { collapsed ? state.collapsedJms.delete(s.id) : state.collapsedJms.add(s.id); renderSessionList(els.inputSessionSearch.value); },
       [
+        { label: '🔗 批量连接全部', action: () => batchJmsConnect(s, list) },
         { label: '🔄 刷新资产', action: () => jmsRefreshServer(s.id) },
         { label: '🗑 删除服务器', danger: true, action: () => jmsDeleteServerCompletely(s.id) },
         { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
@@ -4058,7 +4095,7 @@ function renderJmsInSessionList(container, f) {
       const c2 = state.bastionDirCollapsed.has(key);
       container.appendChild(makeSectionHead(`${dir ? '📁 ' + dir : '🗂 未分组'}(${arr.length})`, c2,
         () => { c2 ? state.bastionDirCollapsed.delete(key) : state.bastionDirCollapsed.add(key); renderSessionList(els.inputSessionSearch.value); },
-        []));
+        [{ label: '🔗 批量连接', action: () => batchJmsConnect(s, arr) }]));
       if (c2) continue;
       for (const a of arr) container.appendChild(makeJmsAssetRow(s, a));
     }
@@ -5342,6 +5379,10 @@ function renderBastionSavedSessions(container, f) {
             const ghead = document.createElement('div');
             ghead.className = 'bastion-asset-group-head';
             ghead.textContent = g === '__ungrouped__' ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
+            ghead.addEventListener('contextmenu', (e) => {
+              e.preventDefault();
+              showCtxMenu(e.clientX, e.clientY, [{ label: '🔗 批量连接', action: () => batchSavedAssetConnect(s, arr) }]);
+            });
             assetsWrap.appendChild(ghead);
           }
           for (const a of arr) {
@@ -5473,6 +5514,7 @@ function renderBastionInSessionList(container, f) {
   container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${list.length}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
+      { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
       { label: '🔄 拉取全部资产', action: () => triggerBastionFullFetch() },
       { label: '📤 导出诊断包', action: () => exportBastionDiag() },
       { label: '🔌 断开全部堡垒机连接', action: () => disconnectBastionAll() },
@@ -5515,7 +5557,7 @@ function renderBastionInSessionList(container, f) {
     const collapsed = state.bastionDirCollapsed.has('__fav__');
     container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(els.inputSessionSearch.value); },
-      []));
+      [{ label: '🔗 批量连接', action: () => batchBastionConnect(favs) }]));
     if (!collapsed) for (const a of favs) container.appendChild(makeBastionAssetItem(a));
   }
   // 按目录分组
@@ -5525,7 +5567,7 @@ function renderBastionInSessionList(container, f) {
     const collapsed = state.bastionDirCollapsed.has(g.dir);
     container.appendChild(makeSectionHead(`📁 ${g.dir}(${g.assets.length})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete(g.dir) : state.bastionDirCollapsed.add(g.dir); renderSessionList(els.inputSessionSearch.value); },
-      []));
+      [{ label: '🔗 批量连接', action: () => batchBastionConnect(g.assets) }]));
     if (collapsed) continue;
     for (const a of g.assets) container.appendChild(makeBastionAssetItem(a));
   }
@@ -5534,7 +5576,7 @@ function renderBastionInSessionList(container, f) {
     const collapsed = state.bastionDirCollapsed.has('__ungrouped__');
     container.appendChild(makeSectionHead(`🗂 未分组(${ungrouped.assets.length}${state.bastionGrouping ? ',分组中…' : ''})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete('__ungrouped__') : state.bastionDirCollapsed.add('__ungrouped__'); renderSessionList(els.inputSessionSearch.value); },
-      []));
+      [{ label: '🔗 批量连接', action: () => batchBastionConnect(ungrouped.assets) }]));
     if (!collapsed) for (const a of ungrouped.assets) container.appendChild(makeBastionAssetItem(a));
   }
 }
