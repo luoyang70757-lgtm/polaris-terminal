@@ -266,6 +266,38 @@ select.select:focus { border-color: var(--accent); }
   user-select: none;
   border-radius: 4px;
 }
+/* 顶级分组(🖥 主机 / 🛡 堡垒机):章节标题级,加粗+色条+底色,与子分组明显区分 */
+.asset-group-head.top-group {
+  margin-top: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid var(--accent);
+  letter-spacing: 0.5px;
+}
+.asset-group-head.top-group:hover { background: rgba(255, 255, 255, 0.08); }
+.asset-group-head.top-group .asset-group-caret { font-size: 10px; }
+/* 顶级分组下的内容容器:左侧缩进,体现"分组 > 子项"的层级 */
+.top-group-container {
+  margin-left: 10px;
+  padding-left: 6px;
+  border-left: 1px dashed rgba(128, 128, 128, 0.18);
+}
+/* 二级分组(普通会话分组 / JMS 服务器 / H3C 区块):比顶级稍弱,带缩进线 */
+.top-group-container .asset-group-head {
+  margin-top: 5px;
+  font-size: 11px;
+}
+/* 三级:堡垒机/JMS 资产行在分组内再缩进,层次分明 */
+.top-group-container .asset-item {
+  margin-left: 10px;
+}
+.top-group-container .asset-item.host-item,
+.top-group-container .asset-item.jms-asset-item {
+  margin-left: 12px;
+}
 .asset-group-head:hover { color: var(--text); background: var(--bg-hover); }
 .asset-group-head.drag-over { background: var(--accent); color: #fff; } /* 拖拽悬停高亮 */
 .asset-item.dragging { opacity: 0.4; }

@@ -464,6 +464,8 @@ const state = {
   splitZoom: null,       // 分屏"放大"的面板 sessionId,null=正常网格(点 Cmd+Enter 或面板 ⤢ 切换)
   groups: [],            // 分组列表 [{ id, name }]
   collapsedGroups: new Set(), // 被折叠的分组 id 集合
+  collapsedTopHost: false,   // 顶级"🖥 主机"分组是否折叠
+  collapsedTopBastion: true, // 顶级"🛡 堡垒机"分组是否折叠(默认收起)
   recentCollapsed: false, // "最近连接"分组是否折叠(点三角切换)
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
   selectedForBatch: new Set(), // 多选用于批量操作的会话 id 集合
@@ -505,11 +507,12 @@ const state = {
   bastionFavSet: new Set(), // 收藏设备 devId 集合(getFavoriteDevices / userFav 捕获)
   bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})
   bastionDirCollapsed: new Set(), // 折叠的业务目录名(分组视图)
+  bastionDirsInit: false,   // 分组视图是否已完成"首次默认折叠"初始化
   bastionGrouping: false,   // 是否正在后台逐目录补充分组
   bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
   bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
   bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
-  bastionCollapsed: false, // H3C 堡垒机区是否折叠
+  bastionCollapsed: true, // H3C 堡垒机区默认折叠(打开堡垒机后左侧分组收起,需展开才看资产)
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
   sftp: {
@@ -1249,6 +1252,9 @@ async function restoreBastionAssets() {
       if (!state.bastionUrl) state.bastionUrl = bastionOrigin(u) || u;
     }
     if (all.length && stableJson(all) !== stableJson(state.bastionAssets)) {
+      // 恢复资产 → H3C 区块默认折叠(左侧分组收起,展开才看)
+      state.bastionCollapsed = true;
+      state.bastionDirsInit = false; // 目录分组待首次渲染时默认折叠
       state.bastionAssets = all;
       for (const a of all) if (a.favorite) state.bastionFavSet.add(a.devId);
       renderSessionList(els.inputSessionSearch.value);
@@ -1341,32 +1347,64 @@ function filterSessions(filter) {
 }
 
 // 按视图渲染会话列表:树形(tree)/列表(list)/网格(grid)
+// 顶层分成两个分组:「🖥 主机」(所有普通会话分组)+「🛡 堡垒机」(JMS/H3C 资产)
 function renderSessionList(filter) {
   els.sessionTree.innerHTML = '';
   const f = (filter || '').toLowerCase();
   const sessions = filterSessions(filter);
-  if (sessions.length === 0) {
-    renderJmsInSessionList(els.sessionTree, f); renderBastionInSessionList(els.sessionTree, f);
-    if (els.sessionTree.children.length === 0) { // 无会话也无堡垒机资产时才显示空提示
+
+  // ---- 虚拟顶级分组头:主机 / 堡垒机 ----
+  // 注意:这是 UI 分类容器,不写入 groups 数据库(避免污染真实分组/全选逻辑)
+  const topCollapsed = { host: state.collapsedTopHost, bastion: state.collapsedTopBastion };
+  const mkTopHead = (label, which) => {
+    const head = document.createElement('div');
+    head.className = 'asset-group-head top-group';
+    const caret = document.createElement('span');
+    caret.className = 'asset-group-caret';
+    caret.textContent = topCollapsed[which] ? '▶' : '▼';
+    const name = document.createElement('span');
+    name.className = 'asset-group-name';
+    name.textContent = label;
+    head.appendChild(caret);
+    head.appendChild(name);
+    head.addEventListener('click', () => {
+      if (which === 'host') state.collapsedTopHost = !state.collapsedTopHost;
+      else state.collapsedTopBastion = !state.collapsedTopBastion;
+      renderSessionList(els.inputSessionSearch.value);
+    });
+    return head;
+  };
+
+  // ---- 🖥 主机分组 ----
+  const hostContainer = document.createElement('div');
+  hostContainer.className = 'top-group-container';
+  els.sessionTree.appendChild(mkTopHead('🖥 主机', 'host'));
+  if (!topCollapsed.host) {
+    if (sessions.length === 0) {
+      // 无普通会话:主机分组下提示
       const empty = document.createElement('div');
       empty.className = 'asset-group';
       empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
-      els.sessionTree.appendChild(empty);
+      hostContainer.appendChild(empty);
+    } else {
+      const view = state.settings.sessionView || 'tree';
+      if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
+      else if (view === 'list') renderSessionsList(sessions, hostContainer);
+      else renderSessionsTree(sessions, hostContainer);
     }
-    refreshSelectAllBtn();
-    return;
+    els.sessionTree.appendChild(hostContainer);
   }
-  const view = state.settings.sessionView || 'tree';
-  if (view === 'grid') renderSessionsGrid(sessions);
-  else if (view === 'list') renderSessionsList(sessions);
-  else renderSessionsTree(sessions);
-  // 会话下方显示 JMS/H3C 堡垒机资产:有搜索词时按关键词过滤,无搜索词时全显示。
-  // 注意必须在这里渲染一次(视图函数内部不再渲染)——否则无搜索词时资产区丢失,
-  // 或有搜索词时出现"全量 + 过滤"两份区块(旧版 bug:视图函数末尾各渲染了一次全量)。
-  // 两个渲染块用 try/catch 隔离:JMS 渲染异常不能拖垮 H3C 区块,反之亦然,
-  // 异常会打到控制台供诊断(旧版一处崩溃 = 两个区块都消失且无任何报错提示)。
-  try { renderJmsInSessionList(els.sessionTree, f); } catch (e) { console.warn('[堡垒机] JMS 区块渲染异常:', e); }
-  try { renderBastionInSessionList(els.sessionTree, f); } catch (e) { console.warn('[堡垒机] H3C 区块渲染异常:', e); }
+
+  // ---- 🛡 堡垒机分组 ----
+  els.sessionTree.appendChild(mkTopHead('🛡 堡垒机', 'bastion'));
+  if (!topCollapsed.bastion) {
+    const bastionContainer = document.createElement('div');
+    bastionContainer.className = 'top-group-container';
+    // 两个渲染块用 try/catch 隔离:JMS 渲染异常不能拖垮 H3C 区块,反之亦然
+    try { renderJmsInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] JMS 区块渲染异常:', e); }
+    try { renderBastionInSessionList(bastionContainer, f); } catch (e) { console.warn('[堡垒机] H3C 区块渲染异常:', e); }
+    els.sessionTree.appendChild(bastionContainer);
+  }
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
 }
 
@@ -1528,7 +1566,7 @@ function makeGroupHead(g, depth, collapsed) {
 }
 
 // 树形视图:支持分组嵌套(子分组缩进显示),父折叠时整棵子树隐藏
-function renderSessionsTree(sessions) {
+function renderSessionsTree(sessions, container) {
   // 最近连接:只在未搜索时显示在列表最顶部,点击/双击可一键重连
   if (!(els.inputSessionSearch.value || '').trim()) {
     const recentSessions = state.recent
@@ -1553,12 +1591,12 @@ function renderSessionsTree(sessions) {
       };
       caret.addEventListener('click', toggleRecent);
       head.addEventListener('click', toggleRecent);
-      els.sessionTree.appendChild(head);
+      container.appendChild(head);
       if (!state.recentCollapsed) {
         for (const s of recentSessions) {
           const r = makeSessionRow(s);
           r.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
-          els.sessionTree.appendChild(r);
+          container.appendChild(r);
         }
       }
     }
@@ -1580,21 +1618,21 @@ function renderSessionsTree(sessions) {
   // 递归渲染:父折叠 → 跳过整棵子树
   const renderNode = (g, depth) => {
     const collapsed = state.collapsedGroups.has(g.id);
-    els.sessionTree.appendChild(makeGroupHead(g, depth, collapsed));
+    container.appendChild(makeGroupHead(g, depth, collapsed));
     if (collapsed) return;
     for (const child of childrenOf.get(g.id) || []) renderNode(child, depth + 1);
     for (const s of sessByGroup.get(g.id) || []) {
       const row = makeSessionRow(s);
       row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
       row.style.paddingLeft = `${24 + depth * 18}px`;
-      els.sessionTree.appendChild(row);
+      container.appendChild(row);
     }
   };
   for (const g of childrenOf.get(null) || []) renderNode(g, 0);
 }
 
 // 列表视图:分组作为节标题(不折叠),会话平铺
-function renderSessionsList(sessions) {
+function renderSessionsList(sessions, container) {
   const groups = groupSessions(sessions);
   // 没在搜索时,把空分组也显示出来
   if (!(els.inputSessionSearch.value || '').trim()) {
@@ -1628,17 +1666,17 @@ function renderSessionsList(sessions) {
       }
     });
     head.classList.toggle('active-group', state.activeGroupId === Number(head.dataset.groupId) || state.activeGroupId === head.dataset.groupId);
-    els.sessionTree.appendChild(head);
+    container.appendChild(head);
     for (const s of list) {
       const r = makeSessionRow(s);
       r.classList.add('host-item'); // 列表视图同样用紧凑小条(左侧竖线分隔+右侧留白)
-      els.sessionTree.appendChild(r);
+      container.appendChild(r);
     }
   }
 }
 
 // 网格视图:会话卡片
-function renderSessionsGrid(sessions) {
+function renderSessionsGrid(sessions, container) {
   const wrap = document.createElement('div');
   wrap.className = 'session-grid';
   for (const s of sessions) {
@@ -1681,7 +1719,7 @@ function renderSessionsGrid(sessions) {
     });
     wrap.appendChild(card);
   }
-  els.sessionTree.appendChild(wrap);
+  container.appendChild(wrap);
 }
 
 // 切换会话列表视图(网格/列表/树形)
@@ -3711,6 +3749,8 @@ async function jmsDoLogin() {
     els.jmsOtpWrap.style.display = 'none';
     els.jmsLoginBtn.disabled = false;
     els.jmsLoginBtn.textContent = '连接 JumpServer';
+    // 登录成功 → 该服务器区块默认折叠(左侧分组收起,展开才看资产)
+    state.collapsedJms.add(server.id);
     jmsPersistConfig();
     jmsRenderServerSelect();
     await jmsLoadAssets();
@@ -4075,6 +4115,8 @@ async function jmsRestore() {
       const r = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
       if (r.ok && r.token) {
         s.token = r.token; s.user = r.user;
+        // 恢复登录成功 → 该服务器区块默认折叠(左侧分组收起,展开才看资产)
+        state.collapsedJms.add(s.id);
         const ar = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
         if (ar.ok) s.assets = ar.assets || [];
       }
@@ -4708,11 +4750,17 @@ function pollBastionAssets(force) {
         state.bastionUrl = curOrigin;
         // 换了堡垒机 → 清掉上一台的折叠状态与内存资产(避免跨堡垒机串扰/旧资产残留)
         state.bastionDirCollapsed.clear();
+        state.bastionDirsInit = false; // 新堡垒机的分组重新"首次默认折叠"
         state.bastionTree = [];
         state.bastionFavTree = null;
       }
       const json = stableJson(list);
       if (list.length && json !== stableJson(state.bastionAssets)) {
+        // 首次拿到资产(之前为空)→ H3C 区块与目录分组默认折叠(左侧分组收起,展开才看)
+        if (!state.bastionAssets.length) {
+          state.bastionCollapsed = true;
+          state.bastionDirCollapsed.add('__fav__');
+        }
         state.bastionAssets = list;
         persistBastionAssets(); // 异步持久化,不阻塞渲染
         changed = true;
@@ -4967,6 +5015,15 @@ function renderBastionInSessionList(container, f) {
     if (!y.dir) return -1;
     return x.dir.localeCompare(y.dir, 'zh');
   });
+  // 首次渲染分组视图:所有目录组默认折叠(左侧分组收起,展开才看资产)
+  if (!state.bastionDirsInit && !kw) {
+    state.bastionDirsInit = true;
+    for (const g of dirs) {
+      const key = g.dir || '__ungrouped__';
+      if (key === '__fav__') continue; // 收藏组单独处理(上面)
+      state.bastionDirCollapsed.add(key);
+    }
+  }
   // 收藏组(置顶,独立分组,可折叠)
   const favs = all.filter((a) => a.favorite);
   if (favs.length) {
