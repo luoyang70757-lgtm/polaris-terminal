@@ -195,8 +195,6 @@ const els = {
   bastionCfg: $('bastion-cfg'),
   bastionEmptyCfg: $('bastion-empty-cfg'),
   bastionCfgModal: $('bastion-cfg-modal'),
-  bastionCfgList: $('bastion-cfg-list'),
-  bastionCfgSelect: $('bastion-cfg-select'),
   bastionCfgType: $('bastion-cfg-type'),
   bastionCfgName: $('bastion-cfg-name'),
   bastionCfgUrl: $('bastion-cfg-url'),
@@ -4504,25 +4502,6 @@ async function bastionAutoFill(s) {
 }
 
 function openBastionCfg() {
-  bastionRenderCfgList();
-  // 填充"从左侧现有堡垒机选择"下拉:左侧 JMS 服务器 + 已保存的 H3C 站点
-  const sel = els.bastionCfgSelect;
-  if (sel) {
-    sel.innerHTML = '<option value="">— 手动填写下方信息 —</option>';
-    for (const j of state.jmsServers) {
-      if (!j.baseUrl) continue;
-      const opt = document.createElement('option');
-      opt.value = 'jms:' + j.id;
-      opt.textContent = `🛡 ${j.name || 'JMS'} (JMS 服务器)`;
-      sel.appendChild(opt);
-    }
-    for (const s of bastionServers()) {
-      const opt = document.createElement('option');
-      opt.value = 'saved:' + s.id;
-      opt.textContent = `🌐 ${s.name || s.url} (已保存堡垒机)`;
-      sel.appendChild(opt);
-    }
-  }
   els.bastionCfgName.value = '';
   els.bastionCfgUrl.value = '';
   els.bastionCfgType.value = 'jms';
@@ -4537,44 +4516,7 @@ function openBastionCfg() {
 }
 function closeBastionCfg() { els.bastionCfgModal.classList.add('hidden'); }
 
-// 配置弹窗里的服务器列表
-function bastionRenderCfgList() {
-  const box = els.bastionCfgList;
-  box.innerHTML = '';
-  const list = bastionServers();
-  if (!list.length) {
-    const empty = document.createElement('div');
-    empty.className = 'jms-empty';
-    empty.textContent = '还没有保存的堡垒机,下面添加一个';
-    box.appendChild(empty);
-    return;
-  }
-  for (const s of list) {
-    const row = document.createElement('div');
-    row.className = 'jms-asset';
-    const name = document.createElement('span');
-    name.className = 'jms-a-name';
-    name.textContent = s.name || s.url;
-    const addr = document.createElement('span');
-    addr.className = 'jms-a-comment';
-    addr.textContent = s.url;
-    const edit = document.createElement('button');
-    edit.className = 'btn-mini';
-    edit.textContent = '✏️';
-    edit.title = '编辑';
-    edit.addEventListener('click', () => bastionCfgEdit(s.id));
-    const del = document.createElement('button');
-    del.className = 'btn-mini danger';
-    del.textContent = '🗑';
-    del.title = '删除';
-    del.addEventListener('click', () => bastionCfgDelete(s.id));
-    row.appendChild(name);
-    row.appendChild(addr);
-    row.appendChild(edit);
-    row.appendChild(del);
-    box.appendChild(row);
-  }
-}
+// 配置弹窗里的服务器列表已移除(已保存堡垒机连接现在展示在左侧堡垒机分组根目录下)
 
 async function bastionCfgAdd() {
   const name = els.bastionCfgName.value.trim();
@@ -4602,7 +4544,6 @@ async function bastionCfgAdd() {
   }
   state.settings.bastionServers = bastionServers();
   saveSettings();
-  bastionRenderCfgList();
   bastionRenderServerSelect();
   bastionRenderTabs(); // 标签栏同步新堡垒机
   renderSessionList(els.inputSessionSearch.value); // 左侧堡垒机分组同步显示新连接
@@ -4640,7 +4581,6 @@ function bastionCfgDelete(id) {
   const s = bastionServers().find((x) => x.id === id);
   state.settings.bastionServers = bastionServers().filter((x) => x.id !== id);
   saveSettings();
-  bastionRenderCfgList();
   bastionRenderServerSelect();
   // 顺手清掉该堡垒机的持久化资产(重启后不再出现)。删除键与保存键统一用 origin ——
   // 旧版删除用配置 URL、保存用深链接 URL,键对不上导致删了也"复活"。
@@ -8384,45 +8324,6 @@ els.bastionLoad.addEventListener('click', bastionLoadSelected);
 els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
-// "从左侧现有堡垒机选择":选中后自动填表单(名称/地址/账号/密码)
-els.bastionCfgSelect.addEventListener('change', () => {
-  const v = els.bastionCfgSelect.value;
-  if (!v) return;
-  const [kind, id] = v.split(':');
-  if (kind === 'jms') {
-    const j = state.jmsServers.find((x) => x.id === id);
-    if (!j) return;
-    els.bastionCfgName.value = j.name || j.baseUrl;
-    els.bastionCfgUrl.value = j.baseUrl;
-    els.bastionCfgType.value = 'jms';
-    els.bastionCfgAccount.value = j.account || '';
-    try { els.bastionCfgPass.value = decryptSecretSync ? '' : ''; } catch {}
-    // 密码是加密的,提示用户重新输入或用原密码(这里无法解密同步,留空让用户填)
-    els.bastionCfgPass.value = '';
-    if (j.password && j.password.startsWith('enc:v1:')) {
-      els.bastionCfgPass.placeholder = '已保存密码,留空沿用';
-      els.bastionCfgPass.dataset.enc = j.password;
-    } else {
-      els.bastionCfgPass.value = j.password || '';
-      delete els.bastionCfgPass.dataset.enc;
-    }
-  } else if (kind === 'saved') {
-    const s = bastionServers().find((x) => x.id === id);
-    if (!s) return;
-    els.bastionCfgName.value = s.name || s.url;
-    els.bastionCfgUrl.value = s.url;
-    els.bastionCfgType.value = s.type === 'h3c' ? 'h3c' : 'jms';
-    els.bastionCfgAccount.value = s.account || '';
-    if (s.password && s.password.startsWith('enc:v1:')) {
-      els.bastionCfgPass.value = '';
-      els.bastionCfgPass.placeholder = '已保存密码,留空沿用';
-      els.bastionCfgPass.dataset.enc = s.password;
-    } else {
-      els.bastionCfgPass.value = s.password || '';
-      delete els.bastionCfgPass.dataset.enc;
-    }
-  }
-});
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 // ➕ 添加堡垒机标签:打开配置弹窗,保存后自动生成标签
 els.bastionTabAdd.addEventListener('click', () => { openBastionCfg(); els.bastionCfgUrl.focus(); });

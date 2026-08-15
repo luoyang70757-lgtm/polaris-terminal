@@ -741,14 +741,6 @@ input[type="checkbox"] {
   color: var(--text-dim);
 }
 .bastion-saved-assets .asset-item { margin: 2px 0; }
-/* 堡垒机配置弹窗:从左侧现有堡垒机选择 */
-.bastion-cfg-from {
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 5px;
-}
-.bastion-cfg-from select { width: 100%; }
 /* 资产按主机分组展示的小标题 */
 .bastion-asset-group-head {
   font-size: 11px;
