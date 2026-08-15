@@ -810,45 +810,6 @@ input[type="checkbox"] {
 /* 会话列表里的最小化入口 */
 .bastion-mini { padding: 7px 10px; cursor: pointer; color: var(--accent); font-size: 12px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bastion-mini:hover { background: var(--bg-hover); }
-
-/* ---------- 内嵌堡垒机浏览器(整合到左侧会话面板 #session-tree 下方) ---------- */
-.bastion-inline {
-  flex-shrink: 0;
-  height: 340px;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel-2, #1a1b1e);
-  min-height: 0;
-}
-.bastion-inline-bar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.bastion-inline-title { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: 0.5px; flex-shrink: 0; }
-.bastion-inline-current {
-  flex-shrink: 0;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.bastion-inline-body { flex: 1; position: relative; min-height: 0; display: flex; }
-.bastion-inline-body .bastion-webview { flex: 1; min-width: 0; }
-.bastion-inline-empty {
-  position: absolute; inset: 8px; border: 1px dashed var(--border); border-radius: 6px;
-  background: var(--bg-panel-2); color: var(--text-dim);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  font-size: 13px; z-index: 10; text-align: center; padding: 16px; line-height: 1.8; gap: 6px;
-}
-.bastion-inline-empty .be-title { font-size: 15px; color: var(--text); }
-.bastion-inline-empty .be-sub { font-size: 12px; color: var(--text-dim); }
 .jms-assets { margin-top: 10px; max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .jms-asset {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px;
