@@ -1776,7 +1776,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
     }
     closedBroadcast.delete(sessionId); // 重连:清掉上次断开的 closed 标记,新连接可再次广播
-    sshSessions.set(sessionId, { conn, stream, encoding: enc });
+    sshSessions.set(sessionId, { conn, stream, encoding: enc, sessionUser: String(finalOpts.username || '').split('@').pop() });
     // 会话日志:设置里开着(默认开)就为这次连接建日志文件
     if (finalOpts.sessionLog !== false) {
       startSessionLog(sessionId, {
@@ -2013,6 +2013,49 @@ function resolveDownloadResume(sessionId, localPath) {
 function recordDownloadPartial(sessionId, localPath) {
   try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
 }
+
+// 探测 SFTP 默认家目录:
+//   规则(用户要求):优先当前用户家目录;家目录在 SFTP 里不可访问(堡垒机 SFTP 被 chroot)
+//   或不存在时用 /tmp。显示路径与上传路径都用这里的结果,保证一致。
+//   实现:
+//     1. exec 通道执行 pwd / $HOME 拿 shell 视角的真实家目录(如 /root)——SFTP 是
+//        chroot 的,用 SFTP stat 看不到 /root,必须用 exec。
+//     2. 用 SFTP readdir 验证该家目录可访问;能列出 → 用它。
+//     3. 不能(SFTP chroot 看不到家目录,如 KoKo 网关 SFTP 根 = 系统 /tmp)→ 回退 /tmp。
+ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
+  try {
+    const s = sshSessions.get(sessionId);
+    if (!s || !s.conn) return { ok: false, error: '连接不存在' };
+    // 1. exec 拿真实家目录
+    const home = await new Promise((res) => {
+      try {
+        s.conn.exec('pwd', (err, stream) => {
+          if (err || !stream) return res(null);
+          let data = '';
+          stream.on('data', (d) => { data += d; });
+          stream.on('close', () => {
+            const p = String(data).trim().split('\n').pop() || '';
+            res(/^\//.test(p) ? p : null);
+          });
+          stream.stderr.on('data', () => {});
+          setTimeout(() => res(null), 8000); // 超时兜底
+        });
+      } catch { res(null); }
+    });
+    // 2. 用 SFTP 验证家目录可访问(readdir 能列出才算可用;chroot 下 /root 不可访问)
+    if (home) {
+      const sftp = await getSftp(sessionId).catch(() => null);
+      if (sftp) {
+        const ok = await new Promise((res2) => sftp.readdir(home, (e) => res2(!e)));
+        if (ok) return { ok: true, home };
+      }
+    }
+    // 3. 家目录不可访问/拿不到 → 回退 /tmp(SFTP 可访问的常用目录)
+    return { ok: true, home: '/tmp' };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 // 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
 ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {

@@ -4920,6 +4920,8 @@ function makeBastionAssetItem(a) {
     items.push({ separator: true });
     items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
     items.push({ separator: true });
+    items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    items.push({ separator: true });
     items.push({ label: '🔄 刷新资产', action: () => triggerBastionFullFetch() });
     showCtxMenu(e.clientX, e.clientY, items);
   });
@@ -6781,7 +6783,10 @@ async function loadSftpList() {
     els.sftpList.innerHTML = `<div class="sftp-empty">读取失败: ${res.error}</div>`;
     return;
   }
-  state.sftp.path = res.cwd || state.sftp.path; // 用 realpath 解析出的绝对路径替换路径栏
+  // 用 realpath 解析出的绝对路径替换路径栏 —— 仅当请求的是相对路径('.')时。
+  // 请求绝对路径(如家目录探测结果 /root)时保留请求路径:某些堡垒机网关(SFTP 子系统
+  // chroot)会把任意路径的 realpath 返回 '/'或默认目录,覆盖掉会显示错、上传也走错目录。
+  state.sftp.path = (reqPath === '.' || reqPath === '') ? (res.cwd || state.sftp.path) : (reqPath || state.sftp.path);
   // 第一次拿到登录目录(绝对路径)→ 作为 shell 当前目录的初始值(cd 跟踪的起点)
   const t0 = state.tabs.get(state.sftp.sessionId);
   if (t0 && res.cwd && !t0.shellCwd) t0.shellCwd = res.cwd;
@@ -6810,24 +6815,25 @@ function renderSftpPath(path) {
     root.addEventListener('click', () => { if (state.sftp.path !== '/') { state.sftp.path = '/'; loadSftpList(); } });
     el.appendChild(root);
   } else {
-    const root = document.createElement('button');
-    root.className = 'sftp-path-seg root';
-    root.textContent = '/';
-    root.title = '跳转到根目录';
-    root.addEventListener('click', () => { if (state.sftp.path !== '/') { state.sftp.path = '/'; loadSftpList(); } });
-    el.appendChild(root);
+    // 面包屑:根段显示 "/" 且不带前导分隔符,之后每段前加一个 "/" 分隔符。
+    // 这样 /root 视觉上 = [根 /][root](分隔符 "/" 是段之间的路径拼接,
+    // 不再额外渲染成 //root —— 根段自身就是路径的开头)。
+    let first = true;
     for (const p of parts) {
-      const sep = document.createElement('span');
-      sep.className = 'sftp-path-sep';
-      sep.textContent = '/';
-      el.appendChild(sep);
+      if (!first) {
+        const sep = document.createElement('span');
+        sep.className = 'sftp-path-sep';
+        sep.textContent = '/';
+        el.appendChild(sep);
+      }
       const btn = document.createElement('button');
       btn.className = 'sftp-path-seg';
-      btn.textContent = p.name;
+      btn.textContent = (first ? '/' : '') + p.name; // 首段前带根 "/",后续段由分隔符拼接
       btn.title = `跳转到 ${p.path}`;
       const target = p.path;
       btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
       el.appendChild(btn);
+      first = false;
     }
     // 当前完整路径高亮最后一段
     const last = el.querySelector('.sftp-path-seg:last-of-type');
@@ -7069,14 +7075,28 @@ function toggleSftpPanel() {
     active.sftpOpen = true;
     state.sftp.visible = true;
     state.sftp.sessionId = active.sessionId;
-    // 优先定位到终端当前目录(跟踪 cd 的结果,用户诉求:SFTP 打开 = 终端所在目录);
-    // 终端目录未知时,退回该标签上次浏览的目录/默认
-    state.sftp.path = active.shellCwd || (active.sftpPath && active.sftpPath !== '.' ? active.sftpPath : '.');
+    // 优先定位到终端当前目录(跟踪 cd 的结果);终端目录未知时,探测默认家目录
+    // (规则:当前用户家目录优先,无家目录则 /tmp),再退回上次浏览/默认
+    const sid = active.sessionId;
     state.sftp.selected = null;
     els.sftpPanel.classList.remove('hidden');
     els.dividerH.classList.remove('hidden');
-    setSftpConnLabel(active.sessionId);
-    loadSftpList();
+    setSftpConnLabel(sid);
+    if (active.shellCwd) {
+      state.sftp.path = active.shellCwd;
+      loadSftpList();
+    } else if (active.sftpPath && active.sftpPath !== '.') {
+      state.sftp.path = active.sftpPath;
+      loadSftpList();
+    } else {
+      // 探测默认家目录(主进程:realpath '.' 非根 → 用它;否则找 /root、/home/<user>,都没有 → /tmp)
+      state.sftp.path = '.';
+      window.api.sftpHome(sid).then((r) => {
+        if (state.sftp.sessionId !== sid || !state.sftp.visible) return; // 已切换/关闭
+        if (r && r.ok && r.home) state.sftp.path = r.home;
+        loadSftpList();
+      }).catch(() => loadSftpList());
+    }
   }
   refitAll(); // 终端区域高度变了,重新适配
   syncPanelButtons();

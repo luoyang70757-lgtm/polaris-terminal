@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- SFTP 文件传输 ----
   sftpList: (sessionId, remotePath) => ipcRenderer.invoke('sftp:list', { sessionId, remotePath }),
+  sftpHome: (sessionId) => ipcRenderer.invoke('sftp:home', { sessionId }),
   sftpMkdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
   sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
   sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),

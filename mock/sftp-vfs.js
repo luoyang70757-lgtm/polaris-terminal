@@ -36,6 +36,8 @@ function ensureSeed() {
   w('config.yaml', 'server:\n  host: 0.0.0.0\n  port: 8080\nmode: mock\n');
   w('src/main.c', 'int main() { return 0; }\n');
   w('src/notes.md', 'lesson 4: SFTP file panel\n');
+  // /tmp 目录:真实系统必备;SFTP 家目录探测"无家目录 → /tmp"时要能列出
+  fs.mkdirSync(path.join(SEED_DIR, 'tmp'), { recursive: true });
 }
 
 function makeTree() {
