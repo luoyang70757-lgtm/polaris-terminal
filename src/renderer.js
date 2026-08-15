@@ -216,6 +216,9 @@ const els = {
   bastionZoomOut: $('bastion-zoom-out'),
   bastionZoomLabel: $('bastion-zoom-label'),
   bastionWebview: document.getElementById('bastion-webview'),
+  bastionTabs: $('bastion-tabs'),
+  bastionTabsList: $('bastion-tabs-list'),
+  bastionTabAdd: $('bastion-tab-add'),
   // 锁定覆盖层(临时锁定)
   lockOverlay: $('lock-overlay'),
   loPw: $('lo-pw'),
@@ -3585,7 +3588,7 @@ async function jmsPersistConfig() {
   const servers = await Promise.all(state.jmsServers.map(async (s) => {
     let enc = s.password;
     try { if (enc && !enc.startsWith('enc:v1:')) enc = (await window.api.cryptoEncrypt(enc)).value || enc; } catch { /* 加密失败保留原值 */ }
-    return { id: s.id, name: s.name, baseUrl: s.baseUrl, sshHost: s.sshHost, sshPort: s.sshPort, account: s.account, password: enc };
+    return { id: s.id, name: s.name, baseUrl: s.baseUrl, sshHost: s.sshHost, sshPort: s.sshPort, account: s.account, password: enc, loggedOut: !!s.loggedOut };
   }));
   state.settings.jmsServers = servers;
   saveSettings();
@@ -3746,6 +3749,7 @@ async function jmsDoLogin() {
       return;
     }
     server.token = r.token; server.user = r.user;
+    server.loggedOut = false; // 手动登录成功 → 恢复自动登录
     els.jmsOtpWrap.style.display = 'none';
     els.jmsLoginBtn.disabled = false;
     els.jmsLoginBtn.textContent = '连接 JumpServer';
@@ -3823,9 +3827,11 @@ function jmsLogout() {
   const s = jmsActive();
   if (!s) return;
   s.token = null; s.user = null; s.assets = [];
+  s.loggedOut = true; // 标记已退出:重启后不自动重登
   jmsPersistConfig();
   jmsRenderServerSelect();
   renderSessionList(els.inputSessionSearch.value);
+  jmsWebLogoutServer(s); // 同步退出右侧 webview 的网页登录态
 }
 
 // 连接资产(经 KoKo 网关):用户名 = JMS用户@协议@账号@资产地址
@@ -4085,9 +4091,45 @@ async function jmsRefreshServer(serverId) {
 function jmsLogoutServer(serverId) {
   const s = jmsFind(serverId);
   if (!s) return;
+  // 退出登录:断开该服务器所有已连接会话 + 清登录态 + 标记"已退出"
+  // (标记持久化:否则 app 重启后 jmsRestore 会用保存的密码静默重登,
+  //  表现就是"退出登录后还是存在"。配置保留,想再用需手动重新登录)
+  for (const t of state.tabs.values()) {
+    if (t.session && t.session.jmsKey && String(t.session.jmsKey).startsWith(serverId + '|') &&
+        (t.status === 'connected' || t.status === 'connecting')) {
+      closeTab(t.sessionId);
+    }
+  }
   s.token = null; s.user = null; s.assets = [];
+  s.loggedOut = true; // 已退出:jmsRestore 跳过,不再自动重登
   jmsPersistConfig();
   renderSessionList(els.inputSessionSearch.value);
+  // 同步退出右侧 webview 里该堡垒机的网页登录态(否则左侧退出了,右侧浏览器标签还登录着)
+  jmsWebLogoutServer(s);
+}
+
+// 让右侧 webview 退出指定 JumpServer 的网页登录:
+//   1. webview 若正显示该站点 → 导航到 JMS 登出端点(/core/auth/logout/)
+//   2. 清除该域名的 cookie(双保险;即使退出端点没跳到,登录态也被清掉)
+async function jmsWebLogoutServer(s) {
+  try {
+    const wv = els.bastionWebview;
+    if (!wv || !wv.executeJavaScript) return;
+    const base = String(s.baseUrl || '').replace(/\/+$/, '');
+    if (!base) return;
+    const cur = jmsWebUrl();
+    const curOrigin = (() => { try { return new URL(cur).origin; } catch { return ''; } })();
+    const baseOrigin = (() => { try { return new URL(base).origin; } catch { return ''; } })();
+    // webview 正显示该堡垒机站点 → 先导航到登出页(带完整清理)
+    if (curOrigin === baseOrigin) {
+      try { wv.src = base + '/core/auth/logout/'; } catch { /* ignore */ }
+    }
+    // 清该域 cookie(无论 webview 是否显示它,都清掉登录态)
+    if (baseOrigin) {
+      try { await window.api.jmsWebLogout(baseOrigin); } catch { /* ignore */ }
+    }
+    dlog('JMS', `已同步退出 webview 登录: ${baseOrigin}`);
+  } catch { /* ignore */ }
 }
 
 // 启动时恢复:从设置加载服务器配置,对已登录过的服务器静默重登(MFA 账号则等用户手动登录)
@@ -4104,12 +4146,14 @@ async function jmsRestore() {
   for (const c of saved) {
     let pw = c.password;
     try { if (pw && pw.startsWith('enc:v1:')) pw = (await window.api.cryptoDecrypt(pw)).value || ''; } catch { /* 解密失败保留原值 */ }
-    const s = { id: c.id || `jms-server-${++state.jmsSeq}`, name: c.name || 'JumpServer', baseUrl: c.baseUrl, sshHost: c.sshHost, sshPort: c.sshPort || 2222, account: c.account, password: pw, token: null, user: null, assets: [] };
+    const s = { id: c.id || `jms-server-${++state.jmsSeq}`, name: c.name || 'JumpServer', baseUrl: c.baseUrl, sshHost: c.sshHost, sshPort: c.sshPort || 2222, account: c.account, password: pw, token: null, user: null, assets: [], loggedOut: !!c.loggedOut };
     state.jmsServers.push(s);
     state.jmsActiveId = state.jmsActiveId || s.id;
   }
   jmsRenderServerSelect();
   for (const s of state.jmsServers) {
+    // 用户主动退出过登录的服务器:不自动重登(配置保留,需手动登录)
+    if (s.loggedOut) continue;
     if (!s.password) continue;
     try {
       const r = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
@@ -4139,9 +4183,14 @@ function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
   els.bastionMini.classList.add('hidden');
   applyBastionDefaultWidth();
+  bastionRenderTabs(); // 渲染堡垒机标签栏
   bastionRenderServerSelect();
   const saved = state.settings.bastionUrl || '';
   if (saved) els.bastionUrl.value = saved;
+  // 有已保存堡垒机且无激活标签 → 自动选第一个(像主机连接一样开箱即用)
+  if (!bastionActiveTabId && bastionServers().length) {
+    bastionSwitchTab(bastionServers()[0].id);
+  }
   // 键盘焦点:webview 已加载 → 焦点给 webview(否则点击 guest 页面时,宿主焦点停在地址框,
   // 按键会被地址框吞掉、输入框"打不进去";见 bastion-focus-fix)。空 webview 才聚焦地址框让用户输地址。
   if (!els.bastionWebview.src && saved) loadBastion(saved);
@@ -4176,6 +4225,76 @@ function updateBastionMini() {
 
 // ---- 堡垒机(H3C)配置:保存/管理常用 Web 地址 ----
 function bastionServers() { return state.settings.bastionServers || (state.settings.bastionServers = []); }
+
+// 当前激活的堡垒机标签 id(与 bastionServers 的 id 对应;null=手动地址模式)
+let bastionActiveTabId = null;
+
+// 渲染堡垒机标签栏:每个已保存堡垒机一个标签
+function bastionRenderTabs() {
+  const list = els.bastionTabsList;
+  if (!list) return;
+  list.innerHTML = '';
+  for (const s of bastionServers()) {
+    const tab = document.createElement('div');
+    tab.className = 'bastion-tab' + (s.id === bastionActiveTabId ? ' active' : '');
+    tab.title = s.url || s.name;
+    const name = document.createElement('span');
+    name.textContent = s.name || s.url || '堡垒机';
+    tab.appendChild(name);
+    // 关闭按钮:移除该堡垒机连接(同时清它的登录态)
+    const close = document.createElement('span');
+    close.className = 'bt-close';
+    close.textContent = '×';
+    close.title = '关闭此堡垒机(清除其登录)';
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      bastionRemoveTab(s.id);
+    });
+    tab.appendChild(close);
+    // 点标签:切换加载该堡垒机
+    tab.addEventListener('click', () => bastionSwitchTab(s.id));
+    list.appendChild(tab);
+  }
+  if (!bastionServers().length) {
+    const hint = document.createElement('span');
+    hint.className = 'bastion-tab-hint';
+    hint.textContent = '＋ 添加堡垒机站点';
+    list.appendChild(hint);
+  }
+}
+
+// 切换到指定堡垒机标签:填地址并加载(用保存的凭据自动登录)
+function bastionSwitchTab(id) {
+  const s = bastionServers().find((x) => x.id === id);
+  if (!s) return;
+  bastionActiveTabId = id;
+  els.bastionUrl.value = s.url || '';
+  if (s.url) loadBastion(s.url);
+  bastionPendingFill = (s.account || s.password) ? s : null; // 加载后自动填充账号密码
+  bastionRenderTabs();
+}
+
+// 移除一个堡垒机连接:清除其登录态(cookie)+ 关闭标签;若它是当前标签,回退到第一个
+async function bastionRemoveTab(id) {
+  const s = bastionServers().find((x) => x.id === id);
+  bastionServers().splice(bastionServers().findIndex((x) => x.id === id), 1);
+  saveSettings();
+  // 清除该堡垒机站点的登录态
+  if (s && s.url) {
+    try {
+      const origin = (() => { try { return new URL(s.url).origin; } catch { return ''; } })();
+      if (origin) await window.api.jmsWebLogout(origin);
+    } catch { /* ignore */ }
+  }
+  if (bastionActiveTabId === id) {
+    bastionActiveTabId = bastionServers().length ? bastionServers()[0].id : null;
+    if (bastionActiveTabId) bastionSwitchTab(bastionActiveTabId);
+    else { els.bastionWebview.src = 'about:blank'; els.bastionCurrent.textContent = ''; }
+  }
+  bastionRenderTabs();
+  bastionRenderServerSelect();
+  updateBastionMini();
+}
 
 // 渲染地址栏的服务器下拉
 function bastionRenderServerSelect() {
@@ -4300,6 +4419,7 @@ async function bastionCfgAdd() {
   saveSettings();
   bastionRenderCfgList();
   bastionRenderServerSelect();
+  bastionRenderTabs(); // 标签栏同步新堡垒机
   showBastionCfgMsg(`✅ 已保存「${name || url}」${account ? '(含账号密码)' : ''}`);
 }
 function bastionCfgDelete(id) {
@@ -4324,6 +4444,11 @@ function bastionCfgDelete(id) {
     state.bastionDirCollapsed.clear();
     state.bastionAllFetched = false;
     renderSessionList(els.inputSessionSearch.value);
+  }
+  bastionRenderTabs(); // 标签栏同步移除
+  if (bastionActiveTabId === s.id) {
+    bastionActiveTabId = bastionServers().length ? bastionServers()[0].id : null;
+    if (bastionActiveTabId) bastionSwitchTab(bastionActiveTabId);
   }
 }
 function showBastionCfgMsg(text) {
@@ -5195,6 +5320,9 @@ async function handleAccessClientUrl(acUrl, openSftp, devId) {
 function initBastionWebview() {
   const wv = els.bastionWebview;
   if (!wv) return;
+  // Electron webview 内部 WebContents 每次导航可能重新 attach,did-stop-loading 等
+  // 事件监听会在底层累积(触发 MaxListenersExceededWarning,良性但刷屏)。放宽阈值消除警告。
+  try { if (wv.setMaxListeners) wv.setMaxListeners(50); } catch { /* ignore */ }
   wv.addEventListener('will-navigate', (e) => {
     if (e.url && e.url.startsWith('accessclient://')) { e.preventDefault(); handleAccessClientUrl(e.url); }
   });
@@ -7809,6 +7937,8 @@ els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
+// ➕ 添加堡垒机标签:打开配置弹窗,保存后自动生成标签
+els.bastionTabAdd.addEventListener('click', () => { openBastionCfg(); els.bastionCfgUrl.focus(); });
 els.bastionGo.addEventListener('click', () => loadBastion(els.bastionUrl.value.trim()));
 els.bastionMin.addEventListener('click', minimizeBastion);
 els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });

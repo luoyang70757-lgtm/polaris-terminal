@@ -105,6 +105,7 @@ contextBridge.exposeInMainWorld('api', {
   jmsAssets: (cfg) => ipcRenderer.invoke('jms:assets', cfg),
   jmsPersist: (servers) => ipcRenderer.invoke('jms:persist', servers),
   jmsRestore: () => ipcRenderer.invoke('jms:restore'),
+  jmsWebLogout: (origin) => ipcRenderer.invoke('jms:webLogout', { origin }),
   cryptoEncrypt: (text) => ipcRenderer.invoke('crypto:encrypt', text),
   cryptoDecrypt: (text) => ipcRenderer.invoke('crypto:decrypt', text),
   // H3C 堡垒机:解码 accessclient:// token

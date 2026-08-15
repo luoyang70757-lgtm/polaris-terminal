@@ -624,6 +624,21 @@ ipcMain.handle('jms:restore', async () => {
   }
 });
 
+// 清除指定 origin 的登录态 cookie(左侧退出登录时,同步退出右侧 webview 里的堡垒机网页)
+ipcMain.handle('jms:webLogout', async (_e, { origin }) => {
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    const cookies = await session.defaultSession.cookies.get({ domain: host });
+    for (const c of cookies) {
+      try { await session.defaultSession.cookies.remove(url.origin + c.path, c.name); } catch { /* 逐个清,失败跳过 */ }
+    }
+    return { ok: true, removed: cookies.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // ---------- IPC:H3C 堡垒机(accessclient:// token 解码) ----------
 // H3C Shterm 堡垒机用 accessclient://<base64(zlib(json))> 唤起外部工具,
 // 内含目标主机/账号/一次性密码。这里在主子进程解码(zlib 只在 Node 有)。
@@ -2651,6 +2666,12 @@ app.on('before-quit', () => {
   finalizeAllRecordings(); // 退出前把没停的录制都收尾(否则文件成孤儿)
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
   persistDb();             // 再确保数据库落盘
+  // 退出前清除堡垒机浏览器的登录态/记录(cookie)——用户要求:关闭 app 后清除浏览器记录。
+  // 异步执行,不阻塞退出;成功与否都放行。
+  try {
+    const bastionSession = session.fromPartition('persist:bastion');
+    bastionSession.clearStorageData().catch(() => {});
+  } catch { /* ignore */ }
   // 收尾全部完成后才关库:close 之后 sessionStore 的所有方法(如 addRecording)都会抛错
   if (sessionStore) { try { sessionStore.close(); } catch { /* ignore */ } }
   sessionStore = null;

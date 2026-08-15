@@ -199,6 +199,11 @@
         <div class="bastion-col">
         <!-- 堡垒机浏览器面板(可调宽/调高) -->
         <section id="bastion-panel" class="bastion-panel">
+        <!-- 堡垒机标签栏:每个已保存堡垒机一个标签,点击切换(各自保持登录态);➕ 新建 -->
+        <div id="bastion-tabs" class="bastion-tabs">
+          <div id="bastion-tabs-list" class="bastion-tabs-list"></div>
+          <button id="bastion-tab-add" class="btn-mini bastion-tab-add" title="添加堡垒机站点">＋</button>
+        </div>
         <div class="bastion-bar">
           <span class="bastion-title dim" title="堡垒机浏览器">🌐 堡垒机</span>
           <select id="bastion-server-select" class="select bastion-server-select" title="已保存的堡垒机,选一个加载"></select>
@@ -231,7 +236,7 @@
               <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
             </div>
             <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
-            <webview id="bastion-webview" class="bastion-webview"></webview>
+            <webview id="bastion-webview" class="bastion-webview" partition="persist:bastion"></webview>
           </div>
         </div>
         </section>
