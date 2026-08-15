@@ -27,10 +27,12 @@ Polaris（北极星）— Electron SSH/SFTP 终端。用户开发主线：**参�
 16. H3C 同步：SFTP 菜单入口加回 + 共享功能（家目录/路径）验证
 17. 编译安装正式版 `/Applications/Polaris.app`（npm run dist，未签名）
 18. （当前）克隆到别处 + 保留会话上下文（多 agent）→ 本文件
+19. **堡垒机浏览器整合进左侧会话面板**：把右侧独立堡垒机面板的功能合并到左侧会话列表下方的堡垒机分组区（用户选「左侧下方内嵌」+「保留 H3C」）。删除右侧面板（地址栏/下拉/标签栏/缩放等死元素），webview 内嵌 `#session-tree` 下方；双击堡垒机连接/资产打开内嵌浏览器；`accessclient://` 拦截与资产捕获保持不变
 
 ## 已完成功能（代码已提交）
 
 - 堡垒机：JumpServer API（登录/资产/复合用户名 KoKo 网关）+ H3C Web（accessclient:// token 解码、自动登录、资产捕获）
+- 堡垒机浏览器内嵌左侧：右侧面板删除，webview 整合进 `#session-tree` 下方（`#bastion-slot.bastion-inline`）；堡垒机连接 CRUD（增删改查/type=jms|h3c）、双击资产直连 SSH（`bastionConnectAsset`，未登录自动用保存账号登录）
 - SFTP：面板（浏览/上传下载断点续传/编辑/重命名/删除/多选）、按标签独立状态、连接名下拉、真实目标主机区分、路径面包屑、文件右键菜单、默认家目录探测
 - 稳定性：右键菜单防刷屏（3 层）、BODY 焦点兜底（Cmd+A/普通键不吞）、堡垒机轮询优化、上传后刷新（path 崩溃修复）
 - 全量日志系统（lib/app-log.js + 调试面板下载）
@@ -46,7 +48,8 @@ Polaris（北极星）— Electron SSH/SFTP 终端。用户开发主线：**参�
 5. **webview 焦点**：`bastionFocusCheck` 只在用户 3s 内操作过 guest 且宿主无更近点击时 `wv.focus()`；菜单打开时暂停——否则 webview 抢焦点触发 window blur，菜单闪关、点 ✕ 无效"无法退回"
 6. **右键菜单防抖**：打开后 250ms 内 click 一律忽略（含菜单项），防 macOS 右键残留 click 误触
 7. **JumpServer SFTP chroot**：由平台协议 `setting.sftp_home` 控制（`PATCH /api/v1/assets/protocol-settings/{id}/`，内置平台不可整体 PUT，403 Internal platform）；Linux 平台已改 /root
-8. **会话上下文**：`.polaris-data/`、`*.har`、probe 脚本、含真实凭据的 verify 脚本不入库（.gitignore）
+8. **堡垒机浏览器内嵌左侧**：webview 从右侧面板移入左侧 `#session-tree` 下方（固定 340px 高、flex 纵向）；`accessclient://` 拦截和 `pollBastionAssets` 只依赖 webview 元素本身（身份不变），移动后无需改逻辑。删除的右侧元素（地址栏/下拉/标签栏/缩放等）在 renderer 里全部用 `els.X &&` 守卫或 `if (els.X)` 早退，防 null 崩溃
+9. **会话上下文**：`.polaris-data/`、`*.har`、probe 脚本、含真实凭据的 verify 脚本不入库（.gitignore）
 
 ## 运行与调试
 
@@ -67,4 +70,4 @@ node verify-<功能>.js
 - 正式版未签名（Gatekeeper 需右键打开或系统设置放行）；正式版 app.asar 需 `npm run dist` 重新编译才含最新代码
 - H3C 资产 SFTP 根目录取决于 H3C 网关配置（非 JumpServer sftp_home），家目录探测会自动回退
 - SFTP 上传大目录/断点续传已实现但未经大批量压力测试
-- 当前未提交改动：本次上下文文件（AGENTS.md/CONTEXT.md）及可能的 verify 脚本，需按需提交
+- 堡垒机浏览器现为左侧内嵌（窄面板 ~300px），H3C 页面靠横向滚动查看；`bastionFitToWidth` 因 `bastionPanel` 已删而自动早退（不再自动缩放）

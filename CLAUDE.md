@@ -8,7 +8,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 ## 本文件要点（快速须知）
 
 - **项目**：Electron 43 + xterm.js + ssh2 + SQLite 的 SSH/SFTP 终端（参考 Chaterm 功能开发）
-- **架构**：单文件主进程 `main.js`（~2600 行）+ 渲染进程 `src/renderer.js`（~8700 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
+- **架构**：单文件主进程 `main.js`（~2600 行）+ 渲染进程 `src/renderer.js`（~9300 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 - **运行 dev**：`POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu`（自动拉起 mock 服务器）
 - **编译正式版**：`npm run dist` → `release/mac/Polaris.app`（未签名，Gatekeeper 需右键打开）
 - **数据目录**：`POLARIS_LOCK_DIR` 指定（默认 `~/.jms-terminal`）；开发用 `.polaris-data/`（**已 gitignore，勿提交**）
@@ -28,4 +28,4 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）：SFTP 家目录探测、面包屑修复、堡垒机（JMS/H3C）对接、全量日志、右键菜单/焦点/刷新稳定性修复均已完成并提交；待办见其末尾章节。
+见 `CONTEXT.md`（已 @import）：SFTP 家目录探测、面包屑修复、堡垒机（JMS/H3C）对接、全量日志、右键菜单/焦点/刷新稳定性修复均已完成并提交；**堡垒机浏览器已整合进左侧会话面板**（右侧面板删除，webview 内嵌 `#session-tree` 下方）。回归测试 `node verify-bastion-inline.js`（11 项）。待办见 `CONTEXT.md` 末尾章节。
