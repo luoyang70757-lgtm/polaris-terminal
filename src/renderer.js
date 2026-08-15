@@ -4387,17 +4387,16 @@ function bastionSelectableServers() {
 function bastionRenderServerSelect() {
   const sel = els.bastionServerSelect;
   sel.innerHTML = '';
+  // 手动输入地址放最前(默认选中):避免"打开"误用第一个已保存堡垒机,而忽略用户手输的地址
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = '(手动输入地址)';
+  sel.appendChild(empty);
   for (const s of bastionSelectableServers()) {
     const opt = document.createElement('option');
     opt.value = s.id;
     opt.textContent = s.name;
     sel.appendChild(opt);
-  }
-  if (bastionSelectableServers().length) {
-    const empty = document.createElement('option');
-    empty.value = '';
-    empty.textContent = '(手动输入地址)';
-    sel.appendChild(empty);
   }
 }
 
@@ -8366,7 +8365,7 @@ els.bastionCfgSelect.addEventListener('change', () => {
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 // ➕ 添加堡垒机标签:打开配置弹窗,保存后自动生成标签
 els.bastionTabAdd.addEventListener('click', () => { openBastionCfg(); els.bastionCfgUrl.focus(); });
-els.bastionGo.addEventListener('click', () => loadBastion(els.bastionUrl.value.trim()));
+els.bastionGo.addEventListener('click', bastionLoadSelected); // 打开:优先用下拉选中的堡垒机(带账号密码自动填充),否则加载地址栏输入的地址
 els.bastionMin.addEventListener('click', minimizeBastion);
 els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });
 els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
