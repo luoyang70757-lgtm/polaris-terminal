@@ -8282,15 +8282,39 @@ els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中
 els.btnLock.addEventListener('click', requestLock); // 锁定
 els.bastionMini.addEventListener('click', restoreBastion);
 els.bastionCfg.addEventListener('click', openBastionCfg);
-// 🧹 清除历史:清空堡垒机浏览器全部记录(浏览历史/登录态/表单),webview 回到空白页
+// 🧹 清除历史:清空堡垒机浏览器全部记录(浏览历史/登录态/表单/捕获资产),webview 回到空白页
 els.bastionClear.addEventListener('click', async () => {
-  if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单与缓存。所有堡垒机站点需重新登录。')) return;
+  if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单、缓存与已捕获的资产。所有堡垒机站点需重新登录。')) return;
   try {
-    await window.api.bastionClearAll(); // 清 persist:bastion partition 全部存储
+    await window.api.bastionClearAll(); // 清 persist:bastion partition + SQLite 捕获资产
     // webview 回到空白页
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
     els.bastionUrl.value = '';
+    // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
+    state.settings.bastionUrl = '';
+    // 清掉已保存连接的登录态(token/资产缓存),但保留连接配置(名称/地址/账号/密码)
+    for (const s of bastionServers()) {
+      s.token = null;
+      s.user = null;
+      s.assets = null;
+      s.assetsExpanded = false;
+      s.assetsLoading = false;
+      s.assetsLoadFailed = false;
+    }
+    saveSettings();
+    // 清内存里的堡垒机资产与折叠状态,重绘会话列表
+    state.bastionAssets = [];
+    state.bastionTree = [];
+    state.bastionFavSet = new Set();
+    state.bastionFavTree = null;
+    state.bastionDirCollapsed.clear();
+    state.bastionDirsInit = false;
+    state.bastionGrouping = false;
+    state.bastionUrl = '';
+    state.bastionAllFetched = false;
+    state.bastionLastAutoFetch = 0;
+    renderSessionList(els.inputSessionSearch.value);
     setStatus('堡垒机浏览器历史已清除,所有站点需重新登录', 'var(--green)');
   } catch (e) {
     setStatus('清除失败: ' + (e && e.message), 'var(--red)');

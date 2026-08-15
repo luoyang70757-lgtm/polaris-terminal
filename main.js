@@ -647,6 +647,8 @@ ipcMain.handle('bastion:clearAll', async () => {
     const bs = session.fromPartition('persist:bastion');
     await bs.clearStorageData(); // cookie + localStorage + cache 全清
     await bs.clearCache();
+    sessionStore.deleteAllBastionAssets(); // 同步清 SQLite 捕获的堡垒机资产(否则重启又恢复)
+    schedulePersist();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
