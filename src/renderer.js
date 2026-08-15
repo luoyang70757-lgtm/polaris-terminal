@@ -4050,24 +4050,36 @@ async function batchSavedAssetConnect(s, assets) {
 }
 
 function renderJmsInSessionList(container, f) {
-  const logged = state.jmsServers.filter((s) => s.token && s.user);
-  if (!logged.length) return;
+  // 显示全部已配置的 JMS 服务器:未登录的也显示(标记「未登录」,右键可登录/编辑/删除)
+  const servers = state.jmsServers.filter((s) => s.baseUrl);
+  if (!servers.length) return;
   const kw = (f || '').toLowerCase();
-  for (const s of logged) {
+  for (const s of servers) {
+    const loggedIn = !!(s.token && s.user);
+    const allAssets = s.assets || [];
     // 搜索:按 名称/IP/账号 过滤 JMS 资产;空搜索 = 全显示;空格分隔多关键词
-    const list = s.assets.filter((a) => bastionAssetMatch(a, kw));
-    if (!list.length) continue;
+    const list = allAssets.filter((a) => bastionAssetMatch(a, kw));
+    const nameHit = !kw || (s.name || '').toLowerCase().includes(kw);
+    if (kw && !nameHit && (!loggedIn || !list.length)) continue;
     const collapsed = state.collapsedJms.has(s.id);
-    container.appendChild(makeSectionHead(`🛡 ${s.name}(${list.length}${kw ? '/' + s.assets.length : ''})`, collapsed,
+    const label = loggedIn ? `🛡 ${s.name}(${list.length}${kw ? '/' + allAssets.length : ''})` : `🛡 ${s.name} ·未登录`;
+    const menu = loggedIn
+      ? [
+          { label: '🔗 批量连接全部', action: () => batchJmsConnect(s, list) },
+          { label: '✏️ 编辑服务器', action: () => jmsEditServer(s.id) },
+          { label: '🔄 刷新资产', action: () => jmsRefreshServer(s.id) },
+          { label: '🗑 删除服务器', danger: true, action: () => jmsDeleteServerCompletely(s.id) },
+          { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
+        ]
+      : [
+          { label: '🔗 登录(拉取资产)', action: () => jmsRefreshServer(s.id) },
+          { label: '✏️ 编辑服务器', action: () => jmsEditServer(s.id) },
+          { label: '🗑 删除服务器', danger: true, action: () => jmsDeleteServerCompletely(s.id) },
+        ];
+    container.appendChild(makeSectionHead(label, collapsed,
       () => { collapsed ? state.collapsedJms.delete(s.id) : state.collapsedJms.add(s.id); renderSessionList(els.inputSessionSearch.value); },
-      [
-        { label: '🔗 批量连接全部', action: () => batchJmsConnect(s, list) },
-        { label: '✏️ 编辑服务器', action: () => jmsEditServer(s.id) },
-        { label: '🔄 刷新资产', action: () => jmsRefreshServer(s.id) },
-        { label: '🗑 删除服务器', danger: true, action: () => jmsDeleteServerCompletely(s.id) },
-        { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
-      ]));
-    if (collapsed) continue;
+      menu));
+    if (collapsed || !loggedIn || !list.length) continue;
     if (kw) {
       // 搜索:平铺匹配项
       for (const a of list) container.appendChild(makeJmsAssetRow(s, a));
