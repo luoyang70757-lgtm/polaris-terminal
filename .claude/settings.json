@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill*)",
+      "Bash(node verify-*)",
+      "Bash(POLARIS_LOCK_DIR=*)",
+      "Bash(npm run dist)",
+      "Bash(npm run dev)"
+    ]
+  }
+}
