@@ -4623,8 +4623,11 @@ function injectBastionAssetHook(requireStable) {
       // focus/focusin 事件被 Chromium 抑制、不发;pointerdown/mousedown 正常)。宿主用它
       // 判断该把键盘焦点补到 webview 元素上,否则按键会被宿主当前焦点(如地址框)吞掉。
       window.__bastionFocusTs = 0;
+      // 只记录"用户真实交互"(isTrusted=true):脚本/SPA 自动请求触发的模拟
+      // pointerdown/mousedown(isTrusted=false)会持续刷新时间戳 → 宿主误以为用户
+      // 一直在操作 guest → 每 500ms 抢焦点(假 blur/焦点被吞)。真实用户点击才更新。
       ['pointerdown', 'mousedown'].forEach(function (ev) {
-        document.addEventListener(ev, function () { window.__bastionFocusTs = Date.now(); }, true);
+        document.addEventListener(ev, function (e) { if (e && e.isTrusted) window.__bastionFocusTs = Date.now(); }, true);
       });
       function parseDevs(j) {
         var out = [];
@@ -5287,7 +5290,9 @@ function renderBastionSavedSessions(container, f) {
       renderSessionList(els.inputSessionSearch.value);
       bastionLoadSavedAssets(s); // 异步拉资产,完成后重渲染
     });
-    // 右键:编辑 / 刷新资产 / 删除(不再提供"右侧浏览器打开",浏览器由标签栏管理)
+    // 双击:打开右侧浏览器加载该堡垒机
+    item.addEventListener('dblclick', () => { openBastionPanel(); bastionSelectServer('B:' + s.id); });
+    // 右键:编辑 / 刷新资产 / 删除
     item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       showCtxMenu(e.clientX, e.clientY, [
@@ -5302,18 +5307,24 @@ function renderBastionSavedSessions(container, f) {
       const assetsWrap = document.createElement('div');
       assetsWrap.className = 'bastion-saved-assets';
       if (s.assets && s.assets.length) {
-        // 按主机分组(nodes 首个节点名)归类;无 nodes → 未分组
+        // 按主机分组(nodes 全部节点)归类:一个资产可属多个节点 → 在每个所属组都出现;
+        // 无 nodes → 未分组。badge 显示的是去重资产总数。
         const groups = new Map();
         for (const a of s.assets) {
-          const g = (a.nodes && a.nodes[0] && a.nodes[0].name) || a.dir || '__ungrouped__';
-          if (!groups.has(g)) groups.set(g, []);
-          groups.get(g).push(a);
+          const nodeNames = (a.nodes && a.nodes.length)
+            ? a.nodes.map((n) => n.name).filter(Boolean)
+            : [a.dir || '__ungrouped__'];
+          if (!nodeNames.length) nodeNames.push('__ungrouped__');
+          for (const g of nodeNames) {
+            if (!groups.has(g)) groups.set(g, []);
+            groups.get(g).push(a);
+          }
         }
         for (const [g, arr] of groups) {
-          if (g !== '__ungrouped__') {
+          {
             const ghead = document.createElement('div');
             ghead.className = 'bastion-asset-group-head';
-            ghead.textContent = `📁 ${g}(${arr.length})`;
+            ghead.textContent = g === '__ungrouped__' ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
             assetsWrap.appendChild(ghead);
           }
           for (const a of arr) {
