@@ -34,3 +34,17 @@ mock/sftp-root/
 /index.css
 /ssh-client.js
 /mock-server.js
+
+# ---- 本地数据目录(含真实凭据/抓包,不入库)----
+/.polaris-data/
+/.polaris-data.bak-*/
+/*.har
+
+# ---- 一次性探测/调试脚本 ----
+/probe-*.js
+/dbg-*.js
+
+# ---- 含真实环境凭据的一次性验证脚本(不入库)----
+/verify-realdl.js
+/verify-ui-dl.js
+/verify-tcc.js

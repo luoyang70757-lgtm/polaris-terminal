@@ -57,5 +57,9 @@
         "portable"
       ]
     }
+  },
+  "allowScripts": {
+    "ssh2@1.17.0": true,
+    "cpu-features@0.0.10": true
   }
 }

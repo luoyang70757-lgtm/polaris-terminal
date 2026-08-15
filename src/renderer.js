@@ -216,14 +216,6 @@ const els = {
   bastionZoomOut: $('bastion-zoom-out'),
   bastionZoomLabel: $('bastion-zoom-label'),
   bastionWebview: document.getElementById('bastion-webview'),
-  bastionAssetSidebar: $('bastion-asset-sidebar'),
-  bastionAssetList: $('bastion-asset-list'),
-  bastionAssetCnt: $('bastion-asset-cnt'),
-  bastionAssetSrv: $('bastion-asset-srv'),
-  bastionAssetStatus: $('bastion-asset-status'),
-  bastionAssetRefresh: $('bastion-asset-refresh'),
-  bastionAssetCollapse: $('bastion-asset-collapse'),
-  bastionAssetReopen: $('bastion-asset-reopen'),
   // 锁定覆盖层(临时锁定)
   lockOverlay: $('lock-overlay'),
   loPw: $('lo-pw'),
@@ -241,6 +233,7 @@ const els = {
   btnDebug: $('btn-debug'),
   debugPanel: $('debug-panel'),
   debugBody: $('debug-body'),
+  debugDownload: $('debug-download'),
   debugCopy: $('debug-copy'),
   debugSave: $('debug-save'),
   debugClear: $('debug-clear'),
@@ -252,6 +245,7 @@ const els = {
   setFontFamily: $('set-font-family'),
   setAutoReconnect: $('set-autoreconnect'),
   setVerify: $('set-verify'),
+  setAutoTrust: $('set-autotrust'),
   setRestore: $('set-restore'),
   setClose: $('set-close'),
   ansiEditor: $('ansi-editor'),
@@ -310,6 +304,24 @@ const els = {
   aiVendorNew: $('ai-vendor-new'),
   aiVendorDel: $('ai-vendor-del'),
   aiConfigSave: $('ai-config-save'),
+  // Agent Skill 技能库
+  skillsList: $('skills-list'),
+  skillsNew: $('skills-new'),
+  skillsOpenFolder: $('skills-open-folder'),
+  skillsEditor: $('skills-editor'),
+  skillsEditName: $('skills-edit-name'),
+  skillsEditDesc: $('skills-edit-desc'),
+  skillsEditContent: $('skills-edit-content'),
+  skillsEditEnabled: $('skills-edit-enabled'),
+  skillsEditSave: $('skills-edit-save'),
+  skillsEditCancel: $('skills-edit-cancel'),
+  // 用户知识库
+  kbList: $('kb-list'),
+  kbImport: $('kb-import'),
+  kbOpenFolder: $('kb-open-folder'),
+  kbAiToggle: $('kb-ai-toggle'),
+  kbSearch: $('kb-search'),
+  kbResults: $('kb-results'),
 
   // 终端搜索
   termSearch: $('term-search'),
@@ -339,6 +351,7 @@ const els = {
   tunnelClose: $('tunnel-close'),
   sftpPath: $('sftp-path'),
   sftpConn: $('sftp-conn'),
+  sftpConnMenu: $('sftp-conn-menu'),
   sftpList: $('sftp-list'),
   sftpLog: $('sftp-log'),
   btnSftpUp: $('btn-sftp-up'),
@@ -371,6 +384,11 @@ const els = {
   setAutoFillPw: $('set-autofillpw'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
+  // 智能命令推荐
+  btnRecommend: $('btn-recommend'),
+  recommendMenu: $('recommend-menu'),
+  recommendList: $('recommend-list'),
+  recommendHost: $('recommend-host'),
 
   // 快速命令
   btnQuick: $('btn-quick'),
@@ -503,6 +521,7 @@ const state = {
     entries: [],     // 当前列表数据
     log: [],         // 传输记录: [{ time, text, isError }]
   },
+  sftpUploadFlash: new Set(), // 刚上传成功的条目名:列表刷新后高亮定位(让用户看到传到了哪)
   cmdHistory: {},    // 命令记录: sessionId -> { host, commands: [{ time, command }] }
   cmdArchivesView: null,   // 命令面板视图: null=当前记录, 'files'=归档文件列表
   cmdArchiveFiles: [],     // 归档批次列表
@@ -583,6 +602,7 @@ function openSettingsModal() {
   els.setFontFamily.value = state.settings.fontFamily || '';
   els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
   els.setVerify.checked = state.settings.verifyHostKey !== false;
+  els.setAutoTrust.checked = state.settings.autoTrustHostKey === true;
   els.setRestore.checked = state.settings.restoreOnStartup !== false;
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
@@ -1048,6 +1068,7 @@ async function aiSend() {
       messages: aiHistory,
       hosts, // 多主机:每项含连接信息 + sessionId(命令同步到这些终端)
       requestId, // 流事件用它对应到本条消息
+      kbEnabled: state.settings.kbEnabled !== false, // 知识库:AI 对话时注入相关文档片段
     });
   } catch (e) {
     // 主进程抛异常(invoke reject):必须复位 busy 与按钮,否则 AI 面板永久禁用
@@ -1227,7 +1248,7 @@ async function restoreBastionAssets() {
       }
       if (!state.bastionUrl) state.bastionUrl = bastionOrigin(u) || u;
     }
-    if (all.length && JSON.stringify(all) !== JSON.stringify(state.bastionAssets)) {
+    if (all.length && stableJson(all) !== stableJson(state.bastionAssets)) {
       state.bastionAssets = all;
       for (const a of all) if (a.favorite) state.bastionFavSet.add(a.devId);
       renderSessionList(els.inputSessionSearch.value);
@@ -1403,10 +1424,9 @@ function makeSessionRow(s) {
     }
     const openTab = findTabBySessionId(s.id);
     if (openTab) {
-      activateTab(openTab.sessionId);
-    } else if (state.sftp.visible) {
-      closeSftpPanel();
+      activateTab(openTab.sessionId); // 会应用该标签自己的 SFTP 状态
     }
+    // 点未打开的会话:不关闭当前标签的 SFTP(各标签 SFTP 独立,互不影响)
   });
 
   item.draggable = true;
@@ -2005,7 +2025,9 @@ function showBatchResult(res, label) {
 
 // 右键菜单:动态填充菜单项(会话的 编辑/删除,分组的 重命名/删除,标签的 关闭/复制/重命名…)
 // items 每项: { label, action, danger? } 或 { separator: true } 分隔线
+let ctxMenuOpenedAt = 0; // 菜单最近打开时间:用于忽略"右键后紧跟的残留 click"
 function showCtxMenu(x, y, items) {
+  ctxMenuOpenedAt = Date.now(); // 记录打开时刻
   els.ctxMenu.innerHTML = '';
   for (const it of items) {
     if (it.separator) {
@@ -2014,21 +2036,40 @@ function showCtxMenu(x, y, items) {
       els.ctxMenu.appendChild(sep);
       continue;
     }
+    if (it.separatorLabel) {
+      // 分组小标题(如"🎨 标记颜色"):纯展示,不响应点击、不收起菜单
+      const lbl = document.createElement('div');
+      lbl.className = 'ctx-sep-label';
+      lbl.textContent = it.label;
+      els.ctxMenu.appendChild(lbl);
+      continue;
+    }
     const div = document.createElement('div');
     div.className = `ctx-item${it.danger ? ' danger' : ''}`;
     div.textContent = it.label;
-    div.addEventListener('click', it.action);
+    // 点菜单项:执行动作并收起菜单。右键(contextmenu)后系统常紧跟一个残留 click,
+    // 若菜单第一项正好覆盖右键位置,残留 click 会"点中"菜单项 → 误触发动作 + 菜单一闪而过。
+    // 打开后 250ms 内的 click 一律视为残留,忽略(与 window click 防抖一致)。
+    div.addEventListener('click', () => {
+      if (Date.now() - ctxMenuOpenedAt < 250) return;
+      try { it.action(); } catch (e) { console.warn('菜单动作异常:', e); }
+      closeCtxMenu('item');
+    });
     els.ctxMenu.appendChild(div);
   }
   els.ctxMenu.style.left = `${x}px`;
   els.ctxMenu.style.top = `${y}px`;
   els.ctxMenu.classList.remove('hidden');
   dlog('MENU', `open: ${items.map((i) => (i.separator ? '---' : i.label)).join(' | ')}`);
+  // 诊断:排查"菜单一闪而过"(close:blur)时,记录打开瞬间的焦点/面板状态
+  const wv = els.bastionWebview;
+  dlog('FOCUS', `menu open: hasFocus=${document.hasFocus()} active=${(document.activeElement && (document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : ''))) || 'null'} ${wv && wv.executeJavaScript ? ('wv:' + (wv.src ? '有src' : '无src') + (els.bastionSlot.classList.contains('hidden') ? '/隐藏' : '/显示')) : 'wv:无'} menuOpen=true`);
 }
-function closeCtxMenu() {
+function closeCtxMenu(from) {
   // 只在菜单确实开着时记日志:window click/blur 会频繁触发本函数,
   // 若无条件 dlog 会让调试日志被一堆"空关"刷屏(看不到真正的 open/close 配对)
-  if (!els.ctxMenu.classList.contains('hidden')) dlog('MENU', 'close');
+  // from: 记录关闭来源(item=菜单项点击 / click=窗口点击 / blur=窗口失焦),便于排查"一闪而过"
+  if (!els.ctxMenu.classList.contains('hidden')) dlog('MENU', `close${from ? ':' + from : ''}`);
   els.ctxMenu.classList.add('hidden');
 }
 
@@ -2036,12 +2077,26 @@ function closeCtxMenu() {
 // 排查"终端/vim 按键不生效、粘贴后打不出空格"这类问题:常驻记录 按键(含当时焦点)、
 // 焦点迁移、收/发数据、连接状态。工具栏「🧾 调试」打开面板;内容可能含敏感输入,排查完请清空。
 const termDebug = { lines: [], max: 2000 };
+// dlog 批量落盘:攒 500ms 的行一次 IPC 发给主进程写文件(高频 dlog 不逐条 IPC,降低开销)
+let dlogFlushTimer = null;
+let dlogFlushBuf = [];
+function dlogFlushToDisk() {
+  if (!dlogFlushBuf.length) return;
+  const batch = dlogFlushBuf;
+  dlogFlushBuf = [];
+  try { if (window.api && window.api.appLogDlog) window.api.appLogDlog(batch); } catch { /* ignore */ }
+}
 function dlog(kind, msg) {
   const d = new Date();
   const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
   const line = `[${ts}] ${kind} ${msg}`;
   termDebug.lines.push(line);
   if (termDebug.lines.length > termDebug.max) termDebug.lines.splice(0, termDebug.lines.length - termDebug.max);
+  // 落盘(默认开启):攒批发送,避免高频 dlog 的 IPC 风暴
+  try {
+    dlogFlushBuf.push(line);
+    if (!dlogFlushTimer) dlogFlushTimer = setTimeout(() => { dlogFlushTimer = null; dlogFlushToDisk(); }, 500);
+  } catch { /* ignore */ }
   if (els.debugPanel && !els.debugPanel.classList.contains('hidden')) renderDebugBody();
 }
 function renderDebugBody() {
@@ -2117,7 +2172,9 @@ function termElInfo(el) {
   return tag + id + (cls ? '.' + cls.split(/\s+/).join('.') : '');
 }
 
-// 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)
+// 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)。
+// 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
+// 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
   if (!state.tabs || !state.tabs.size) return;
   const k = e.key;
@@ -2130,6 +2187,34 @@ window.addEventListener('keydown', (e) => {
   if (!inTerm && !isBody && !onMenu) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
   const mod = (e.ctrlKey ? '^' : '') + (e.altKey ? '⌥' : '') + (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '');
   const key = k.length === 1 ? (k === ' ' ? '␣' : k) : k;
+  if (isBody) {
+    // BODY 焦点兜底:把键盘焦点还给当前活跃终端,并阻止默认行为,让按键真正进终端。
+    // Cmd+A(全选)在 BODY 上会被浏览器当"全选页面"吞掉,这里显式交给 xterm。
+    const t = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
+    if (t && t.term && !onMenu) {
+      e.preventDefault();
+      try {
+        t.term.focus();
+        // 焦点刚还回 textarea,当前这次 keydown 不会再派发第二次(它已到 window 捕获层),
+        // 需要把按键喂给 xterm:合成 KeyboardEvent dispatch 到 textarea(xterm 5 接受合成事件,
+        // 且原始事件已 preventDefault,不会双重输入)。Cmd+A 特判为终端全选。
+        const ta = t.term.textarea;
+        if (e.metaKey && k.toLowerCase() === 'a' && t.term.selectAll) {
+          try { t.term.selectAll(); } catch { /* 部分 xterm 版本无 selectAll */ }
+        } else if (ta) {
+          const ne = new KeyboardEvent('keydown', {
+            key: k, code: e.code || '', bubbles: true, cancelable: true,
+            ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey,
+          });
+          ta.dispatchEvent(ne);
+        }
+      } catch { /* ignore */ }
+      dlog('KEY', `'${key}' ${mod || '-'} active=BODY →已兜底转发终端`);
+      return;
+    }
+    dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ⚠️BODY 按键被吞`);
+    return;
+  }
   dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
 }, true);
 
@@ -3683,7 +3768,6 @@ async function jmsLoadAssets() {
   jmsPersistConfig();
   jmsRenderServerSelect();
   renderSessionList(els.inputSessionSearch.value);
-  renderBastionAssetList(); // web 标签页资产列表同步
 }
 
 async function jmsRefreshActive() {
@@ -3693,7 +3777,6 @@ async function jmsRefreshActive() {
   if (!r.ok) { showJmsMsg(`刷新失败: ${r.error}`); return; }
   s.assets = r.assets || [];
   renderSessionList(els.inputSessionSearch.value);
-  renderBastionAssetList();
 }
 
 function jmsLogout() {
@@ -3724,10 +3807,13 @@ function jmsConnect(serverId, asset, accountName, openSftp) {
     tag_color: '',
     // 标记来源:供会话列表按资产「断开连接」
     jmsKey: `${s.id}|${asset.address}|${account}`,
+    // 真实目标主机(资产地址):host/port 是堡垒机网关,同堡垒机所有资产都一样,
+    // SFTP/标签展示用它区分是哪台主机(否则两台堡垒主机分不清 SFTP 是谁的)
+    displayHost: asset.address || asset.ip || '',
+    displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
   };
   connectToServer(session);
   if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
-  renderBastionAssetList(); // 连接后刷新侧边栏状态点
 }
 
 // 断开该 JumpServer 资产已打开的连接(标签保留,显示"已断开")
@@ -3818,117 +3904,6 @@ async function jmsWebEnsureLogin(s, base) {
   return false;
 }
 
-// 资产树中右键资产 → 连接对话框 → 选 SFTP 方式 → 连接
-// 返回: 'ok' 已点连接 | 'no-node' 资产节点未找到 | 'no-menu' 右键菜单异常 | 'no-dialog' 连接对话框未出现 | 'no-sftp' 该资产无 SFTP 协议
-async function jmsWebOpenSftpDialog(asset) {
-  // 等资产节点出现(树可能按需加载,最长 30s)
-  const t0 = Date.now();
-  let node = null;
-  for (let i = 0; i < 60; i++) {
-    node = await jmsWebExec(`(function(){
-      const sp=[...document.querySelectorAll('span.node_name')].find(s=>s.textContent.trim()===${JSON.stringify(asset.name)});
-      if(!sp) return null;
-      const r=sp.getBoundingClientRect();
-      if(!r.width && !r.height) return null;
-      return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};
-    })()`);
-    if (node && node.x) break;
-    if (Date.now() - t0 > 30000) break;
-    await jmsWebSleep(500);
-  }
-  if (!node || !node.x) return 'no-node';
-  // 右键资产节点
-  await jmsWebExec(`(function(){
-    const el=document.elementFromPoint(${node.x},${node.y});
-    if(!el) return false;
-    el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:${node.x},clientY:${node.y},button:2}));
-    return true;
-  })()`);
-  // 等右键菜单 → 点「连接」
-  let clicked = false;
-  for (let i = 0; i < 20; i++) {
-    const mi = await jmsWebExec(`(function(){
-      const it=[...document.querySelectorAll('.view-menu__item')].find(e=>e.textContent.trim()==='连接');
-      if(!it) return null;
-      const r=it.getBoundingClientRect();
-      return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};
-    })()`);
-    if (mi && mi.x) {
-      await jmsWebExec(`document.elementFromPoint(${mi.x},${mi.y}).click(); true`);
-      clicked = true; break;
-    }
-    await jmsWebSleep(300);
-  }
-  if (!clicked) return 'no-menu';
-  // 等连接对话框出现
-  let dlg = false;
-  for (let i = 0; i < 20; i++) {
-    dlg = await jmsWebExec(`!!(document.querySelector('.connect-dialog-wrap, .ant-modal-wrap'))`);
-    if (dlg) break;
-    await jmsWebSleep(300);
-  }
-  if (!dlg) return 'no-dialog';
-  await jmsWebSleep(700); // 等对话框渲染完
-  // 协议 tab 定位:只有 SFTP tab(已激活)或需点击 SFTP tab;两者皆无 → 该资产无 SFTP 协议
-  const proto = await jmsWebExec(`(function(){
-    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
-    const tabs=[...w.querySelectorAll('.protocol-tab .ant-tabs-tab')];
-    if(!tabs.length) return null;
-    const sftp=tabs.find(t=>/sftp|ftp/i.test(t.textContent));
-    if(!sftp) return null;
-    return sftp.className.includes('ant-tabs-tab-active') ? 'active' : 'click';
-  })()`);
-  if (proto === null) return 'no-sftp';
-  if (proto === 'click') {
-    await jmsWebExec(`(function(){
-      const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
-      const t=[...w.querySelectorAll('.protocol-tab .ant-tabs-tab')].find(t=>/sftp|ftp/i.test(t.textContent));
-      const btn=t.querySelector('.ant-tabs-tab-btn')||t; btn.click();
-      return true;
-    })()`);
-    await jmsWebSleep(900); // 切协议后重拉连接方式
-  }
-  // 连接方式:优先「文件管理/web_sftp」radio;没有则用默认(Web 分类自动选中项)
-  await jmsWebExec(`(function(){
-    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
-    const labels=[...w.querySelectorAll('.connect-method label.ant-radio-wrapper')];
-    let target=labels.find(l=>/文件管理|web_sftp/i.test(l.textContent));
-    if(!target) target=labels.find(l=>l.textContent.trim());
-    if(target){ target.click(); return true; }
-    return false;
-  })()`);
-  await jmsWebSleep(300);
-  // 点「连接」
-  await jmsWebExec(`(function(){
-    const w=document.querySelector('.connect-dialog-wrap')||document.querySelector('.ant-modal-wrap');
-    const b=w.querySelector('.connect-btn-wrap button')||[...w.querySelectorAll('button')].find(x=>x.textContent.trim()==='连接');
-    if(b){ b.click(); return true; }
-    return false;
-  })()`);
-  return 'ok';
-}
-
-// 「📁 打开 SFTP」:JMS 资产 → 打开 JumpServer 网页版文件管理(webview 自动登录 + 走连接对话框选 SFTP)
-async function jmsOpenWebSftp(serverId, asset) {
-  const s = jmsFind(serverId);
-  if (!s) return;
-  const base = String(s.baseUrl || '').replace(/\/+$/, '');
-  if (!base) { alert('该 JumpServer 未配置 Web 地址,请在设置里填写'); return; }
-  if (els.bastionSlot.classList.contains('hidden')) openBastionPanel();
-  // 确保 webview 已加载 JMS 站点
-  if (!jmsWebUrl().startsWith(base)) await jmsWebGo(`${base}/core/auth/login/?next=/luna/`);
-  // 确保已登录(无账号密码时用户需在 webview 里手动登录)
-  const ok = await jmsWebEnsureLogin(s, base);
-  if (!ok) { setStatus('JumpServer 登录超时,请在堡垒机页面完成登录后重试', 'var(--red)'); return; }
-  // 到资产树页(Luna 已登录态下 /luna/ 直接显示资产树)
-  await jmsWebGo(`${base}/luna/`);
-  await jmsWebSleep(1500);
-  const r = await jmsWebOpenSftpDialog(asset);
-  if (r === 'ok') setStatus(`已打开「${asset.name}」的 JumpServer 网页文件管理`, 'var(--green)');
-  else if (r === 'no-node') setStatus(`未在 JumpServer 资产树找到「${asset.name}」,请先展开节点后重试`, 'var(--orange)');
-  else if (r === 'no-sftp') setStatus(`「${asset.name}」在 JumpServer 中未开通 SFTP 协议,无法打开网页文件管理`, 'var(--orange)');
-  else setStatus(`打开「${asset.name}」网页文件管理失败(${r}),请在堡垒机页面手动操作`, 'var(--orange)');
-}
 
 // 把已登录服务器的资产渲染进会话列表(JumpServer 区块)
 // 会话列表"工具区"节点头:小三角折叠/展开 + 右键菜单(与分组头行为一致)
@@ -3944,7 +3919,11 @@ function makeSectionHead(label, collapsed, onToggle, menuItems) {
   head.appendChild(caret);
   head.appendChild(name);
   caret.addEventListener('click', (e) => { e.stopPropagation(); onToggle(); });
-  head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCtxMenu(e.clientX, e.clientY, menuItems); });
+  // 无菜单项(如纯分组头)时绑定右键 = 弹空白菜单,表现为"一闪而过的空菜单"、
+  // 日志里 `MENU open: `(空)刷屏。只在有菜单项时才注册 contextmenu。
+  if (menuItems && menuItems.length) {
+    head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCtxMenu(e.clientX, e.clientY, menuItems); });
+  }
   return head;
 }
 
@@ -4035,8 +4014,6 @@ function makeJmsAssetRow(s, a) {
     items.push({ separator: true });
     items.push({ label: '🔌 断开连接', action: () => jmsDisconnectAsset(s.id, a) });
     items.push({ separator: true });
-    items.push({ label: '📁 打开 SFTP', action: () => jmsOpenWebSftp(s.id, a) });
-    items.push({ separator: true });
     items.push({ label: `🔄 刷新「${s.name}」资产`, action: () => jmsRefreshServer(s.id) });
     items.push({ label: `🚪 退出「${s.name}」登录`, danger: true, action: () => jmsLogoutServer(s.id) });
     showCtxMenu(e.clientX, e.clientY, items);
@@ -4059,7 +4036,6 @@ async function jmsRefreshServer(serverId) {
   if (r.ok) {
     s.assets = r.assets || [];
     renderSessionList(els.inputSessionSearch.value);
-    renderBastionAssetList();
     setStatus(`已刷新「${s.name}」资产(${s.assets.length} 台)`, 'var(--green)');
   } else {
     setStatus(`刷新「${s.name}」失败:${r.error || '未登录'}(请退出重登)`, 'var(--red)');
@@ -4106,7 +4082,6 @@ async function jmsRestore() {
     } catch { /* 网络/超时,忽略 */ }
   }
   renderSessionList(els.inputSessionSearch.value);
-  renderBastionAssetList(); // web 标签页资产列表同步
 }
 
 // =====================================================================
@@ -4131,109 +4106,10 @@ function openBastionPanel() {
   else if (els.bastionWebview.src) els.bastionWebview.focus();
   else els.bastionUrl.focus();
   refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
-  renderBastionAssetList();
 }
 // 渲染堡垒机 web 标签页专属的资产列表:显示当前 web 标签页对应堡垒机(JMS)的资产,
 // 双击直接连 SSH(与左侧会话树 JMS 区块一致)。无登录的 JMS 服务器时隐藏侧边栏。
 // 头部显示服务器名 + 连接状态;资产行带连接状态点(●绿=该资产有已连接会话)。
-function renderBastionAssetList() {
-  const listEl = els.bastionAssetList;
-  if (!listEl) return;
-  const wvSrc = (els.bastionWebview && els.bastionWebview.src) || '';
-  let origin = '';
-  try { origin = new URL(wvSrc).origin; } catch { /* 空 URL */ }
-  // 优先:与 web 标签页同源的已登录 JMS 服务器;否则回退到任一已登录服务器
-  let s = state.jmsServers.find((x) => x.token && x.baseUrl && origin && x.baseUrl.replace(/\/+$/, '') === origin);
-  if (!s) s = state.jmsServers.find((x) => x.token) || null;
-  if (!s) {
-    els.bastionAssetSidebar.classList.add('hidden');
-    return;
-  }
-  els.bastionAssetSidebar.classList.remove('hidden');
-  els.bastionAssetReopen.classList.add('hidden');
-  if (state.settings.bastionAssetCollapsed) {
-    els.bastionAssetSidebar.classList.add('hidden');
-    els.bastionAssetReopen.classList.remove('hidden');
-  }
-  const assets = s.assets || [];
-  els.bastionAssetSrv.textContent = `🛡 ${s.name}`;
-  els.bastionAssetSrv.title = `${s.baseUrl || ''} · ${s.account || ''}`;
-  const statusEl = els.bastionAssetStatus;
-  statusEl.textContent = s.token ? '已连接' : '未登录';
-  statusEl.style.color = s.token ? 'var(--green)' : 'var(--orange)';
-  els.bastionAssetCnt.textContent = assets.length ? `(${assets.length})` : '';
-  listEl.innerHTML = '';
-  if (!assets.length) {
-    const hint = document.createElement('div');
-    hint.className = 'bastion-asset-hint';
-    hint.textContent = `「${s.name}」暂无资产,点「↻ 刷新」或重新登录 JumpServer。`;
-    listEl.appendChild(hint);
-    return;
-  }
-  // 按节点分组(资产可多节点,每个分组都显示)——与 renderJmsInSessionList 同逻辑
-  const groups = new Map();
-  const ungroupedSeen = new Set();
-  for (const a of assets) {
-    const dirs = (a.nodes && a.nodes.length) ? a.nodes.map((n) => n.name).filter(Boolean) : [];
-    if (!dirs.length) {
-      if (!ungroupedSeen.has(a.id)) {
-        if (!groups.has('')) groups.set('', []);
-        groups.get('').push(a);
-        ungroupedSeen.add(a.id);
-      }
-      continue;
-    }
-    for (const dir of dirs) {
-      if (!groups.has(dir)) groups.set(dir, []);
-      groups.get(dir).push(a);
-    }
-  }
-  const keys = [...groups.keys()].sort((x, y) => { if (!x) return 1; if (!y) return -1; return x.localeCompare(y, 'zh'); });
-  for (const dir of keys) {
-    const arr = groups.get(dir);
-    const head = document.createElement('div');
-    head.className = 'bastion-asset-group';
-    head.textContent = `${dir ? '📁 ' + dir : '🗂 未分组'}(${arr.length})`;
-    listEl.appendChild(head);
-    for (const a of arr) listEl.appendChild(makeBastionSidebarRow(s, a));
-  }
-}
-
-// web 标签侧边栏的资产行:与主会话树行一致,额外带连接状态点(该资产有已连接会话则绿点)
-function makeBastionSidebarRow(s, a) {
-  const item = document.createElement('div');
-  item.className = 'asset-item jms-asset-item';
-  item.title = `双击连 SSH → ${a.address}`;
-  const dot = document.createElement('span');
-  dot.className = 'bastion-asset-dot';
-  const connected = [...state.tabs.values()].some((t) =>
-    t.session && t.session.jmsKey && t.session.jmsKey.startsWith(`${s.id}|${a.address}|`) && t.status === 'connected');
-  dot.style.background = connected ? 'var(--green)' : 'var(--text-dim-2, #555)';
-  dot.title = connected ? '该资产有已连接会话' : '未连接';
-  const icon = document.createElement('span');
-  icon.className = 'icon';
-  icon.textContent = '🖥';
-  const name = document.createElement('span');
-  name.className = 'name';
-  name.textContent = a.name;
-  const addr = document.createElement('span');
-  addr.className = 'addr jms-a-addr';
-  addr.textContent = a.address;
-  item.appendChild(dot);
-  item.appendChild(icon);
-  item.appendChild(name);
-  item.appendChild(addr);
-  item.addEventListener('dblclick', () => jmsConnect(s.id, a));
-  item.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    showCtxMenu(e.clientX, e.clientY, [
-      { label: '🔌 连接', action: () => jmsConnect(s.id, a) },
-      { label: '📤 传输文件(SFTP)', action: () => jmsConnect(s.id, a, null, true) },
-      { label: '🔌 断开连接', danger: true, action: () => jmsDisconnectAsset(s.id, a) },
-    ]);
-  });
-  return item;
-}
 // 最小化(收起面板,在会话列表显示入口;webview 会话保留,展开不用重登)
 function minimizeBastion() {
   els.bastionSlot.classList.add('hidden');
@@ -4414,11 +4290,16 @@ function showBastionCfgMsg(text) {
 }
 
 // ---- H3C 堡垒机资产捕获:在 webview 里钩住资产 API(fetch/XHR),把响应存到 window.__bastionAssets ----
-function injectBastionAssetHook() {
+function injectBastionAssetHook(requireStable) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
+  if (bastionWebviewLoading()) return; // 加载中不注入(executeJavaScript 会失败)
+  // 轮询路径(requireStable=true 默认):要求页面稳定 2s 再注入,避免导航风暴中帧层面报错;
+  // did-stop-loading 的 debounce 路径传 false:debounce(800ms)本身就是稳定等待,不再二次卡 2s
+  if (requireStable !== false && !bastionPageStable(2000)) return;
   try {
     wv.executeJavaScript(`(function(){
+      try {
       if (window.__bastionHookInjected) return;
       window.__bastionHookInjected = true;
       window.__bastionAssets = [];
@@ -4478,7 +4359,7 @@ function injectBastionAssetHook() {
       }
       function capture(url, text, body) {
         if (!url || !text) return;
-        const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\/getTree/.test(url);
+        const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\\/getTree/.test(url);
         // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
         const broad = /accessView|device|tree|asset|host|group|fav/i.test(url);
         if (!matched && !broad) return;
@@ -4502,7 +4383,7 @@ function injectBastionAssetHook() {
         // 目录树:getAccessViewTree → 存树结构(分组展示 + 逐目录请求用)
         if (/getAccessViewTree/.test(url) && j.children) { window.__bastionTree = j.children; return; }
         // 收藏夹树:userFav/getTree → {name, children:[{name,...}]}
-        if (/userFav\/getTree/.test(url) && (j.children || j.name)) { window.__bastionFavTree = j; return; }
+        if (/userFav\\/getTree/.test(url) && (j.children || j.name)) { window.__bastionFavTree = j; return; }
         // 分页拉全量:H3C 前端默认只请求 page=0(size=20),totalPages>1 时按原请求体主动翻页补齐
         // (真实堡垒机 totalElements=870 / 44 页,只捕获第 0 页 20 台 = "资产不完整"根因)
         // 仅 getAccessViewDevs 触发;收藏接口一次 100 条,不翻页
@@ -4683,25 +4564,110 @@ function injectBastionAssetHook() {
         }
         return one();
       };
-    })()`).catch(() => {});
+      } catch (e) {
+        // 页面状态异常(导航中/登录页 fetch 已被 SPA 重定义等):静默失败并复位注入标记,
+        // 下轮 poll 会重新尝试。不抛错 → 避免 Electron 的
+        // "GUEST_VIEW_MANAGER_CALL: Script failed to execute" 错误刷屏。
+        window.__bastionHookInjected = false;
+        window.__bastionDiag = (window.__bastionDiag || []);
+        window.__bastionDiag.push({ ts: Date.now(), ev: 'hook-throw', msg: String(e && e.message).slice(0, 200) });
+      }
+    })()`).then(() => {
+      // 注入成功:复位退避与禁用标记
+      bastionInjectFails = 0;
+      bastionInjectBackoff = 8000;
+      bastionInjectDisabled = false;
+    }).catch(() => {
+      // 帧层面失败(页面导航/卸载中,executeJavaScript 拒绝,guest 侧 try/catch 拦不住):
+      // 指数退避;连续失败过多则暂停自动注入(页面明显不可用,不再产生错误日志)
+      bastionInjectFails++;
+      bastionInjectBackoff = Math.min(60000, 8000 * Math.pow(2, Math.min(bastionInjectFails, 3)));
+      if (bastionInjectFails >= 3) {
+        bastionInjectDisabled = true;
+        console.warn('[堡垒机] 钩子注入连续失败,暂停自动注入/拉取(页面不稳定);重新加载页面或手动刷新后恢复');
+      } else {
+        console.warn('[堡垒机] 钩子注入失败(页面导航中?),' + Math.round(bastionInjectBackoff / 1000) + 's 后重试');
+      }
+    });
   } catch { /* ignore */ }
 }
 
 // 从 webview 读取捕获的资产(资产+目录树+收藏),刷新会话列表并持久化
-function pollBastionAssets() {
+// 钩子丢失检测的限流状态:只在"活着→丢失"首次打日志;注入失败时指数退避(8s→60s),
+// 避免页面导航/不稳定时每几秒重试 + 触发 fetchAll,把 GUEST_VIEW_MANAGER_CALL 刷屏。
+let bastionHookLost = false;
+let bastionLastInject = 0;
+let bastionInjectFails = 0;   // 注入连续失败次数(帧层面失败,JS try/catch 拦不住)
+let bastionInjectBackoff = 8000; // 当前注入间隔(失败翻倍,上限 60s;成功复位 8s)
+let bastionInjectDebounce = null; // did-stop-loading 的注入 debounce(页面稳定后再注入)
+let bastionInjectDisabled = false; // 注入连续失败过多:自动注入/拉取全部暂停(页面明显不可用)
+let bastionSpasLogged = false;    // "SPA 未拉全量"日志只打一次
+let bastionLastPollKey = '';      // 轮询诊断日志限流:状态变化才打
+let bastionPageStableTs = 0;      // 最近一次 did-stop-loading 时间;重定向风暴期间反复刷新 → 一直不稳
+// 页面是否已稳定(停止加载 ≥ms 且未再开始导航):稳定前不执行注入/轮询,避免导航瞬间帧层面报错
+function bastionPageStable(ms) {
+  return bastionPageStableTs > 0 && Date.now() - bastionPageStableTs >= ms;
+}
+// webview 是否在加载中:加载/导航期间 executeJavaScript 必然失败,还会让 Electron
+// 打 GUEST_VIEW_MANAGER_CALL 'Script failed to execute' 错误 → 加载中一律跳过
+function bastionWebviewLoading() {
+  try { const wv = els.bastionWebview; return !!(wv && wv.isLoading && wv.isLoading()); } catch { return false; }
+}
+// 规范化 JSON 比较:键按字典序排序后再序列化。
+// 用途:判断堡垒机 tree/favTree 是否真变化 —— guest 每次轮询返回的是新解析的对象,
+// 即使内容相同,对象属性书写顺序不同(如 {name,children} vs {children,name})也会让
+// JSON.stringify 结果不同 → 误判"变了" → 每 4s 全量重建会话列表(折叠丢失/滚动重置/选中闪烁)。
+function stableJson(v) {
+  if (v === null || v === undefined) return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+  if (typeof v === 'object') {
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v);
+}
+
+function pollBastionAssets(force) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板已收起:不打扰后台 webview,恢复展开后再轮询
+  // 操作驱动:用户最近 5 秒内操作过 H3C 页面(__bastionFocusTs 新)才立即同步资产,
+  // 否则跳过本轮 —— 闲置时每 4s 轮询纯属浪费(executeJavaScript IPC + guest 开销),
+  // 改为 15s 低频兜底 + 用户操作时快速同步,兼顾实时性与性能。
+  // force=true:流程内重触发(拉目录/拉全量后继续同步),不受操作驱动限制。
+  if (!force && !bastionFocusCheckPending()) return;
+  // 只对 H3C 控制台(路径含 /shterm)做资产捕获:webview 里若是 JumpServer(/ui /luna)等
+  // 非 H3C 站点,钩子永远无效 —— 旧逻辑仍每 4s 轮询 + 每 10s 触发拉取,状态栏反复
+  // "正在拉取堡垒机全部资产…/未完成",表现为连接堡垒机后界面频繁刷新。
+  let curUrl = '';
+  try { if (wv.getURL && wv.getURL()) curUrl = wv.getURL(); } catch { /* ignore */ }
+  if (!curUrl && els.bastionCurrent) curUrl = els.bastionCurrent.textContent.split(' — ').pop() || '';
+  // 只对 H3C 控制台做资产捕获:路径含 /shterm(登录页/资产页都在此路径下,见 HAR),
+  // 或裸根 URL(跳转前首页可能无路径)。JMS(/ui /luna /core)等非 H3C 站点跳过,
+  // 否则钩子永远无效 → 每 4s 轮询 + 每 10s 拉取,状态栏反复刷"正在拉取…/未完成"。
+  const pathPart = (() => { try { return new URL(curUrl).pathname; } catch { return ''; } })();
+  const isH3c = curUrl && (curUrl.indexOf('/shterm') !== -1 || pathPart === '' || pathPart === '/');
+  if (!isH3c) {
+    state.bastionAllFetched = true; // 复位"未拉取"标记,避免切回 H3C 前反复自动重试
+    return;
+  }
+  if (bastionWebviewLoading()) return; // 加载中:跳过本轮,避免 executeJavaScript 失败刷屏
+  if (!bastionPageStable(1200)) return; // 刚停止加载/还在导航风暴中:再等等,避免帧层面报错
   try {
     wv.executeJavaScript(`(function(){
-      return {
-        assets: window.__bastionAssets || [],
-        tree: window.__bastionTree || [],
-        favTree: window.__bastionFavTree || null,
-        favs: Array.from(window.__bastionFavSet || []),
-        fetchState: window.__bastionFetchState || { running: false, dirRunning: false },
-        hookAlive: typeof window.__bastionFetchAll === 'function'
-      };
+      try {
+        return {
+          assets: window.__bastionAssets || [],
+          tree: window.__bastionTree || [],
+          favTree: window.__bastionFavTree || null,
+          favs: Array.from(window.__bastionFavSet || []),
+          fetchState: window.__bastionFetchState || { running: false, dirRunning: false },
+          hookAlive: typeof window.__bastionFetchAll === 'function'
+        };
+      } catch (e) {
+        // 页面导航中/被卸载:返回空快照,下轮再试(不抛错,避免错误刷屏)
+        return { assets: [], tree: [], favTree: null, favs: [], fetchState: { running: false, dirRunning: false }, hookAlive: false };
+      }
     })()`).then((r) => {
       r = r || {};
       const list = r.assets || [];
@@ -4709,20 +4675,35 @@ function pollBastionAssets() {
       // 钩子存活检测:SPA 页面登录跳转/整页重载会重置 guest 环境(__bastionHookInjected 和
       // __bastionFetchAll 全丢)→ 前端资产请求不被捕获、fetchAll 也不存在,资产区静默消失
       // 且提示"拉取未完成"。检测到丢失就重新注入,并触发一次主动拉取。
+      // 日志/注入都限流:只在"活着→丢失"的首次打日志,注入 ≥8s 一次 —— 登录页/导航中
+      // 反复失败不再刷屏(错误本身已被 guest 侧 try/catch 吞掉)。
       if (!r.hookAlive) {
-        console.log('[堡垒机] webview 钩子丢失(页面可能重载),重新注入');
-        injectBastionAssetHook();
-        if (!state.bastionLastAutoFetch || Date.now() - state.bastionLastAutoFetch > 5000) {
-          state.bastionLastAutoFetch = Date.now();
-          triggerBastionFullFetch();
+        if (!bastionHookLost) {
+          bastionHookLost = true;
+          if (!bastionInjectDisabled) console.log('[堡垒机] webview 钩子丢失(页面可能重载),重新注入');
         }
+        const now = Date.now();
+        // 注入被禁用(页面不稳定):不再自动重试/拉取,只保留轮询读取
+        if (!bastionInjectDisabled && (!bastionLastInject || now - bastionLastInject > bastionInjectBackoff)) {
+          bastionLastInject = now;
+          injectBastionAssetHook();
+          // 注入连续失败时不再触发 fetchAll(否则每个周期成对报错)
+          if (bastionInjectFails < 2) {
+            if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 10000) {
+              state.bastionLastAutoFetch = now;
+              triggerBastionFullFetch();
+            }
+          }
+        }
+      } else {
+        bastionHookLost = false; // 钩子恢复,复位"已丢失"标记
       }
       // 持久化键:随 webview 当前地址同步为 origin(S1/S2 修复——
       // 旧版 state.bastionUrl 只在 restore 赋值永不更新,多堡垒机切换时 B 的数据写进 A 的键)
-      let curUrl = '';
-      try { if (wv.getURL && wv.getURL()) curUrl = wv.getURL(); } catch { /* ignore */ }
-      if (!curUrl && els.bastionCurrent) curUrl = els.bastionCurrent.textContent.split(' — ').pop() || '';
-      const curOrigin = bastionOrigin(curUrl);
+      let curUrl2 = '';
+      try { if (wv.getURL && wv.getURL()) curUrl2 = wv.getURL(); } catch { /* ignore */ }
+      if (!curUrl2 && els.bastionCurrent) curUrl2 = els.bastionCurrent.textContent.split(' — ').pop() || '';
+      const curOrigin = bastionOrigin(curUrl2);
       if (curOrigin && curOrigin !== state.bastionUrl) {
         state.bastionUrl = curOrigin;
         // 换了堡垒机 → 清掉上一台的折叠状态与内存资产(避免跨堡垒机串扰/旧资产残留)
@@ -4730,26 +4711,31 @@ function pollBastionAssets() {
         state.bastionTree = [];
         state.bastionFavTree = null;
       }
-      const json = JSON.stringify(list);
-      if (list.length && json !== JSON.stringify(state.bastionAssets)) {
+      const json = stableJson(list);
+      if (list.length && json !== stableJson(state.bastionAssets)) {
         state.bastionAssets = list;
         persistBastionAssets(); // 异步持久化,不阻塞渲染
         changed = true;
         console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
       } else {
-        // 诊断:资产没更新的原因(列表空 vs 内容没变 vs 面板收起)
-        console.log('[堡垒机] poll: webview资产', list.length, '| state资产', state.bastionAssets.length,
-          '| origin', state.bastionUrl, '| collapsed', state.bastionCollapsed, '| grouping', state.bastionGrouping);
+        // 诊断:资产没更新的原因 —— 只打"状态变化"的轮次(每 4s 刷屏无意义)
+        const key = [list.length, state.bastionAssets.length, state.bastionUrl].join('|');
+        if (key !== bastionLastPollKey) {
+          bastionLastPollKey = key;
+          console.log('[堡垒机] poll: webview资产', list.length, '| state资产', state.bastionAssets.length,
+            '| origin', state.bastionUrl, '| collapsed', state.bastionCollapsed, '| grouping', state.bastionGrouping);
+        }
       }
-      // 目录树 / 收藏夹树变化也同步
-      const treeJson = JSON.stringify(r.tree);
-      if (treeJson && treeJson !== JSON.stringify(state.bastionTree)) {
+      // 目录树 / 收藏夹树变化也同步(用键序无关的比较:guest 每次返回新对象,
+      // 键序抖动会让 JSON.stringify 误判"变了" → 每 4s 全量重建会话列表)
+      const treeJson = stableJson(r.tree);
+      if (treeJson && treeJson !== stableJson(state.bastionTree)) {
         state.bastionTree = r.tree;
         changed = true;
         // 拿到树后自动后台补充分组(仅一次;失败/已跑则不重复)
         if (!state.bastionGrouping && !(r.fetchState && r.fetchState.dirRunning)) {
           state.bastionGrouping = true;
-          try { wv.executeJavaScript('window.__bastionFetchDirs && window.__bastionFetchDirs()').then(() => setTimeout(pollBastionAssets, 3000)); } catch { state.bastionGrouping = false; }
+          try { wv.executeJavaScript('try { window.__bastionFetchDirs && window.__bastionFetchDirs() } catch(e) { false }').then(() => setTimeout(() => pollBastionAssets(true), 3000)); } catch { state.bastionGrouping = false; }
         }
       }
       // 目录分组跑完 → 复位"分组中…"提示并刷新
@@ -4757,8 +4743,8 @@ function pollBastionAssets() {
         state.bastionGrouping = false;
         changed = true;
       }
-      const favTreeJson = JSON.stringify(r.favTree);
-      if (favTreeJson !== JSON.stringify(state.bastionFavTree)) { state.bastionFavTree = r.favTree; changed = true; }
+      const favTreeJson = stableJson(r.favTree);
+      if (favTreeJson !== stableJson(state.bastionFavTree)) { state.bastionFavTree = r.favTree; changed = true; }
       if (r.favs && r.favs.length) {
         const favSet = new Set(r.favs);
         // 对比用"排序后的内容",不能只比 size:数量不变但收藏内容变了(如 A→B)也要更新(M7)
@@ -4773,11 +4759,11 @@ function pollBastionAssets() {
       if (changed) renderSessionList(els.inputSessionSearch.value);
       // SPA 登录后自动重触发(M8):H3C 控制台是 SPA,登录后不刷新页面 → 没有 did-stop-loading,
       // 主动拉全量只在页面加载时触发一次。这里检测:钩子已注入、但从未拉成功过、且未在跑 → 每 10s 试一次
-      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running)) {
+      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled) {
         const now = Date.now();
         if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 10000) {
           state.bastionLastAutoFetch = now;
-          console.log('[堡垒机] SPA 页检测到未拉全量,自动重试拉取');
+          if (!bastionSpasLogged) { bastionSpasLogged = true; console.log('[堡垒机] SPA 页检测到未拉全量,自动重试拉取'); }
           triggerBastionFullFetch();
         }
       }
@@ -4789,22 +4775,44 @@ function pollBastionAssets() {
 function triggerBastionFullFetch() {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
+  // 只对 H3C(/shterm)做资产捕获:JMS 等非 H3C 站点没有 getAccessViewDevs,拉了也是失败刷状态栏
+  let cu = '';
+  try { if (wv.getURL && wv.getURL()) cu = wv.getURL(); } catch { /* ignore */ }
+  const cp = (() => { try { return new URL(cu).pathname; } catch { return ''; } })();
+  if (cu && cu.indexOf('/shterm') === -1 && cp !== '' && cp !== '/') return;
+  if (bastionWebviewLoading()) return; // 加载中不触发(executeJavaScript 会失败)
+  if (bastionInjectFails >= 2) return; // 注入一直失败:页面不稳定,不主动拉取(避免成对报错)
   injectBastionAssetHook(); // 确保钩子已注入(换页后 guest 环境重置);注入是异步的,稍等再触发
-  setStatus('正在拉取堡垒机全部资产…', 'var(--accent)');
+  // 只在"首次拉取"或"用户手动触发"时提示"正在拉取";后台 SPA 重试不再刷状态栏
+  if (!bastionFetchOkNotified && !bastionFetchFailNotified) {
+    setStatus('正在拉取堡垒机全部资产…', 'var(--accent)');
+  }
   try {
     // 先注入钩子,400ms 后调用主动拉取(避免钩子未装好时 __bastionFetchAll 不存在)
     setTimeout(() => {
-      wv.executeJavaScript('window.__bastionFetchAll && window.__bastionFetchAll()').then((ok) => {
+      if (bastionWebviewLoading()) return; // 延时期间页面开始导航 → 放弃本次
+      wv.executeJavaScript('try { window.__bastionFetchAll && window.__bastionFetchAll() } catch(e) { false }').then((ok) => {
         if (ok) {
           state.bastionAllFetched = true; // SPA 登录后 poll 据此不再反复重试
-          setStatus('堡垒机资产已拉取完成', 'var(--green)');
-        } else {
-          setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+          // 只提示一次"拉取完成"(数据就绪);重复触发不刷状态栏,避免闲置时状态栏反复闪
+          if (!bastionFetchOkNotified) {
+            bastionFetchOkNotified = true;
+            setStatus('堡垒机资产已拉取完成', 'var(--green)');
+          }
+        } else if (!state.bastionAllFetched) {
+          // 未成功:只在"从未成功过"时提示一次;后续重复失败静默(数据没变就不打扰用户)
+          if (!bastionFetchFailNotified) {
+            bastionFetchFailNotified = true;
+            setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+          }
         }
-        setTimeout(pollBastionAssets, 1200);
+        setTimeout(() => pollBastionAssets(true), 1200);
       }).catch((e) => {
         console.log('[堡垒机] triggerBastionFullFetch 异常:', e && e.message);
-        setStatus('堡垒机资产拉取失败: ' + ((e && e.message) || '未知错误'), 'var(--red)');
+        if (!bastionFetchFailNotified) {
+          bastionFetchFailNotified = true;
+          setStatus('堡垒机资产拉取失败: ' + ((e && e.message) || '未知错误'), 'var(--red)');
+        }
       });
     }, 400);
   } catch { /* ignore */ }
@@ -4912,8 +4920,6 @@ function makeBastionAssetItem(a) {
     items.push({ separator: true });
     items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
     items.push({ separator: true });
-    items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
-    items.push({ separator: true });
     items.push({ label: '🔄 刷新资产', action: () => triggerBastionFullFetch() });
     showCtxMenu(e.clientX, e.clientY, items);
   });
@@ -5004,7 +5010,7 @@ function bastionConnect(asset, accountName, proto, openSftp) {
   const bodyStr = JSON.stringify(body).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
   wv.executeJavaScript(
-    `fetch('/shterm/api/deviceAccess/accessUrl',{method:'POST',headers:{'Content-Type':'application/json'},body:'${bodyStr}'}).then(function(r){return r.text()})`
+    `fetch('/shterm/api/deviceAccess/accessUrl',{method:'POST',headers:{'Content-Type':'application/json'},body:'${bodyStr}'}).then(function(r){return r.text()}).catch(function(){ return ''; })`
   ).then((txt) => {
     let url = '';
     try { url = (JSON.parse(txt).url) || ''; } catch { /* 非 JSON */ }
@@ -5108,6 +5114,9 @@ async function handleAccessClientUrl(acUrl, openSftp, devId) {
     encoding,
     tag_color: '',
     bastionKey: devId ? `h3c-${devId}` : null, // 会话列表按资产断开用
+    // 真实目标主机(token 的 sh):host 是堡垒机网关,所有资产都一样,
+    // SFTP/标签展示用它区分是哪台主机(否则两台堡垒主机分不清 SFTP 是谁的)
+    displayHost: (info.sh && String(info.sh).trim()) || host,
   };
   bastionLog({ ev: 'ssh-connect-start', sessionId: session.id, host, port, account, name: session.name });
   // 并行探测实际连接目标(TCP+banner),不阻塞连接,结果进诊断包
@@ -5139,20 +5148,35 @@ function initBastionWebview() {
   });
   // 加载状态:开始显示"加载中"转圈,成功隐藏,失败显示错误
   wv.addEventListener('did-start-loading', () => {
+    bastionPageStableTs = 0; // 开始导航 → 页面不再视为稳定
     els.bastionLoading.classList.remove('hidden');
     els.bastionEmpty.classList.remove('hidden');
     els.bastionEmpty.textContent = '加载中…';
   });
   wv.addEventListener('did-stop-loading', () => {
+    bastionPageStableTs = Date.now(); // 停止加载 → 记稳定起点(2s 内不注入/轮询)
     els.bastionLoading.classList.add('hidden');
     els.bastionEmpty.classList.add('hidden');
     try { if (wv.getURL && wv.getURL()) els.bastionCurrent.textContent = wv.getURL(); } catch { /* ignore */ }
-    // 页面加载完:注入资产捕获钩子 + 自动适配面板宽度(完整页面不遮挡) + 若有待填充账号密码则自动填充
-    injectBastionAssetHook();
+    // 页面加载完:注入资产捕获钩子 + 自动适配面板宽度(完整页面不遮挡) + 若有待填充账号密码则自动填充。
+    // 登录页会连续跳转(每次 did-stop-loading 都触发注入),而导航切换瞬间 executeJavaScript
+    // 帧层面必失败 → debounce:最后一次停止加载 800ms 且未再导航才注入,消除启动期错误爆发。
+    bastionInjectDisabled = false; // 页面重新加载 → 恢复自动注入尝试
+    bastionSpasLogged = false;
+    bastionInjectFails = 0;
+    bastionInjectBackoff = 8000;
+    // 页面重载 → 重新允许"拉取完成/失败"提示(新页面状态未知)
+    bastionFetchOkNotified = false;
+    bastionFetchFailNotified = false;
+    clearTimeout(bastionInjectDebounce);
+    bastionInjectDebounce = setTimeout(() => {
+      if (bastionWebviewLoading()) return; // debounce 期间又开始导航 → 放弃本次
+      injectBastionAssetHook(false); // 页面已停 800ms:不再要求 2s 稳定(debounce 本身就是稳定等待)
+    }, 800);
     if (!bastionManualZoom) setTimeout(bastionFitToWidth, 250);
-    setTimeout(pollBastionAssets, 1200);
+    setTimeout(() => { if (!bastionWebviewLoading()) pollBastionAssets(true); }, 1200);
     // 页面就绪后主动拉一次全量(不依赖前端是否请求过资产 API;未登录时接口会失败,静默跳过)
-    setTimeout(triggerBastionFullFetch, 3500);
+    setTimeout(() => { if (!bastionWebviewLoading()) triggerBastionFullFetch(); }, 3500);
     if (bastionPendingFill) {
       const s = bastionPendingFill;
       setTimeout(() => { bastionAutoFill(s); }, 800);
@@ -5162,7 +5186,6 @@ function initBastionWebview() {
   // 地址栏显示当前地址 + 页面标题(诊断空白页:能看到加载到哪个地址/标题)
   wv.addEventListener('did-navigate', (e) => {
     try { if (e.url && e.url !== 'about:blank') els.bastionCurrent.textContent = e.url; } catch { /* ignore */ }
-    renderBastionAssetList(); // web 标签页地址变化 → 刷新该标签页专属的资产列表
   });
   wv.addEventListener('page-title-updated', (e) => {
     try {
@@ -5371,6 +5394,158 @@ function onRecMenuClick(e) {
   const name = act.dataset.recAct;
   if (name === 'toggle') toggleRecord();
   else if (name === 'list') openRecordingsModal();
+}
+
+// =====================================================================
+// 智能命令推荐(参考 Chaterm):当前主机历史高频 + 常用运维命令库,一键发送
+// =====================================================================
+function toggleRecommendMenu() {
+  if (!els.recommendMenu.classList.contains('hidden')) { els.recommendMenu.classList.add('hidden'); return; }
+  const rect = els.btnRecommend.getBoundingClientRect();
+  els.recommendMenu.style.left = `${Math.max(8, rect.left)}px`;
+  els.recommendMenu.style.top = `${rect.bottom + 4}px`;
+  els.recommendMenu.classList.remove('hidden');
+  refreshRecommendMenu();
+}
+function closeRecommendMenu() { els.recommendMenu.classList.add('hidden'); }
+
+// 拉取推荐并渲染:当前激活标签的主机 → cmd:recommend(历史高频 + 常用库)
+async function refreshRecommendMenu() {
+  const t = currentTab();
+  const host = t && t.session ? t.session.host : null;
+  els.recommendHost.textContent = host ? `@ ${host}` : '未连接会话';
+  const box = els.recommendList;
+  box.textContent = '';
+  // AI 推荐入口(恒在最上):结合当前终端上下文让模型推荐下一条命令
+  const aiRow = document.createElement('div');
+  aiRow.className = 'recommend-item ai-row';
+  aiRow.textContent = '🤖 AI 推荐(基于当前终端上下文)';
+  aiRow.title = '让 AI 结合该主机历史命令与终端最近输出,推荐一条下一条要执行的命令(需在 AI ⚙ 配置 API Key)';
+  aiRow.addEventListener('click', aiRecommendCommand);
+  box.appendChild(aiRow);
+  let list = [];
+  try {
+    const res = await window.api.recommendCmds(host);
+    if (res && res.ok) list = res.list || [];
+  } catch { /* 保留空列表 */ }
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'recommend-empty';
+    empty.textContent = '暂无历史推荐';
+    const hint = document.createElement('span');
+    hint.className = 'dim';
+    hint.textContent = host ? '在该主机执行过命令后,高频命令会出现在这里' : '连接一个会话后,会基于该主机历史 + 常用运维命令推荐';
+    empty.appendChild(hint);
+    box.appendChild(empty);
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement('div');
+    row.className = 'recommend-item ' + item.source;
+    row.title = (item.source === 'history' ? `本主机执行过 ${item.count} 次` : item.desc) + ' · 点击发送到当前终端';
+    const cmdEl = document.createElement('span');
+    cmdEl.className = 'recommend-cmd';
+    cmdEl.textContent = item.command;
+    const meta = document.createElement('span');
+    meta.className = 'recommend-meta';
+    const badge = document.createElement('span');
+    badge.className = 'recommend-badge ' + item.source;
+    badge.textContent = item.source === 'history' ? '历史' : '常用';
+    meta.appendChild(badge);
+    if (item.source === 'history') {
+      const count = document.createElement('span');
+      count.className = 'recommend-count';
+      count.textContent = `×${item.count}`;
+      meta.appendChild(count);
+    } else if (item.desc) {
+      const desc = document.createElement('span');
+      desc.className = 'recommend-count';
+      desc.textContent = item.desc;
+      meta.appendChild(desc);
+    }
+    row.append(cmdEl, meta);
+    row.addEventListener('click', () => { closeRecommendMenu(); runInActiveTerminal(item.command); });
+    box.appendChild(row);
+  }
+}
+
+// ---- AI 命令推荐(参考 Chaterm 的"智能命令推荐"):模型结合上下文推荐下一条命令 ----
+let aiRecommendBusy = false;
+async function aiRecommendCommand() {
+  const av = activeAiVendor();
+  if (!av || !av.key) { alert('请先在 AI ⚙ 里配置当前厂商的 API Key'); return; }
+  if (aiRecommendBusy) return;
+  aiRecommendBusy = true;
+  const t = currentTab();
+  const hostLabel = t && t.session
+    ? (t.session.displayHost ? `${t.session.name}(${t.session.displayHost})` : `${t.session.name}(${t.session.host})`)
+    : '(未连接)';
+  const aiRow = els.recommendList.querySelector('.recommend-ai-row');
+  if (aiRow) { aiRow.classList.add('loading'); aiRow.textContent = '🤖 AI 思考中…'; }
+  try {
+    // 历史:该主机的推荐清单(高频 + 常用)
+    let history = '';
+    try {
+      const res = await window.api.recommendCmds(t && t.session ? t.session.host : null);
+      if (res && res.ok) history = (res.list || []).slice(0, 12).map((x) => x.command).join('\n');
+    } catch { /* ignore */ }
+    // 上下文:终端最近 ~40 行输出
+    let context = '';
+    try {
+      if (t && t.term) {
+        const b = t.term.buffer.active;
+        const lines = [];
+        for (let i = Math.max(0, b.length - 40); i < b.length; i++) {
+          const l = b.getLine(i);
+          if (l) lines.push(l.translateToString(false));
+        }
+        context = lines.join('\n').slice(-1500);
+      }
+    } catch { /* ignore */ }
+    const res = await window.api.aiSuggestCmd({
+      apiKey: await decryptSecret(av.key),
+      url: av.url, model: av.model, format: av.format,
+      host: hostLabel, history, context,
+    });
+    if (aiRow) aiRow.remove();
+    if (!res || !res.ok) { alert('AI 推荐失败: ' + ((res && res.error) || '未知错误')); return; }
+    if (!res.command) { alert('AI 未给出命令'); return; }
+    renderAiRecommendItem(res);
+  } catch (e) {
+    if (aiRow) aiRow.remove();
+    alert('AI 推荐异常: ' + (e && e.message));
+  } finally {
+    aiRecommendBusy = false;
+  }
+}
+
+// 渲染 AI 推荐结果:插在 AI 入口行之后,点击发送到当前终端
+function renderAiRecommendItem(res) {
+  const box = els.recommendList;
+  for (const old of box.querySelectorAll('.recommend-item.ai-result')) old.remove(); // 只保留最新一条
+  const row = document.createElement('div');
+  row.className = 'recommend-item history ai-result';
+  row.title = 'AI 推荐 · 点击发送到当前终端';
+  const cmdEl = document.createElement('span');
+  cmdEl.className = 'recommend-cmd';
+  cmdEl.textContent = res.command;
+  const meta = document.createElement('span');
+  meta.className = 'recommend-meta';
+  const badge = document.createElement('span');
+  badge.className = 'recommend-badge history';
+  badge.textContent = 'AI';
+  meta.appendChild(badge);
+  if (res.reason) {
+    const d = document.createElement('span');
+    d.className = 'recommend-count';
+    d.textContent = res.reason;
+    meta.appendChild(d);
+  }
+  row.append(cmdEl, meta);
+  row.addEventListener('click', () => { closeRecommendMenu(); runInActiveTerminal(res.command); });
+  const aiRow = box.querySelector('.recommend-ai-row');
+  if (aiRow) aiRow.after(row);
+  else box.prepend(row);
 }
 
 // 录制开关:当前标签没录 → 开始;在录 → 停止
@@ -5785,6 +5960,9 @@ async function connectToServer(session) {
         tab.inputBuf += ch;
       }
     }
+    // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
+    // 与"命令记录"开关无关,SFTP 定位总是需要)
+    if (lineOnEnter != null) trackShellCwd(tab, lineOnEnter);
     // 命令记录:开关开启时才记。
     if (lineOnEnter != null && state.settings.cmdRecord !== false) {
       if (tab.inputDirty) {
@@ -5861,6 +6039,9 @@ async function connectToServer(session) {
     titleSpan,               // 标签上的标题元素(重命名标签时改它)
     customTitle: null,       // 用户改的标签名(null=用会话名)
     status: 'connecting',
+    sftpOpen: false,         // 该标签自己的 SFTP 开关(各标签独立,切换标签时恢复各自状态)
+    sftpPath: '.',           // 该标签 SFTP 浏览到的目录
+    shellCwd: null,          // 该标签交互 shell 的当前目录(跟踪 cd 命令;null=未知,SFTP 用默认)
     reconnectAttempts: 0,   // 已自动重连次数
     reconnectTimer: null,   // 重连定时器
     userClosed: false,      // 是否用户主动关闭(主动关闭不重连)
@@ -5963,6 +6144,7 @@ function connectInto(tab, session, isReconnect) {
         cols: tab.term.cols,
         rows: tab.term.rows,
         verifyHostKey: state.settings.verifyHostKey !== false, // 指纹校验开关
+        autoTrustHostKey: state.settings.autoTrustHostKey === true, // 自动信任新主机(不弹窗,仍记录指纹)
         sessionName: session.name || '', // 会话日志文件名用它
         sessionLog: state.settings.sessionLog !== false, // 会话日志开关
         jump: session.jump && session.jump.host ? session.jump : null, // 跳板机(SSH 代理),直连则为 null
@@ -6017,14 +6199,30 @@ function activateTab(sessionId) {
     renderLayout();        // 单面板:切换显示哪个连接
   }
 
-  // 切换标签时,若 SFTP 面板开着,跟着切到新连接的目录
-  if (state.sftp.visible) {
-    state.sftp.sessionId = sessionId;
-    state.sftp.path = '.';
+  // SFTP 按标签各自的状态:每个标签记住自己是否开了 SFTP、浏览到哪个目录。
+  // 选中"未打开 SFTP 的标签页"→ 面板收起、按钮不亮;切回开过的标签 → 恢复它的文件列表。
+  applySftpForTab(state.tabs.get(sessionId));
+}
+
+// 应用某标签的 SFTP 状态(切换标签/关闭标签后调用):开了就展开面板并加载它的目录,没开就收起
+function applySftpForTab(t) {
+  if (!t) return;
+  state.sftp.sessionId = t.sessionId;
+  if (t.sftpOpen) {
+    state.sftp.visible = true;
+    state.sftp.path = t.sftpPath || '.';
     state.sftp.selected = null;
-    setSftpConnLabel(sessionId);
+    els.sftpPanel.classList.remove('hidden');
+    els.dividerH.classList.remove('hidden');
+    setSftpConnLabel(t.sessionId);
     loadSftpList();
+  } else {
+    state.sftp.visible = false;
+    els.sftpPanel.classList.add('hidden');
+    els.dividerH.classList.add('hidden');
+    setSftpConnLabel(null);
   }
+  syncPanelButtons();
 }
 
 // 断开当前终端连接,但保留标签(显示"已断开",可右键重新连接);不像关闭标签那样移除
@@ -6073,29 +6271,18 @@ function closeTab(sessionId) {
     state.splitMode = null;
     state.splitZoom = null;
     setStatus('就绪');
+    // 没有标签了:SFTP 面板一并收起
+    state.sftp.visible = false;
+    state.sftp.sessionId = null;
+    els.sftpPanel.classList.add('hidden');
+    els.dividerH.classList.add('hidden');
+    setSftpConnLabel(null);
+    syncPanelButtons();
   } else if (state.activeSessionId === sessionId) {
     const keys = [...state.tabs.keys()];
-    activateTab(keys[keys.length - 1]);
+    activateTab(keys[keys.length - 1]); // 会自动应用新标签自己的 SFTP 状态
   }
   renderLayout();
-
-  // 若 SFTP 面板正浏览被关闭的连接,切到新连接或清空提示
-  if (state.sftp.visible) {
-    const sid = state.activeSessionId;
-    if (sid) {
-      state.sftp.sessionId = sid;
-      state.sftp.path = '.';
-      state.sftp.selected = null;
-      setSftpConnLabel(sid);
-      loadSftpList();
-    } else {
-      state.sftp.sessionId = null;
-      state.sftp.selected = null;
-      els.sftpPath.textContent = '/';
-      els.sftpList.innerHTML = '<div class="sftp-empty">当前没有连接</div>';
-      setSftpConnLabel(null);
-    }
-  }
 }
 
 function setTabStatus(sessionId, status) {
@@ -6470,6 +6657,44 @@ function sftpSession() {
   return state.activeSessionId;
 }
 
+// 把路径规范化:合并 . / .. ,去掉结尾 / (根目录保留 /)
+function normPath(p) {
+  if (!p) return '/';
+  const isAbs = p.startsWith('/');
+  const segs = [];
+  for (const s of String(p).split('/')) {
+    if (!s || s === '.') continue;
+    if (s === '..') { if (segs.length) segs.pop(); }
+    else segs.push(s);
+  }
+  const out = (isAbs ? '/' : '') + segs.join('/');
+  return out || (isAbs ? '/' : '.');
+}
+
+// 跟踪交互 shell 的 cd 命令,更新 tab.shellCwd(终端当前目录)。
+// SFTP 通道没有"当前目录"(每次操作都走绝对路径),它从登录目录开始;
+// 而交互 shell 的 cd 只影响 shell 自己 → 打开 SFTP 面板时若不知道终端在哪,
+// 路径就停在默认目录。这里监听 cd 命令维护每个标签的"当前目录",SFTP 打开时用它定位。
+function trackShellCwd(tab, cmdLine) {
+  try {
+    if (!tab) return;
+    const c = String(cmdLine || '').trim();
+    // 只认纯 cd(前面无管道/变量赋值/分号等复杂形式,那些无法可靠解析)
+    if (!/^cd(\s|$)/.test(c) || /[|;&<>]/.test(c)) return;
+    const arg = c.slice(2).trim();
+    if (!arg || arg === '~' || arg === '~/' ) {
+      tab.shellCwd = null; // 回 home:具体路径未知,SFTP 用默认(登录目录)
+      return;
+    }
+    if (arg.startsWith('/')) {
+      tab.shellCwd = normPath(arg);
+      return;
+    }
+    // 相对路径:基于当前已知目录拼接(未知时无法解析,保持 null)
+    if (tab.shellCwd) tab.shellCwd = normPath(tab.shellCwd + '/' + arg);
+  } catch { /* ignore */ }
+}
+
 // 把名字拼进当前目录,得到完整远程路径
 function sftpJoin(name) {
   return state.sftp.path === '/' ? `/${name}` : `${state.sftp.path}/${name}`;
@@ -6557,14 +6782,63 @@ async function loadSftpList() {
     return;
   }
   state.sftp.path = res.cwd || state.sftp.path; // 用 realpath 解析出的绝对路径替换路径栏
+  // 第一次拿到登录目录(绝对路径)→ 作为 shell 当前目录的初始值(cd 跟踪的起点)
+  const t0 = state.tabs.get(state.sftp.sessionId);
+  if (t0 && res.cwd && !t0.shellCwd) t0.shellCwd = res.cwd;
   state.sftp.entries = res.entries;
   state.sftp.selected = null;
   state.sftp.selectedSet.clear(); // 换了目录,之前的选中作废
+  // 目录变化记回标签自己的状态(切换标签回来时恢复浏览位置)
+  const t = state.tabs.get(state.sftp.sessionId);
+  if (t) t.sftpPath = state.sftp.path;
   renderSftpList();
 }
 
+// 渲染路径栏为可点击面包屑:每段一个按钮,点击直接跳到该目录;
+// 完整路径始终可见(横向滚动,不省略),悬停 title 显示完整路径。
+function renderSftpPath(path) {
+  const el = els.sftpPath;
+  el.innerHTML = '';
+  const segs = path.split('/').filter(Boolean); // 拆段;根目录 = 空
+  const parts = segs.map((seg, i) => ({ name: seg, path: '/' + segs.slice(0, i + 1).join('/') }));
+  if (parts.length === 0) {
+    // 根目录:单个"／"段
+    const root = document.createElement('button');
+    root.className = 'sftp-path-seg root active';
+    root.textContent = '/';
+    root.title = '跳转到根目录';
+    root.addEventListener('click', () => { if (state.sftp.path !== '/') { state.sftp.path = '/'; loadSftpList(); } });
+    el.appendChild(root);
+  } else {
+    const root = document.createElement('button');
+    root.className = 'sftp-path-seg root';
+    root.textContent = '/';
+    root.title = '跳转到根目录';
+    root.addEventListener('click', () => { if (state.sftp.path !== '/') { state.sftp.path = '/'; loadSftpList(); } });
+    el.appendChild(root);
+    for (const p of parts) {
+      const sep = document.createElement('span');
+      sep.className = 'sftp-path-sep';
+      sep.textContent = '/';
+      el.appendChild(sep);
+      const btn = document.createElement('button');
+      btn.className = 'sftp-path-seg';
+      btn.textContent = p.name;
+      btn.title = `跳转到 ${p.path}`;
+      const target = p.path;
+      btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
+      el.appendChild(btn);
+    }
+    // 当前完整路径高亮最后一段
+    const last = el.querySelector('.sftp-path-seg:last-of-type');
+    if (last) last.classList.add('active');
+  }
+  el.title = `当前目录: ${path}\n(点路径段可直接跳转)`;
+  el.scrollLeft = el.scrollWidth; // 滚动到末尾,总是看到当前所在目录
+}
+
 function renderSftpList() {
-  els.sftpPath.textContent = state.sftp.path;
+  renderSftpPath(state.sftp.path);
   els.sftpList.innerHTML = '';
   if (state.sftp.entries.length === 0) {
     els.sftpList.innerHTML = '<div class="sftp-empty">(空目录)</div>';
@@ -6583,6 +6857,11 @@ function renderSftpList() {
     const remotePath = sftpJoin(e.name);
     row.dataset.path = remotePath; // 记住路径,多选高亮/查找都靠它
     if (state.sftp.selectedSet.has(remotePath)) row.classList.add('selected');
+    // 刚上传成功的条目:高亮闪烁,让用户一眼看到"传到了哪"(上传目标是路径栏当前目录)
+    if (state.sftpUploadFlash && state.sftpUploadFlash.has(e.name)) {
+      row.classList.add('upload-flash');
+      row.scrollIntoView({ block: 'nearest' });
+    }
 
     const icon = document.createElement('span');
     icon.className = `sftp-icon ${e.isDir ? 'dir' : 'file'}`;
@@ -6618,6 +6897,24 @@ function renderSftpList() {
       } else {
         openRemoteEditor(remotePath);
       }
+    });
+
+    // 右键:文件/目录操作菜单(下载、编辑、重命名、复制路径、删除等)
+    row.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation(); // 别冒泡到窗口的 contextmenu/click 逻辑
+      const items = [];
+      if (e.isDir) {
+        items.push({ label: `📂 进入「${e.name}」`, action: () => { state.sftp.path = remotePath; loadSftpList(); } });
+        items.push({ separator: true });
+      }
+      items.push({ label: '⬇ 下载', action: () => downloadSftpEntry(remotePath, e.isDir) });
+      if (!e.isDir) items.push({ label: '✏ 编辑', action: () => openRemoteEditor(remotePath) });
+      items.push({ label: '✂ 重命名', action: () => renameSftpEntry(remotePath, e.name) });
+      items.push({ separator: true });
+      items.push({ label: '📋 复制路径', action: () => { window.api.copyText(remotePath); setStatus(`已复制路径: ${remotePath}`, 'var(--green)'); } });
+      items.push({ label: '🗑 删除', danger: true, action: () => deleteSftpEntry(remotePath, e.name) });
+      showCtxMenu(ev.clientX, ev.clientY, items);
     });
 
     els.sftpList.appendChild(row);
@@ -6698,11 +6995,43 @@ function renderSftpLog() {
 function setSftpConnLabel(sessionId) {
   const t = sessionId ? state.tabs.get(sessionId) : null;
   const s = t && t.session;
-  els.sftpConn.textContent = s ? `${s.name} · ${s.host}:${s.port}` : '';
+  els.sftpConn.textContent = t ? sftpSessionText(t) : '';
+  els.sftpConn.title = s
+    ? (s.displayHost
+      ? `SFTP 浏览: ${s.name} · 经堡垒机 ${s.host}:${s.port} → 目标 ${s.displayHost}`
+      : `SFTP 浏览: ${s.name} · ${s.host}:${s.port}`)
+    : '点击切换浏览哪台已连接主机的文件';
 }
 
-// 收起 SFTP 面板(切换/选中未打开的会话时,下方没有可显示的 SFTP)
+// 会话在 SFTP 面板/下拉里的展示文本。
+// 堡垒机会话的 host/port 是堡垒机网关地址,同堡垒机所有主机都一样 → 必须用真实目标主机(资产地址)区分。
+// 真实目标优先取会话记录的 displayHost;老会话(记录缺失)从 jmsKey(serverId|资产地址|账号)
+// 或 username(用户@协议@账号@资产地址)反推。
+// 目标 IP 放最前:标签/下拉空间不足被截断时,丢掉的是主机名而不是区分用的 IP。
+function sftpSessionText(t) {
+  const s = t && t.session;
+  if (!s) return '';
+  let host = s.displayHost || '';
+  let account = '';
+  const kp = s.jmsKey ? String(s.jmsKey).split('|') : [];
+  if (!host && kp[1]) host = kp[1]; // jmsKey = serverId|资产地址|账号
+  if (kp[2]) account = kp[2];
+  const up = String(s.username).split(/[@#]/).filter(Boolean);
+  if (!account && up.length >= 3) account = up[up.length - 2];
+  if (!host && up.length >= 4) host = up[up.length - 1];
+  if (host) {
+    // H3C 会话 username 就是账号(不含 @)
+    if (!account && !String(s.username).includes('@') && !String(s.username).includes('#')) account = s.username;
+    const port = s.displayPort || 22;
+    return `${host} · ${s.name}${account ? '(' + account + ')' : ''}${port && port !== 22 ? ':' + port : ''}`;
+  }
+  return `${s.name} · ${s.host}:${s.port}`;
+}
+
+// 收起当前标签的 SFTP 面板(并记住它已关闭;别的标签的 SFTP 状态不受影响)
 function closeSftpPanel() {
+  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
+  if (active) active.sftpOpen = false;
   state.sftp.visible = false;
   state.sftp.sessionId = null;
   els.sftpPanel.classList.add('hidden');
@@ -6713,32 +7042,80 @@ function closeSftpPanel() {
   syncPanelButtons();
 }
 
-// ---- 面板开关 ----
+// ---- 面板开关:只开关"当前激活标签"自己的 SFTP(各标签独立) ----
 function toggleSftpPanel() {
-  // Telnet 会话没有 SFTP 通道(仅 SSH 协议能力):提醒后不开面板
   const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
+  // Telnet 会话没有 SFTP 通道(仅 SSH 协议能力):提醒后不开面板
   if (active && active.session && (active.session.protocol || 'ssh') === 'telnet') {
     addLog('📁 SFTP 仅支持 SSH 会话', true);
     return;
   }
-  state.sftp.visible = !state.sftp.visible;
-  els.sftpPanel.classList.toggle('hidden', !state.sftp.visible);
-  els.dividerH.classList.toggle('hidden', !state.sftp.visible); // 分隔条跟着面板一起显示/隐藏
-  refitAll(); // 终端区域高度变了,重新适配
-  syncPanelButtons();
-  if (!state.sftp.visible) return;
-
-  if (!state.activeSessionId) {
-    els.sftpPath.textContent = '/';
-    els.sftpList.innerHTML = '<div class="sftp-empty">先连接一台服务器,再打开文件面板</div>';
-    setSftpConnLabel(null);
+  if (!active) {
+    state.sftp.visible = false;
+    els.sftpPanel.classList.add('hidden');
+    els.dividerH.classList.add('hidden');
+    syncPanelButtons();
     return;
   }
-  state.sftp.sessionId = state.activeSessionId;
-  state.sftp.path = '.';
-  state.sftp.selected = null;
-  setSftpConnLabel(state.activeSessionId);
-  loadSftpList();
+  if (active.sftpOpen) {
+    // 关闭:只关当前标签的 SFTP(别的标签开没开互不影响)
+    active.sftpOpen = false;
+    state.sftp.visible = false;
+    els.sftpPanel.classList.add('hidden');
+    els.dividerH.classList.add('hidden');
+    setSftpConnLabel(null);
+  } else {
+    // 打开:记录到当前标签,浏览它的目录
+    active.sftpOpen = true;
+    state.sftp.visible = true;
+    state.sftp.sessionId = active.sessionId;
+    // 优先定位到终端当前目录(跟踪 cd 的结果,用户诉求:SFTP 打开 = 终端所在目录);
+    // 终端目录未知时,退回该标签上次浏览的目录/默认
+    state.sftp.path = active.shellCwd || (active.sftpPath && active.sftpPath !== '.' ? active.sftpPath : '.');
+    state.sftp.selected = null;
+    els.sftpPanel.classList.remove('hidden');
+    els.dividerH.classList.remove('hidden');
+    setSftpConnLabel(active.sessionId);
+    loadSftpList();
+  }
+  refitAll(); // 终端区域高度变了,重新适配
+  syncPanelButtons();
+}
+
+// ---- SFTP 连接切换下拉:列出所有已连接的 SSH 会话,点选 = 切到该标签并打开它的 SFTP ----
+function toggleSftpConnMenu() {
+  const menu = els.sftpConnMenu;
+  if (!menu.classList.contains('hidden')) { menu.classList.add('hidden'); return; }
+  menu.textContent = '';
+  const conns = [...state.tabs.values()]
+    .filter((t) => t.status === 'connected' && (t.session.protocol || 'ssh') !== 'telnet')
+    .sort((a, b) => (a.session.name || '').localeCompare(b.session.name || ''));
+  if (!conns.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ctx-item dim';
+    empty.textContent = '没有已连接的 SSH 会话';
+    menu.appendChild(empty);
+  }
+  for (const t of conns) {
+    const item = document.createElement('div');
+    item.className = 'ctx-item' + (t.sessionId === state.sftp.sessionId && state.sftp.visible ? ' active' : '');
+    // 堡垒机会话显示真实目标主机(资产地址),避免同堡垒机的多台主机都显示网关地址分不清
+    item.textContent = sftpSessionText(t);
+    item.title = t.session.displayHost
+      ? `堡垒机 ${t.session.host}:${t.session.port} → 目标 ${t.session.displayHost}`
+      : `${t.session.username}@${t.session.host}:${t.session.port}`;
+    item.addEventListener('click', () => {
+      menu.classList.add('hidden');
+      if (state.activeSessionId !== t.sessionId) activateTab(t.sessionId); // 应用该标签自己的 SFTP 状态
+      if (!t.sftpOpen) toggleSftpPanel(); // 该标签还没开 SFTP → 顺手打开
+      setStatus(`SFTP 已切换到「${t.session.name}」`, 'var(--green)');
+    });
+    menu.appendChild(item);
+  }
+  const rect = els.sftpConn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rect.left)}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.classList.remove('hidden');
 }
 
 // ---- 工具按钮 ----
@@ -6763,6 +7140,72 @@ function sftpMakeDir() {
       sftpRefocusTerminal(); // 弹窗确认按钮也别占焦点,还回终端(否则敲空格被吞)
     },
   });
+}
+
+// ---- 右键菜单操作:单条目下载 / 重命名 / 删除 ----
+// 下载单个文件/目录:单文件走保存对话框(能看见目标路径),目录走"选文件夹"递归下载
+async function downloadSftpEntry(remotePath, isDir) {
+  const sid = sftpSession();
+  if (!isDir) {
+    const res = await window.api.sftpDownload(sid, remotePath);
+    sftpTransferFinish(res.ok ? new Set() : new Set([remotePath]), res.error === '已取消');
+    sftpRefocusTerminal();
+    if (!res.ok) {
+      if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+      return;
+    }
+    setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
+    addLog(`⬇ 下载 ${remotePath} → ${res.localPath} ✅`);
+    return;
+  }
+  // 目录:复用"多条目下载"流程(只传它一个)
+  const res = await window.api.sftpDownloadMany(sid, [{ remotePath, isDir: true }]);
+  sftpTransferFinish(res.ok ? new Set(res.results.filter((r) => !r.ok).map((r) => r.remotePath)) : new Set([remotePath]), res.error === '已取消');
+  sftpRefocusTerminal();
+  if (!res.ok) {
+    if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+    return;
+  }
+  const r = res.results[0];
+  setStatus(r.ok ? `已下载 → ${r.localPath}` : `下载失败: ${r.error}`, r.ok ? 'var(--green)' : 'var(--orange)');
+  if (r.ok) addLog(`⬇ 下载 ${remotePath} → ${r.localPath} ✅`);
+  else addLog(`⬇ 下载失败 ${remotePath}: ${r.error}`, true);
+}
+
+// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
+function renameSftpEntry(remotePath, name) {
+  showPrompt({
+    title: '重命名',
+    label: '新名称',
+    value: name,
+    onOk: async (newName) => {
+      if (!newName || newName === name) return;
+      const dir = remotePath.slice(0, remotePath.lastIndexOf('/'));
+      const to = dir === '/' ? `/${newName}` : `${dir}/${newName}`;
+      const res = await window.api.sftpRename(sftpSession(), remotePath, to);
+      if (!res.ok) { alert(`重命名失败: ${res.error}`); addLog(`✂ 重命名失败 ${remotePath} → ${to}: ${res.error}`, true); return; }
+      addLog(`✂ 重命名 ${remotePath} → ${to} ✅`);
+      setStatus(`已重命名 → ${to}`, 'var(--green)');
+      loadSftpList();
+      sftpRefocusTerminal();
+    },
+  });
+}
+
+// 删除单个文件/目录(目录递归删空内容)
+function deleteSftpEntry(remotePath, name) {
+  const isDir = remotePath.endsWith('/') || state.sftp.entries.find((x) => sftpJoin(x.name) === remotePath)?.isDir;
+  const tip = isDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
+  if (!confirm(`确定删除「${remotePath}」吗?${tip}`)) return;
+  (async () => {
+    const sid = sftpSession();
+    const res = await window.api[isDir ? 'sftpRmdir' : 'sftpDelete'](sid, remotePath);
+    if (!res.ok) { addLog(`🗑 删除失败 ${remotePath}: ${res.error}`, true); alert(`删除失败: ${res.error}`); return; }
+    addLog(`🗑 删除 ${remotePath} ✅`);
+    setStatus(`已删除 ${remotePath}`, 'var(--orange)');
+    loadSftpList();
+    sftpRefocusTerminal();
+  })();
 }
 
 async function sftpDeleteSelected() {
@@ -6791,7 +7234,9 @@ async function sftpUpload() {
     return;
   }
   const done = res.isDir ? `文件夹 ${res.remotePath}(${res.count} 个文件)` : res.remotePath;
-  setStatus(`已上传 → ${done}`, 'var(--green)');
+  // 明确告诉用户传到了哪个目录(路径栏当前目录),并记住名字用于列表高亮定位
+  setStatus(`上传成功 → ${res.remotePath}(当前目录 ${state.sftp.path})`, 'var(--green)');
+  state.sftpUploadFlash.add(String(res.remotePath || '').replace(/\/+$/, '').split('/').pop() || res.remotePath); // 无 Node path 模块,手写 basename
   if (res.resumedFrom > 0) addLog(`⬆ ${res.remotePath} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
   addLog(`⬆ 上传 ${done} ✅`);
   if (res.failed && res.failed.length) {
@@ -6799,6 +7244,11 @@ async function sftpUpload() {
     alert(`有 ${res.failed.length} 个文件上传失败:\n${res.failed.map((f) => f.rp).join('\n')}`);
   }
   loadSftpList();
+  // 3 秒后取消"刚上传"高亮(重新渲染一次去掉闪烁)
+  setTimeout(() => {
+    state.sftpUploadFlash.clear();
+    if (state.sftp.visible) loadSftpList();
+  }, 3000);
 }
 
 async function sftpDownload() {
@@ -6813,7 +7263,14 @@ async function sftpDownload() {
     sftpTransferFinish(res.ok ? new Set() : new Set([remote]), res.error === '已取消'); // 行留在历史里
     sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
     if (!res.ok) {
-      if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remote}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+      if (res.error !== '已取消') {
+        addLog(`⬇ 下载失败 ${remote}: ${res.error}`, true);
+        dlog('SFTP', `⬇ 下载失败 ${remote}: ${res.error}`);
+        const permTip = /EPERM|EACCES|operation not permitted|permission denied/i.test(res.error)
+          ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):换个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 里添加 Polaris(Electron)'
+          : '';
+        alert(`下载失败: ${res.error}${permTip}`);
+      }
       return;
     }
     setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
@@ -6854,8 +7311,22 @@ async function sftpDownload() {
     const row = sftpTransfer.rows.get(r.remotePath);
     if (row && row.setLocal) row.setLocal(r.localPath);
   });
-  fail.forEach((r) => addLog(`⬇ 下载失败 ${r.remotePath}: ${r.error}`, true));
-  if (fail.length) alert(`${fail.length} 个文件下载失败,见下方传输记录`);
+  fail.forEach((r) => {
+    addLog(`⬇ 下载失败 ${r.remotePath}: ${r.error}`, true);
+    dlog('SFTP', `⬇ 下载失败 ${r.remotePath}: ${r.error}`); // 进调试面板,排查真实错误
+  });
+  if (fail.length) {
+    // macOS TCC:桌面/文稿/下载目录受系统保护,未授权 app 写入会 EPERM/EACCES。
+    // 给出明确指引,而不是让用户对着"operation not permitted"发懵。
+    const permErr = fail.some((r) => /EPERM|EACCES|operation not permitted|permission denied/i.test(r.error || ''));
+    const tip = permErr
+      ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):\n'
+      + '· 方法1:换个普通文件夹(如 ~/Downloads/ 下的子目录需授权,建议用非受保护目录,如 ~/sftp)\n'
+      + '· 方法2:系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 添加 Polaris(Electron)\n'
+      + '· 方法3:如果本目录不是系统保护目录,请检查磁盘剩余空间和写入权限'
+      : '';
+    alert(`${fail.length} 个文件下载失败:\n${fail.map((r) => `${r.remotePath}: ${r.error}`).join('\n')}${tip}`);
+  }
 }
 
 // =====================================================================
@@ -7013,8 +7484,28 @@ els.promptInput.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) els.p
 // =====================================================================
 // 右键菜单:菜单项各自绑定 action;点别处 / 失焦 关闭
 // =====================================================================
-window.addEventListener('click', closeCtxMenu);
-window.addEventListener('blur', closeCtxMenu);
+// 注意:右键(contextmenu)后部分平台/输入方式会紧跟一个 click 事件,若直接 closeCtxMenu,
+// 菜单刚弹出就被立刻收起(表现:菜单一闪而过,反复右键重开,日志里 MENU open/close 刷屏)。
+// 打开后 250ms 内的 click 视为"右键残留",忽略;真正点菜单项/点别处照常执行各自逻辑。
+window.addEventListener('click', () => {
+  if (Date.now() - ctxMenuOpenedAt < 250) return;
+  closeCtxMenu('click');
+});
+window.addEventListener('blur', () => {
+  // 诊断:菜单"一闪而过"全是 blur 关闭。记录失焦时刻的焦点状态,区分
+  //   A) 窗口真失焦(document.hasFocus()=false,用户切走/点了别处)
+  //   B) guest/webview 抢焦点(hasFocus()=true 但 window blur 仍触发——Chromium 行为)
+  //   C) 焦点在 iframe/OOPIF 内(activeElement 是 webview 或 body)
+  const wv = els.bastionWebview;
+  const wvState = wv && wv.executeJavaScript
+    ? `wv:${wv.src ? '有src' : '无src'}${wv.classList.contains('hidden') ? '/隐藏' : '/显示'}`
+    : 'wv:不存在';
+  const ae = document.activeElement;
+  const aeDesc = ae ? (ae.tagName + (ae.id ? '#' + ae.id : '') + (ae.className && typeof ae.className === 'string' ? '.' + String(ae.className).slice(0, 40) : '')) : 'null';
+  const menuOpen = els.ctxMenu && !els.ctxMenu.classList.contains('hidden');
+  dlog('FOCUS', `window blur: hasFocus=${document.hasFocus()} active=${aeDesc} ${wvState} menuOpen=${menuOpen}`);
+  closeCtxMenu('blur');
+});
 
 // =====================================================================
 // 终端内搜索(Cmd/Ctrl+F)
@@ -7248,44 +7739,70 @@ els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBac
 els.bastionForward.addEventListener('click', () => { try { els.bastionWebview.goForward(); } catch { /* ignore */ } });
 els.bastionReload.addEventListener('click', () => { try { els.bastionWebview.reload(); } catch { /* ignore */ } });
 els.bastionClose.addEventListener('click', closeBastionPanel); // ✕ 彻底关闭(与 — 最小化区分)
-// web 标签资产列表:刷新 / 收起 / 展开
-els.bastionAssetRefresh.addEventListener('click', () => {
-  const s = state.jmsServers.find((x) => x.token);
-  if (s) jmsRefreshServer(s.id); else setStatus('没有已登录的 JumpServer', 'var(--orange)');
-});
-els.bastionAssetCollapse.addEventListener('click', () => { toggleBastionAssetCollapsed(true); });
-els.bastionAssetReopen.addEventListener('click', () => { toggleBastionAssetCollapsed(false); });
-function toggleBastionAssetCollapsed(collapsed) {
-  state.settings.bastionAssetCollapsed = !!collapsed;
-  saveSettings();
-  els.bastionAssetSidebar.classList.toggle('hidden', !!collapsed);
-  els.bastionAssetReopen.classList.toggle('hidden', !collapsed);
-}
 // 画面缩放(支持 0.5~2.5,按住可连续缩放)
 els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
 els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
 applyBastionZoom(); // 应用持久化的缩放级别
 initBastionWebview();
-setInterval(pollBastionAssets, 4000); // 定时刷新 H3C 资产(用户登录/进资产页后捕获)
+// 低频兜底:15s 才轮询一次 H3C 资产(用户操作页面时由 bastionFocusCheck 事件驱动快速同步;
+// 闲置时资产不会变,4s 空转纯属浪费 → 降频,见 bastionFocusCheckPending)
+setInterval(pollBastionAssets, 15000);
 
 // 键盘焦点桥(宿主侧):click 进 webview guest 不会把宿主焦点移到 webview 元素上,
 // 之后按键会被宿主当前焦点(地址框等)吞掉,guest 输入框"打不进去"。用 guest 注入的
 // __bastionFocusTs(mousedown/pointerdown 时间戳)判断"用户最近操作在 guest",把焦点补回 webview。
 window.__hostEditableTs = 0;
+window.__hostAnyClickTs = 0; // 宿主侧任意 mousedown 时间戳:用户点主界面任何地方都记,
+// 让焦点检查不抢回(否则只记 INPUT/可编辑会漏掉"点会话列表/工具栏/空白区"这些非输入区,
+// guest ts 比它新 → 打开网页 SFTP 后焦点被 webview 反复抢走,点主界面无效 → "无法退回")。
 document.addEventListener('mousedown', (e) => {
+  window.__hostAnyClickTs = Date.now();
   // 宿主可编辑元素被点击 → 记时间,让焦点检查不抢回(用户在输地址/AI/搜索等)
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) window.__hostEditableTs = Date.now();
 }, true);
+// 用户最近是否操作过 guest(H3C 页面):读宿主侧镜像 __guestInteractTs
+// (由 bastionFocusCheck 在检测到 guest 交互时更新),5 秒内有操作 → true。
+// 避免每 4s 轮询:闲置时(用户没动 H3C 页面)资产不会变,轮询纯属浪费。
+let __guestInteractTs = 0; // 宿主侧镜像:用户最近操作 guest 的时间(由 focus check 更新)
+window.__guestInteractTs = 0;
+let bastionPollScheduled = false; // 事件驱动轮询防抖:500ms 内只同步一次
+let bastionFetchOkNotified = false; // "拉取完成"已提示过(重复成功不再刷状态栏)
+let bastionFetchFailNotified = false; // "拉取失败/未完成"已提示过(重复失败不打扰用户)
+function bastionFocusCheckPending() {
+  return Date.now() - (window.__guestInteractTs || 0) < 5000;
+}
 function bastionFocusCheck() {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板收起:不打扰
   if (!els.lockOverlay.classList.contains('hidden')) return; // 锁定中:webview 已 display:none
+  // 右键菜单打开时不抢焦点:否则 guest 的 __bastionFocusTs 一更新,这里 wv.focus() 会
+  // 触发 window blur → 菜单刚弹出就被关闭("一闪而过",日志 close:blur 刷屏)。
+  if (els.ctxMenu && !els.ctxMenu.classList.contains('hidden')) return;
   if (document.activeElement === wv) return; // 键盘焦点已在 webview:无需轮询
   try {
     wv.executeJavaScript('window.__bastionFocusTs || 0').then((ts) => {
-      if (ts && ts > (window.__hostEditableTs || 0) && document.activeElement !== wv) wv.focus();
+      // 镜像 guest 交互时间到宿主:供 pollBastionAssets 判断"用户正在操作 H3C 页面"
+      // → 立即同步资产(事件驱动);闲置时 poll 走 15s 低频兜底,不再每 4s 空转。
+      if (ts) {
+        window.__guestInteractTs = ts;
+        // 用户刚操作过 H3C 页面 → 立即同步一次资产(事件驱动,不等 15s 兜底)
+        // 防抖:500ms 内的连续操作只触发一次同步,避免操作期间重复 executeJavaScript
+        if (!bastionPollScheduled) {
+          bastionPollScheduled = true;
+          setTimeout(() => { bastionPollScheduled = false; pollBastionAssets(); }, 400);
+        }
+      }
+      // 只在"用户最近 3 秒内点过 guest"时才补焦点。旧逻辑只要 guest 里点过一次
+      // (ts > __hostEditableTs,该条件几乎恒成立)就永远每 500ms 抢一次焦点:
+      // webview 反复获得焦点 → window 触发"假 blur"(hasFocus 仍 true)刷屏,
+      // 且焦点一直被抢,用户想点 ✕ 关闭面板 / 操作主界面都会被干扰。
+      const recent = ts && (Date.now() - ts) < 3000;
+      // 用户最近在宿主(主界面)点过(任意位置)→ 不抢焦点:焦点跟用户走,
+      // 否则打开网页 SFTP 后 webview 一直抢焦点,点主界面无效,退不回来。
+      const hostClickedLater = (window.__hostAnyClickTs || 0) >= (ts || 0);
+      if (recent && !hostClickedLater && ts > (window.__hostEditableTs || 0) && document.activeElement !== wv) wv.focus();
     }).catch(() => {});
   } catch { /* 导航中 executeJavaScript 可能短暂不可用,忽略 */ }
 }
@@ -7333,6 +7850,28 @@ els.debugCopy.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(termDebug.lines.join('\n')); setStatus('调试日志已复制到剪贴板'); }
   catch { setStatus('复制失败', 'var(--red)'); }
 });
+// 「⬇ 下载日志」:打包完整日志(主进程 console + 渲染层 console + dlog + 异常 + 系统信息)
+// 到剪贴板/文件 —— 排障时一键导出全部记录发给开发者
+els.debugDownload.addEventListener('click', async () => {
+  try {
+    const r = await window.api.appLogDump();
+    if (!r || !r.ok || !r.content) { setStatus('日志导出失败', 'var(--red)'); return; }
+    // 同时进剪贴板,方便直接粘贴给开发者
+    try { await navigator.clipboard.writeText(r.content); } catch { /* ignore */ }
+    // 下载为文件(带日期)
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const fname = `polaris-logs-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.log`;
+    const blob = new Blob([r.content], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    setStatus(`完整日志已下载(${fname})并复制到剪贴板`, 'var(--green)');
+  } catch (e) { setStatus('下载日志失败: ' + (e && e.message), 'var(--red)'); }
+});
 els.debugSave.addEventListener('click', async () => {
   const r = await window.api.debugSave(termDebug.lines.join('\n'));
   if (r && r.ok) setStatus(`调试日志已保存: ${r.path}`);
@@ -7368,6 +7907,10 @@ els.setAutoReconnect.addEventListener('change', () => {
 });
 els.setVerify.addEventListener('change', () => {
   state.settings.verifyHostKey = els.setVerify.checked;
+  saveSettings();
+});
+els.setAutoTrust.addEventListener('change', () => {
+  state.settings.autoTrustHostKey = els.setAutoTrust.checked;
   saveSettings();
 });
 els.setRestore.addEventListener('change', () => {
@@ -7497,6 +8040,11 @@ els.recMenu.addEventListener('click', onRecMenuClick);
 document.addEventListener('click', (e) => {
   if (!els.recMenu.contains(e.target) && !els.btnRec.contains(e.target)) els.recMenu.classList.add('hidden');
 });
+// 智能命令推荐下拉:点按钮展开/收起,点外面收起
+els.btnRecommend.addEventListener('click', toggleRecommendMenu);
+document.addEventListener('click', (e) => {
+  if (!els.recommendMenu.contains(e.target) && !els.btnRecommend.contains(e.target)) els.recommendMenu.classList.add('hidden');
+});
 els.recordingsClose.addEventListener('click', closeRecordingsModal);
 els.recordingsOpenDir.addEventListener('click', () => window.api.recOpenDir());
 els.replayPlay.addEventListener('click', replayPlayPause);
@@ -7552,9 +8100,213 @@ els.aiInput.addEventListener('keydown', (e) => {
 els.aiConfigToggle.addEventListener('click', () => {
   const show = els.aiConfig.classList.contains('hidden');
   els.aiConfig.classList.toggle('hidden', !show);
-  if (show) fillAiConfig();
+  if (show) {
+    fillAiConfig();
+    refreshSkillsList(); // 展开配置时顺带刷新技能列表
+    refreshKbList();    // 知识库文档列表
+    syncKbToggle();     // AI 对话检索开关
+  }
 });
+
+// =====================================================================
+// Agent Skill 技能库(参考 Chaterm):AI 面板配置区里的技能管理
+// 列表(启停/编辑/删除)+ 新建/编辑表单 + 打开技能目录
+// =====================================================================
+let skillsEditingName = null; // 正在编辑的技能名(null = 新建)
+
+async function refreshSkillsList() {
+  let res;
+  try { res = await window.api.skillsList(); } catch { res = null; }
+  const box = els.skillsList;
+  if (!res || !res.ok) { box.textContent = ''; box.appendChild(mkEmpty('加载失败')); return; }
+  const list = res.skills || [];
+  box.textContent = '';
+  if (!list.length) {
+    box.appendChild(mkEmpty('还没有技能。点「＋ 新建」创建,或让 AI 用 summarize_to_skill 把对话沉淀成技能。'));
+    return;
+  }
+  for (const s of list) {
+    const item = document.createElement('div');
+    item.className = 'skill-item' + (s.enabled ? '' : ' disabled');
+    // 启停开关
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.className = 'skill-item-toggle';
+    toggle.checked = !!s.enabled;
+    toggle.title = s.enabled ? '已启用(AI 的 AVAILABLE SKILLS 清单可见)' : '已停用';
+    toggle.addEventListener('change', async () => {
+      const r = await window.api.skillsSetEnabled(s.name, toggle.checked);
+      if (r && r.ok) refreshSkillsList();
+      else alert((r && r.error) || '操作失败');
+    });
+    // 名称 + 描述
+    const info = document.createElement('div');
+    info.className = 'skill-item-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'skill-item-name';
+    nameEl.textContent = s.name;
+    const descEl = document.createElement('div');
+    descEl.className = 'skill-item-desc';
+    descEl.textContent = s.description;
+    info.append(nameEl, descEl);
+    // 编辑 / 删除
+    const actions = document.createElement('div');
+    actions.className = 'skill-item-actions';
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn-mini'; editBtn.textContent = '✏️'; editBtn.title = '编辑技能';
+    editBtn.addEventListener('click', () => openSkillsEditor(s));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-mini danger'; delBtn.textContent = '🗑'; delBtn.title = '删除技能';
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除技能「${s.name}」?`)) return;
+      const r = await window.api.skillsDelete(s.name);
+      if (r && r.ok) refreshSkillsList();
+      else alert((r && r.error) || '删除失败');
+    });
+    actions.append(editBtn, delBtn);
+    item.append(toggle, info, actions);
+    box.appendChild(item);
+  }
+}
+
+function mkEmpty(text) {
+  const div = document.createElement('div');
+  div.className = 'skills-empty';
+  div.textContent = text;
+  return div;
+}
+
+function openSkillsEditor(skill) {
+  skillsEditingName = skill ? skill.name : null;
+  els.skillsEditName.value = skill ? skill.name : '';
+  els.skillsEditName.disabled = !!skill; // 编辑态技能名不可改(避免产生孤儿目录)
+  els.skillsEditDesc.value = skill ? skill.description : '';
+  els.skillsEditContent.value = skill ? skill.content : '';
+  els.skillsEditEnabled.checked = skill ? !!skill.enabled : true;
+  els.skillsEditor.classList.remove('hidden');
+  els.skillsEditName.focus();
+}
+
+els.skillsNew.addEventListener('click', () => openSkillsEditor(null));
+els.skillsOpenFolder.addEventListener('click', () => window.api.skillsOpenFolder());
+els.skillsEditCancel.addEventListener('click', () => els.skillsEditor.classList.add('hidden'));
+els.skillsEditSave.addEventListener('click', async () => {
+  const name = els.skillsEditName.value.trim();
+  const description = els.skillsEditDesc.value.trim();
+  const content = els.skillsEditContent.value.trim();
+  if (!name) { alert('请填写技能名(小写字母/数字/连字符)'); return; }
+  if (!description) { alert('请填写技能描述'); return; }
+  if (!content) { alert('技能正文不能为空'); return; }
+  const r = await window.api.skillsSave({ name, description, enabled: els.skillsEditEnabled.checked, content });
+  if (r && r.ok) {
+    els.skillsEditor.classList.add('hidden');
+    refreshSkillsList();
+    setStatus(`技能「${name}」已保存`, 'var(--green)');
+  } else {
+    alert((r && r.error) || '保存失败');
+  }
+});
+els.skillsEditContent.addEventListener('keydown', (e) => {
+  // Ctrl+Enter / Cmd+Enter 快捷保存
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); els.skillsEditSave.click(); }
+});
+
+// =====================================================================
+// 用户知识库(参考 Chaterm):导入运维文档,AI 对话时检索相关片段参考
+// =====================================================================
+async function refreshKbList() {
+  let res;
+  try { res = await window.api.kbList(); } catch { res = null; }
+  const box = els.kbList;
+  box.textContent = '';
+  if (!res || !res.ok) { box.appendChild(mkEmpty('加载失败')); return; }
+  const docs = res.docs || [];
+  if (!docs.length) {
+    box.appendChild(mkEmpty('还没有文档。点「＋ 导入」加入运维手册,AI 对话时会参考。'));
+    return;
+  }
+  for (const d of docs) {
+    const item = document.createElement('div');
+    item.className = 'skill-item';
+    const info = document.createElement('div');
+    info.className = 'skill-item-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'skill-item-name';
+    nameEl.textContent = d.name;
+    const descEl = document.createElement('div');
+    descEl.className = 'skill-item-desc';
+    descEl.textContent = `${formatSize(d.size)} · ${new Date(d.mtimeMs).toLocaleString()}`;
+    info.append(nameEl, descEl);
+    const actions = document.createElement('div');
+    actions.className = 'skill-item-actions';
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-mini danger';
+    delBtn.textContent = '🗑';
+    delBtn.title = '从知识库删除该文档';
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`从知识库删除「${d.name}」?`)) return;
+      const r = await window.api.kbRemove(d.name);
+      if (r && r.ok) { refreshKbList(); setStatus(`已删除文档 ${d.name}`, 'var(--green)'); }
+      else alert((r && r.error) || '删除失败');
+    });
+    actions.appendChild(delBtn);
+    item.append(info, actions);
+    box.appendChild(item);
+  }
+}
+
+// 搜索预览(防抖 300ms):输入即检索,展示命中片段
+let kbSearchTimer = null;
+function onKbSearchInput() {
+  clearTimeout(kbSearchTimer);
+  kbSearchTimer = setTimeout(async () => {
+    const q = els.kbSearch.value.trim();
+    const box = els.kbResults;
+    if (!q) { box.textContent = ''; return; }
+    let results = [];
+    try {
+      const r = await window.api.kbSearch(q, 5);
+      if (r && r.ok) results = r.results || [];
+    } catch { /* ignore */ }
+    if (!results.length) { box.textContent = '无匹配文档'; return; }
+    box.textContent = '';
+    for (const h of results) {
+      const row = document.createElement('div');
+      row.className = 'kb-hit';
+      const name = document.createElement('div');
+      name.className = 'kb-hit-name';
+      name.textContent = `📄 ${h.name} (相关度 ${h.score})`;
+      const snip = document.createElement('div');
+      snip.className = 'kb-hit-snippet';
+      snip.textContent = h.snippet || '(无片段)';
+      row.append(name, snip);
+      box.appendChild(row);
+    }
+  }, 300);
+}
+
+els.kbImport.addEventListener('click', async () => {
+  const r = await window.api.kbPickImport();
+  if (r && r.canceled) return;
+  if (r && r.ok) { refreshKbList(); setStatus(`已导入文档: ${r.doc.name}`, 'var(--green)'); }
+  else alert((r && r.error) || '导入失败');
+});
+els.kbOpenFolder.addEventListener('click', () => window.api.kbOpenFolder());
+els.kbSearch.addEventListener('input', onKbSearchInput);
+// AI 对话是否检索知识库(设置持久化,aiSend 时随请求带上)
+els.kbAiToggle.addEventListener('change', () => {
+  state.settings.kbEnabled = els.kbAiToggle.checked;
+  saveSettings();
+});
+function syncKbToggle() {
+  els.kbAiToggle.checked = state.settings.kbEnabled !== false;
+}
 els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
+// SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
+els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
+document.addEventListener('click', (e) => {
+  if (!els.sftpConnMenu.contains(e.target) && !els.sftpConn.contains(e.target)) els.sftpConnMenu.classList.add('hidden');
+});
 els.btnSftpUp.addEventListener('click', sftpGoUp);
 // 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
 els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
@@ -7605,6 +8357,19 @@ els.sessionTree.addEventListener('click', (e) => {
   if (e.target === els.sessionTree && state.activeGroupId != null) {
     state.activeGroupId = null;
     renderSessionList(els.inputSessionSearch.value);
+  }
+});
+// SFTP 面板是浏览操作区,不该抢键盘焦点:点击面板任意处(文件行/空白/工具栏非输入框)
+// 后把焦点还给当前活跃终端。否则点一下文件行 → 焦点落 BODY → 回终端敲 Cmd+A/普通键全被吞。
+// 例外:点击地址/搜索等 INPUT 时保留焦点(用户在输文字);按钮点击由各操作完成后再归还。
+els.sftpPanel.addEventListener('mousedown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const sid = state.activeSessionId;
+  const tab = sid ? state.tabs.get(sid) : null;
+  if (tab && tab.term) {
+    // 让浏览器先完成本次点击的默认聚焦,再归还终端(否则 mousedown 立即 focus 会打断按钮 click)
+    setTimeout(() => { try { tab.term.focus(); } catch { /* ignore */ } }, 0);
   }
 });
 // 密码/私钥口令 显示/隐藏切换(点眼睛按钮)
@@ -7875,12 +8640,12 @@ updateCmdRecordBtn(); // 命令记录开关按钮状态
 updateRecordBtn();    // 会话录制按钮状态(初始=未录制)
 syncPanelButtons();   // 面板开关按钮激活态
 // ---- 解锁后科幻开机过场(仅正式版 ?boot=1 播放;点击/按键可跳过) ----
-// 数字雨 + 全息扫描线 + 能量环 + 状态行打字机,~2.2s 后淡出揭开主界面
+// 简洁版:只保留一个能量环边框(去掉了数字雨/扫描线/logo/状态行),~1s 后淡出揭开主界面
 (function bootIntro() {
   if (new URLSearchParams(location.search).get('boot') !== '1') return;
   const ov = document.getElementById('boot-overlay');
   if (!ov) return;
-  // 过场动画设置:'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过(设置 → 外观 → 启动过场动画)
+  // 过场动画设置:'full'完整1.6s | 'short'缩短0.7s | 'skip'跳过(设置 → 外观 → 启动过场动画)
   const mode = state.settings.bootIntro || 'short';
   if (mode === 'skip') {
     ov.remove();
@@ -7888,62 +8653,21 @@ syncPanelButtons();   // 面板开关按钮激活态
     return;
   }
   const IS_FULL = mode === 'full';
-  const TYP = IS_FULL ? 420 : 160;      // 状态行切换间隔
-  const PAUSE = IS_FULL ? 550 : 250;    // 最后一行停留
-  const FALLBACK = IS_FULL ? 2400 : 900; // 兜底总时长
+  const PAUSE = IS_FULL ? 1100 : 700;      // 边框展示时长
+  const FALLBACK = IS_FULL ? 1600 : 900;   // 兜底总时长
   ov.classList.remove('hidden'); // 揭开过场(正式版;dev 测试不播,overlay 保持 hidden 不挡界面)
-  const line = document.getElementById('boot-line');
-  const rain = document.getElementById('boot-rain');
-  const statuses = ['验证加密密钥… OK', '加载会话数据库… OK', '建立安全信道… OK', '✦ ACCESS GRANTED'];
-  let raf = null;
-
-  function drawRain() { // 背景数字雨(轻量 canvas,过场结束即停)
-    const ctx = rain.getContext('2d');
-    const W = rain.width = rain.offsetWidth;
-    const H = rain.height = rain.offsetHeight;
-    const fs = 14, cols = Math.ceil(W / fs);
-    const drops = new Array(cols).fill(0);
-    const glyphs = 'アイウエオカキクケコ0123456789ABCDEF';
-    ctx.font = fs + 'px Menlo, monospace';
-    const step = () => {
-      ctx.fillStyle = 'rgba(4,10,24,0.14)';
-      ctx.fillRect(0, 0, W, H);
-      for (let i = 0; i < cols; i++) {
-        ctx.fillStyle = Math.random() > 0.97 ? '#7de8ff' : '#1fbfff';
-        ctx.fillText(glyphs[Math.floor(Math.random() * glyphs.length)], i * fs, drops[i] * fs);
-        if (drops[i] * fs > H && Math.random() > 0.97) drops[i] = 0;
-        drops[i]++;
-      }
-      raf = requestAnimationFrame(step);
-    };
-    step();
-  }
 
   let done = false;
   function skip() {
     if (done) return;
     done = true;
-    if (raf) cancelAnimationFrame(raf);
     ov.classList.add('boot-done');
     dlog('BOOT', `过场动画结束(点击/按键可跳过) +${Math.round(performance.now() - __bootT0)}ms`);
     setTimeout(() => ov.remove(), 500);
   }
   ov.addEventListener('click', skip);
   window.addEventListener('keydown', skip, { once: true });
-
-  drawRain();
-  line.textContent = 'POLARIS 安全系统启动中…';
-  let i = 0;
-  const typer = setInterval(() => {
-    if (i >= statuses.length) {
-      clearInterval(typer);
-      setTimeout(skip, PAUSE); // ACCESS GRANTED 停留片刻再淡出
-      return;
-    }
-    line.textContent = statuses[i];
-    if (i === statuses.length - 1) line.style.color = 'var(--green)'; // 最后一行高亮绿色
-    i++;
-  }, TYP);
+  setTimeout(skip, PAUSE);
   setTimeout(skip, FALLBACK); // 兜底:到点必结束
 })();
 loadCmdHistory();   // 加载持久化的命令记录

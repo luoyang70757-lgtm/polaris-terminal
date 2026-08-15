@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('api', {
   sftpMkdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
   sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
   sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),
+  sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', { sessionId, from, to }),
   sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
   sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
   sftpUpload: (sessionId, remoteDir) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir }),
@@ -80,6 +81,8 @@ contextBridge.exposeInMainWorld('api', {
   addCmdHistory: (host, command) => ipcRenderer.invoke('cmd:add', host, command),
   listCmdHistory: () => ipcRenderer.invoke('cmd:list'),
   clearCmdHistoryDb: () => ipcRenderer.invoke('cmd:clear'),
+  // 智能命令推荐:该主机历史高频 + 常用运维命令库
+  recommendCmds: (host) => ipcRenderer.invoke('cmd:recommend', host),
   archiveCmdHistory: (host, sessionName) => ipcRenderer.invoke('cmd:archive', { host, sessionName }),
   openArchives: () => ipcRenderer.invoke('cmd:openArchives'),
   listCmdArchives: (host) => ipcRenderer.invoke('cmd:listArchives', host),
@@ -140,6 +143,10 @@ contextBridge.exposeInMainWorld('api', {
   copyText: (text) => clipboard.writeText(text),
   readClipboard: () => clipboard.readText(),
 
+  // ---- 全量日志 ----
+  appLogDump: () => ipcRenderer.invoke('app:log-dump'),
+  appLogDlog: (lines) => ipcRenderer.send('app:log-dlog', lines),
+
   // ---- 系统探测(OS 识别) ----
   detectOs: (opts) => ipcRenderer.invoke('sessions:detectOs', opts),
 
@@ -157,4 +164,22 @@ contextBridge.exposeInMainWorld('api', {
   aiChat: (cfg) => ipcRenderer.invoke('ai:chat', cfg),
   aiStop: (requestId) => ipcRenderer.send('ai:stop', requestId),
   onAiStream: (cb) => ipcRenderer.on('ai:stream', (_e, evt) => cb(evt)),
+  // AI 命令推荐:基于当前终端上下文推荐下一条命令
+  aiSuggestCmd: (cfg) => ipcRenderer.invoke('ai:suggestCmd', cfg),
+
+  // ---- Agent Skill 技能库(参考 Chaterm) ----
+  skillsList: () => ipcRenderer.invoke('skills:list'),
+  skillsGet: (name) => ipcRenderer.invoke('skills:get', name),
+  skillsSave: (skill) => ipcRenderer.invoke('skills:save', skill),
+  skillsDelete: (name) => ipcRenderer.invoke('skills:delete', name),
+  skillsSetEnabled: (name, enabled) => ipcRenderer.invoke('skills:setEnabled', name, enabled),
+  skillsOpenFolder: () => ipcRenderer.invoke('skills:openFolder'),
+
+  // ---- 用户知识库(参考 Chaterm):运维文档导入 + 关键词检索 ----
+  kbList: () => ipcRenderer.invoke('kb:list'),
+  kbPickImport: () => ipcRenderer.invoke('kb:pickImport'),
+  kbImport: (filePath, name) => ipcRenderer.invoke('kb:import', { filePath, name }),
+  kbRemove: (name) => ipcRenderer.invoke('kb:remove', name),
+  kbSearch: (query, limit) => ipcRenderer.invoke('kb:search', query, limit),
+  kbOpenFolder: () => ipcRenderer.invoke('kb:openFolder'),
 });

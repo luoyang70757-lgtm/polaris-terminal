@@ -20,7 +20,10 @@ const crypto = require('./lib/crypto'); // safeStorage 密码加密
 const knownHosts = require('./lib/known-hosts'); // 主机指纹校验
 const iconv = require('iconv-lite'); // 终端编码转换(GBK/GB2312 → UTF-8)
 const dangerousLib = require('./lib/dangerous'); // 危险命令识别与分级(AI 审批用)
-const { callAiStream, normalizeAiUrl } = require('./lib/ai-stream'); // AI 流式调用(SSE 解析)
+const { callAiStream, normalizeAiUrl, AI_SYSTEM_PROMPT } = require('./lib/ai-stream'); // AI 流式调用(SSE 解析)
+const skillsLib = require('./lib/skills'); // Agent Skill 技能库(use_skill / summarize_to_skill)
+const recommendLib = require('./lib/recommend'); // 智能命令推荐(历史高频 + 常用运维命令库)
+const kbLib = require('./lib/kb'); // 用户知识库(运维文档导入 + 关键词检索)
 const dbCrypto = require('./lib/db-crypto'); // 数据库整库加密(AES-256-GCM)
 const appLock = require('./lib/app-lock'); // App 打开密码锁
 const recorder = require('./lib/recorder'); // 会话录制与回放数据层(JSONL)
@@ -28,6 +31,7 @@ const sessionLog = require('./lib/session-log'); // 会话日志落盘(可读纯
 const tunnelLib = require('./lib/tunnel'); // SSH 隧道/端口转发(本地/远程/动态 SOCKS)
 const jmsApi = require('./lib/jms-api'); // JumpServer v4 REST API(登录/资产列表)
 const XLSX = require('xlsx'); // SheetJS:生成导入模板 Excel(和导入同一套库)
+const appLog = require('./lib/app-log'); // 全量日志落盘(主/渲染层 dlog/console/异常 → logs/app-*.log)
 
 // ---------- 安全日志 ----------
 // 当 stdout/stderr 管道被关闭(如从终端启动后终端被关、后台运行、日志重定向断开)时,
@@ -42,26 +46,33 @@ const __safeErrImpl = __safeLog(__err);
 // 主进程日志转发到渲染层调试面板(排查主进程侧问题:启动慢/连接失败/崩溃)。
 // 渲染层自己的 console 会被 mainWindow 的 console-message 打回来(带 [RENDERER] 前缀),
 // 渲染层已自行记录,这里过滤掉避免重复刷屏。
+// 另外过滤"堡垒机 webview 注入在页面导航瞬间的良性失败"(GUEST_VIEW_MANAGER_CALL /
+// Script failed to execute):这是 Electron 对 executeJavaScript 在帧切换时的固定报错,
+// 注入逻辑会自动重试,转发进调试面板只会造成 MAIN·错误 刷屏。控制台仍会打印,可排查。
+const __BENIGN_MAIN_ERROR = /GUEST_VIEW_MANAGER_CALL|Script failed to execute/;
 function __forwardMainLog(level, args) {
   try {
     const msg = Array.from(args).map(String).join(' ');
     if (level === 'log' && msg.startsWith('[RENDERER]')) return;
+    if (level === 'error' && __BENIGN_MAIN_ERROR.test(msg)) return; // 良性 webview 错误不刷调试面板
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.send('main:log', level, msg);
     }
   } catch { /* ignore */ }
 }
-console.log = function () { __forwardMainLog('log', arguments); return __safeLogImpl.apply(console, arguments); };
-console.error = function () { __forwardMainLog('error', arguments); return __safeErrImpl.apply(console, arguments); };
+console.log = function () { __forwardMainLog('log', arguments); appLog.log('main', ...arguments); return __safeLogImpl.apply(console, arguments); };
+console.error = function () { __forwardMainLog('error', arguments); appLog.log('error', ...arguments); return __safeErrImpl.apply(console, arguments); };
 // 兜底:其他 EPIPE 未捕获异常忽略,非 EPIPE 打印到 stderr 继续运行(桌面应用不因日志崩溃退出)
 process.on('uncaughtException', (e) => {
   if (e && e.code === 'EPIPE') return;
   try { __err.call(console, '[MAIN] 未捕获异常:', e); } catch { /* ignore */ }
+  try { appLog.error('uncaughtException', e); } catch { /* ignore */ }
 });
 // Promise 拒绝也要独立处理:不能只靠 uncaughtException 兜底(拒绝不会触发它)。
 // 错误要打日志(可观测),而不是静默吞掉 —— 桌面应用继续运行,不退出。
 process.on('unhandledRejection', (reason) => {
   try { __err.call(console, '[MAIN] 未处理的 Promise 拒绝:', reason instanceof Error ? (reason.stack || reason.message) : reason); } catch { /* ignore */ }
+  try { appLog.error('unhandledRejection', reason instanceof Error ? (reason.stack || reason.message) : reason); } catch { /* ignore */ }
 });
 
 // 堡垒机常用自签名证书/内网 CA,放行证书错误(否则内置浏览器打不开堡垒机 Web)
@@ -876,7 +887,7 @@ ipcMain.handle('batch:exec', async (_e, { hosts, command }) => {
 const aiStopSet = new Set(); // 被用户点"停止"的 requestId 集合
 ipcMain.on('ai:stop', (_e, requestId) => { if (requestId) aiStopSet.add(requestId); });
 
-ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hosts, requestId }) => {
+ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hosts, requestId, kbEnabled }) => {
   aiStopSet.clear(); // 单聊:新一轮对话清掉遗留停止标记,防 Set 只增不减
   if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
   const base = normalizeAiUrl(url, format);
@@ -888,18 +899,27 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
       : null,
     sessionId: (h && h.sessionId) || null,
   })).filter((x) => x.hostOpts);
-  const MAX_ROUNDS = 8;
+  const MAX_ROUNDS = 10; // 技能加载会多占轮次,比纯命令循环放宽
   const executed = []; // 记录 AI 实际执行过的命令,返回给界面展示
   let conv = [...messages];
   // 把事件推给渲染层(带上 requestId,防止多个流混淆)
   const send = (evt) => broadcast('ai:stream', { requestId, ...evt });
   // 用户是否点了"停止"
   const shouldStop = () => { if (aiStopSet.has(requestId)) { aiStopSet.delete(requestId); return true; } return false; };
+  // 系统提示 = 基础提示 + 已启用技能的 AVAILABLE SKILLS 清单(use_skill 靠它选技能)
+  //            + 知识库相关片段(渲染层开了知识库且问题有匹配文档时)
+  let kbSection = '';
+  if (kbEnabled !== false) {
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    const q = lastUser && lastUser.content ? (typeof lastUser.content === 'string' ? lastUser.content : '') : '';
+    kbSection = kbLib.buildKbPromptSection(q, { limit: 3 });
+  }
+  const systemPrompt = AI_SYSTEM_PROMPT + skillsLib.buildSkillsPromptSection() + kbSection;
 
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (shouldStop()) { send({ type: 'stopped' }); return { ok: true, text: '(已停止)', executed, stopped: true }; }
-      const r = await callAiStream(base, mdl, format, apiKey, conv, (evt) => send({ type: 'model', ...evt }));
+      const r = await callAiStream(base, mdl, format, apiKey, conv, (evt) => send({ type: 'model', ...evt }), { systemPrompt });
       if (r.error) {
         send({ type: 'error', message: r.error }); // 流式气泡已渲染到一半也要打上错误标记
         return { ok: false, error: r.error };
@@ -917,6 +937,55 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
           // 清屏工具:通知渲染层清掉本地终端显示(不执行服务器命令)
           send({ type: 'clear_screen' });
           output = '(已清除本地终端屏幕)';
+        } else if (tu.name === 'use_skill') {
+          // 技能加载:把 SKILL.md 全文返回给模型,让代理严格按技能执行
+          const skillName = tu.input && tu.input.name;
+          send({ type: 'tool', command: `use_skill: ${skillName || '(无名称)'}` });
+          if (!skillName) {
+            output = '(缺少技能名)';
+          } else {
+            const skill = skillsLib.getSkill(skillName);
+            if (!skill || skill._broken) {
+              output = `(技能不存在: ${skillName},请先确认 AVAILABLE SKILLS 清单里的名字)`;
+            } else if (!skill.enabled) {
+              output = `(技能 ${skillName} 未启用,请用已启用的技能)`;
+            } else {
+              send({ type: 'skill_loaded', name: skill.name });
+              output = `技能「${skill.name}」已加载,严格按以下内容执行:\n\n${skill.content}`;
+            }
+          }
+        } else if (tu.name === 'summarize_to_skill') {
+          // 对话沉淀成技能:写操作,弹窗让用户确认后再落盘
+          const input = tu.input || {};
+          const skillName = String(input.skill_name || '').trim();
+          const description = String(input.description || '').trim();
+          const content = String(input.content || '').trim();
+          send({ type: 'tool', command: `summarize_to_skill: ${skillName || '(无名称)'}` });
+          if (!skillName || !description || !content) {
+            output = '(缺少 skill_name/description/content 字段,无法保存)';
+          } else {
+            try {
+              const preview = content.length > 600 ? content.slice(0, 600) + '\n…(截断)' : content;
+              const { response } = await dialog.showMessageBox(mainWindow, {
+                type: 'question',
+                title: '保存为技能',
+                message: `AI 想把本次对话沉淀为技能「${skillName}」,要保存吗?`,
+                detail: `${description}\n\n${preview}`,
+                buttons: ['保存技能', '取消'],
+                defaultId: 0,
+                cancelId: 1,
+              });
+              if (response === 0) {
+                skillsLib.saveSkill({ name: skillName, description, enabled: true, content });
+                send({ type: 'skill_saved', name: skillName });
+                output = `(技能「${skillName}」已保存,以后遇到类似任务会从 AVAILABLE SKILLS 加载)`;
+              } else {
+                output = '(用户取消保存技能)';
+              }
+            } catch (err) {
+              output = `(保存技能失败: ${err.message})`;
+            }
+          }
         } else if (tu.name !== 'run_command') {
           output = '(未知工具)';
           send({ type: 'tool', command: '(未知工具)' });
@@ -974,6 +1043,114 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
     send({ type: 'error', message: err.message });
     return { ok: false, error: `请求异常: ${err.message}` };
   }
+});
+
+// ---------- IPC:Agent Skill 技能库(参考 Chaterm) ----------
+// 技能是数据目录 skills/ 下的 SKILL.md 文件:list/get 只读,save/delete/setEnabled 写文件。
+// 启用中的技能会出现在 AI 系统提示的 AVAILABLE SKILLS 清单,代理用 use_skill 按需加载。
+ipcMain.handle('skills:list', () => {
+  try {
+    return { ok: true, skills: skillsLib.listSkills() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('skills:get', (_e, name) => {
+  try {
+    const s = skillsLib.getSkill(String(name || ''));
+    return { ok: true, skill: s };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('skills:save', (_e, skill) => {
+  try {
+    const saved = skillsLib.saveSkill(skill || {});
+    return { ok: true, skill: saved };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('skills:delete', (_e, name) => {
+  try {
+    skillsLib.deleteSkill(String(name || ''));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('skills:setEnabled', (_e, name, enabled) => {
+  try {
+    const s = skillsLib.setEnabled(String(name || ''), !!enabled);
+    return { ok: true, skill: s };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 打开技能目录(方便用户手动编辑/备份)
+ipcMain.handle('skills:openFolder', async () => {
+  try {
+    const dir = skillsLib.skillsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    return { ok: !err, error: err || undefined };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---------- IPC:用户知识库(参考 Chaterm) ----------
+// 文档是数据目录 kb/ 下的文本文件;检索为本地关键词搜索(标题命中优先)。
+// AI 对话开启知识库时,会先把相关问题检索到的片段注入系统提示。
+ipcMain.handle('kb:list', () => {
+  try { return { ok: true, docs: kbLib.listDocs() }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 弹文件选择器导入(渲染层不直接碰 Node,路径由主进程对话框给)
+ipcMain.handle('kb:pickImport', async () => {
+  try {
+    const pick = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: '导入运维文档到知识库',
+      filters: [
+        { name: '文档/文本', extensions: ['md', 'txt', 'log', 'conf', 'ini', 'yaml', 'yml', 'json', 'sh', 'py', 'sql', 'rst', 'csv'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (pick.canceled || !pick.filePaths.length) return { ok: false, canceled: true };
+    const doc = kbLib.importDoc(pick.filePaths[0]);
+    return { ok: true, doc };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('kb:import', (_e, { filePath, name }) => {
+  try { return { ok: true, doc: kbLib.importDoc(filePath, name) }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('kb:remove', (_e, name) => {
+  try { kbLib.removeDoc(name); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('kb:search', (_e, query, limit) => {
+  try { return { ok: true, results: kbLib.search(query, { limit }) }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('kb:openFolder', async () => {
+  try {
+    const dir = kbLib.kbDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    return { ok: !err, error: err || undefined };
+  } catch (err) { return { ok: false, error: err.message }; }
 });
 
 // ---------- IPC:分组管理 ----------
@@ -1038,6 +1215,55 @@ ipcMain.handle('cmd:list', () => {
 ipcMain.handle('cmd:clear', () => {
   try { sessionStore.clearCmds(); schedulePersist(); return { ok: true }; }
   catch (err) { return { ok: false, error: err.message }; }
+});
+
+// 智能命令推荐(参考 Chaterm):该主机的历史高频命令 + 内置常用运维命令库合并。
+// host 为空 → 全量统计(全局常用)。纯函数在 lib/recommend.js,可独立单测。
+ipcMain.handle('cmd:recommend', (_e, host) => {
+  try {
+    const rows = sessionStore.listCmdsByHost(host);
+    const list = recommendLib.recommend(rows, { host: host || undefined, limit: 12 });
+    return { ok: true, host: host || null, list };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// AI 命令推荐(参考 Chaterm 的"智能命令推荐"):单次调用(非 agent 循环),
+// 把"主机 + 最近命令历史 + 终端最近输出"给模型,让它推荐一条下一条要执行的命令。
+// 不带工具,模型只输出 { command, reason },渲染层直接可点选执行。
+ipcMain.handle('ai:suggestCmd', async (_e, { apiKey, url, model, format, host, history, context }) => {
+  try {
+    if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
+    const base = normalizeAiUrl(url || '', format || 'openai');
+    const mdl = (model && model.trim()) || 'claude-sonnet-5';
+    const system = `你是一名资深 Linux/运维工程师,内嵌在 SSH 终端工具里。
+用户给你当前主机的上下文(主机标识、最近执行过的命令、终端最近输出),请你推荐**一条**接下来最值得执行的命令。
+要求:
+- 只输出一个 JSON 对象,不要任何多余文字: {"command": "命令", "reason": "一句话中文理由"}
+- command 必须是单条、非交互、能一次执行完的 shell 命令(不要 vim/less/top 这类需要退出的交互程序;用 top -bn1 这类一次性版本)
+- reason 用中文,一句话说明为什么执行它
+- 结合终端输出判断:有报错就推荐排查命令,有磁盘/内存告警就推荐对应的检查命令`;
+    const user = [
+      `当前主机: ${host || '(未知)'}`,
+      history ? `最近执行过的命令(按时间):\n${String(history).slice(0, 1500)}` : '最近执行过的命令: (无)',
+      context ? `终端最近输出(末尾截取):\n${String(context).slice(-1500)}` : '终端最近输出: (空)',
+      '',
+      '请严格按系统要求输出 JSON。',
+    ].join('\n');
+    const r = await callAiStream(base, mdl, format, apiKey, [{ role: 'user', content: user }], null, { systemPrompt: system, tools: [] });
+    if (r.error) return { ok: false, error: r.error };
+    // 尽量解析 JSON;失败则从文本里兜底提取第一行当命令
+    let parsed = null;
+    try { parsed = JSON.parse(String(r.text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch { /* 非严格 JSON */ }
+    if (parsed && parsed.command) {
+      return { ok: true, command: String(parsed.command), reason: parsed.reason || '' };
+    }
+    const lines = String(r.text || '').trim().split('\n').map((x) => x.trim()).filter(Boolean);
+    return { ok: true, command: lines[0] || '', reason: lines.slice(1).join(' ').slice(0, 120) || '' };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 // 归档某台主机的命令记录:按当前主机归档,文件名 = 标签页名称_时间戳.txt(不自动打开)
@@ -1397,8 +1623,9 @@ ipcMain.handle('rec:replay', (_e, id) => {
 });
 
 // ---------- IPC:SSH 直连 ----------
-// 指纹校验(known_hosts):首次连接询问是否信任,已信任校验一致,不一致拒绝
-function makeHostVerifier(host, port) {
+// 指纹校验(known_hosts):首次连接询问是否信任,已信任校验一致,不一致拒绝。
+// autoTrust:设置里开了"自动信任新主机密钥" → 未记录的主机直接信任并记录(不弹窗)。
+function makeHostVerifier(host, port, autoTrust) {
   return (key) => {
     try {
       const fp = knownHosts.fingerprint(key);
@@ -1413,6 +1640,12 @@ function makeHostVerifier(host, port) {
           buttons: ['断开连接'],
         });
         return false;
+      }
+      // 自动信任:跳过弹窗,直接记录指纹并放行(仍写入 known_hosts,之后照常校验)
+      if (autoTrust) {
+        knownHosts.set(id, fp);
+        console.warn(`[MAIN] 自动信任新主机 ${id}(指纹 ${fp.slice(0, 20)}…),已写入 known_hosts`);
+        return true;
       }
       const r = dialog.showMessageBoxSync(mainWindow, {
         type: 'question', title: '首次连接',
@@ -1442,7 +1675,7 @@ async function openJumpTunnel(sessionId, finalOpts) {
       host: j.host, port: jport, username: j.username || finalOpts.username,
       password: j.password, privateKey: j.private_key || '', passphrase: j.passphrase || '',
     }),
-    hostVerifier: makeHostVerifier(j.host, jport), // 跳板机指纹同样校验
+    hostVerifier: makeHostVerifier(j.host, jport, finalOpts.autoTrustHostKey === true), // 跳板机指纹同样校验
     onKeyboardInteractive: makeKbdResponder(sessionId, { ...finalOpts, host: j.host, port: jport }), // 跳板可能也要域认证/OTP
   });
   jumpConns.set(sessionId, jumpConn);
@@ -1488,7 +1721,7 @@ function resolvePrivateKey(opts) {
 function withHostVerify(opts) {
   if (!opts || !opts.host) return opts;
   if (opts.verifyHostKey === false) return opts;
-  return { ...opts, hostVerifier: makeHostVerifier(opts.host, opts.port || 22) };
+  return { ...opts, hostVerifier: makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true) };
 }
 
 // ---------- keyboard-interactive 认证(域/双密码/OTP 挑战) ----------
@@ -1528,7 +1761,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
     const finalOpts = resolvePrivateKey({ ...opts }); // 私钥路径 → 内容
     // 默认开启指纹校验;渲染进程可传 verifyHostKey:false 关闭
     if (finalOpts.verifyHostKey !== false) {
-      finalOpts.hostVerifier = makeHostVerifier(finalOpts.host, finalOpts.port);
+      finalOpts.hostVerifier = makeHostVerifier(finalOpts.host, finalOpts.port, finalOpts.autoTrustHostKey === true);
     }
     // keyboard-interactive 挑战 → 渲染层弹窗问用户
     finalOpts.onKeyboardInteractive = makeKbdResponder(sessionId, finalOpts);
@@ -1721,7 +1954,14 @@ ipcMain.on('ssh:close', (_e, sessionId) => {
 async function getSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (!s) throw new Error('SSH 连接不存在或已断开');
-  if (!s.sftp) s.sftp = await sshClient.openSftp(s.conn); // 懒加载:第一次用到才开
+  if (!s.sftp) {
+    // 堡垒机(经 KoKo 等网关)的 SFTP 子系统可能迟迟不应答(路由/认证慢或挂起):
+    // 加超时兜底,避免 sftp:list 永久 pending → 面板一直空白无任何提示。
+    s.sftp = await Promise.race([
+      sshClient.openSftp(s.conn),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
+    ]);
+  }
   return s.sftp;
 }
 
@@ -1780,7 +2020,13 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
     const sftp = await getSftp(sessionId);
     const [items, cwd] = await Promise.all([
       new Promise((resolve, reject) => {
-        sftp.readdir(remotePath, (err, list) => (err ? reject(err) : resolve(list || [])));
+        let done = false;
+        const to = setTimeout(() => { if (!done) { done = true; reject(new Error('目录读取超时(20s)')); } }, 20000);
+        sftp.readdir(remotePath, (err, list) => {
+          if (done) return;
+          done = true; clearTimeout(to);
+          err ? reject(err) : resolve(list || []);
+        });
       }),
       // realpath 把 '.' / 相对路径 解析成绝对路径,这样面板路径栏显示的是真路径
       new Promise((resolve) => {
@@ -1869,6 +2115,17 @@ ipcMain.handle('sftp:delete', async (_e, { sessionId, remotePath }) => {
   }
 });
 
+// 重命名/移动(文件或目录;目标可以是新名字或新路径)
+ipcMain.handle('sftp:rename', async (_e, { sessionId, from, to }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    await new Promise((resolve, reject) => sftp.rename(from, to, (err) => (err ? reject(err) : resolve())));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // 上传:弹出系统对话框选本地文件 → fastPut 到远程
 // 传输进度 → 渲染进程进度条(sftp:progress 事件)
 function emitSftpProgress(payload) {
@@ -1923,6 +2180,17 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
       : await dialog.showSaveDialog(mainWindow, { title: '保存到本地', defaultPath: name });
     if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
     const localPath = save.filePath;
+    // 预检可写性(macOS TCC 保护目录):先试写再下载,失败立刻提示换目录
+    try {
+      const probe = localPath + '.wt';
+      fs.writeFileSync(probe, '');
+      fs.unlinkSync(probe);
+    } catch (err) {
+      const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
+        ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
+        : `保存位置不可写: ${err.message}`;
+      return { ok: false, error: hint };
+    }
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
     if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, localPath)); // 这次从偏移续传,旧的记录作废
     const prog = (p) => emitSftpProgress({ op: 'download', ...p });
@@ -1954,6 +2222,18 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
         });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
     const dir = pick.filePaths[0];
+    // 预检可写性:macOS 桌面/文稿/下载等受 TCC 保护,未授权时写入会 EPERM。
+    // 这里先试写一个临时文件,失败立刻返回明确提示 —— 避免"全部文件下载完才发现失败"。
+    try {
+      const probe = path.join(dir, `.polaris-wt-${Date.now()}`);
+      fs.writeFileSync(probe, '');
+      fs.unlinkSync(probe);
+    } catch (err) {
+      const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
+        ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹(如 ~/sftp),或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
+        : `保存位置不可写: ${err.message}`;
+      return { ok: false, error: hint };
+    }
     // 先把目录展开成文件清单,算总字节 → 统一进度
     const plans = [];
     for (const e of list) {
@@ -2015,12 +2295,16 @@ function createWindow() {
   // 若此前锁定后退出/重建窗口,这里强制恢复,保证"打开应用就有菜单栏"。
   mainWindow.setMenuBarVisibility(true);
 
-  // 渲染进程的报错/日志:转发 stdout + error 级别写入数据目录 error.log(排查 Windows 便携版界面问题)
+  // 渲染进程的报错/日志:转发 stdout + 全部级别落盘 app 日志(不只 error,方便完整排查)
   mainWindow.webContents.on('console-message', (evt, levelOrMsg, msgOrLine) => {
     // Electron 27+ 事件对象形式(evt.message / evt.level);旧版是位置参数
     const message = evt && typeof evt === 'object' && 'message' in evt ? evt.message : msgOrLine;
     const level = evt && typeof evt === 'object' && 'level' in evt ? evt.level : levelOrMsg;
-    if (message) console.log('[RENDERER]', message);
+    if (message) {
+      console.log('[RENDERER]', message); // 控制台 + 落盘(main hook 已写)
+      appLog.log('renderer', message); // 显式落盘(含非 log 级别)
+    }
+    // 兼容旧 error.log 记录(error 级别仍写,供只读 error.log 的场景)
     if ((level === 'error' || level === 3) && message) {
       try {
         const dir = appLock.lockDir();
@@ -2028,6 +2312,13 @@ function createWindow() {
         fs.appendFileSync(path.join(dir, 'error.log'), `[${new Date().toISOString()}] ${message}\n`);
       } catch { /* ignore */ }
     }
+  });
+  // 全量日志 IPC:渲染层 dlog(调试日志)批量转发落盘 + 下载日志导出
+  ipcMain.handle('app:log-dump', () => {
+    try { return { ok: true, content: appLog.dumpLogs() }; } catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.on('app:log-dlog', (_e, lines) => {
+    if (Array.isArray(lines)) appLog.pushDlogLines(lines);
   });
 
   mainWindow.on('closed', () => {

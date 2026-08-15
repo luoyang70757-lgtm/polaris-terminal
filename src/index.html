@@ -10,13 +10,7 @@
 <body>
   <!-- 解锁后科幻开机过场(正式版播放;点击/按键可跳过;默认 hidden,由 renderer 按 ?boot=1 揭开) -->
   <div id="boot-overlay" class="boot-overlay hidden" aria-hidden="true">
-    <canvas id="boot-rain"></canvas>
-    <div class="boot-scan"></div>
-    <div class="boot-center">
-      <div class="boot-logo">✦ POLARIS</div>
-      <div class="boot-ring"></div>
-      <div class="boot-status"><span id="boot-line">正在建立安全信道…</span><span class="boot-caret">▊</span></div>
-    </div>
+    <div class="boot-ring"></div>
   </div>
 
   <!-- ============ 主界面:左侧会话列表 + 右侧终端 ============ -->
@@ -36,6 +30,7 @@
       <button id="btn-batch" class="btn-mini" title="批量执行:一条命令发到多台主机,结果统一看">⚡ 批量</button>
       <button id="btn-quick" class="btn-mini" title="快速命令:常用命令收藏,一键发送">🚀 快捷</button>
       <button id="btn-cmd" class="btn-mini" title="命令记录:查看/重发/导出每台主机执行过的命令">⌘ 命令记录</button>
+      <button id="btn-recommend" class="btn-mini" title="智能命令推荐:本主机历史高频命令 + 常用运维命令,点击即发送">✨ 推荐</button>
       <span class="toolbar-sep"></span>
       <button id="btn-rec" class="btn-mini" title="录制与回放">⏺ 录制</button>
       <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持)">🔒 锁定</button>
@@ -124,17 +119,23 @@
         <!-- ============ SFTP 文件面板(终端下方,可收起) ============ -->
         <section id="sftp-panel" class="sftp-panel hidden">
           <div class="sftp-toolbar">
-            <span id="sftp-conn" class="sftp-conn dim" title="当前 SFTP 连接"></span>
-            <span id="sftp-path" class="sftp-path">/</span>
-            <span class="spacer"></span>
-            <button id="btn-sftp-up" class="btn-mini" title="返回上一级">⬆ 上一级</button>
-            <button id="btn-sftp-refresh" class="btn-mini" title="刷新当前目录(编辑保存/外部改动后点这里看最新)">🔄 刷新</button>
-            <button id="btn-sftp-mkdir" class="btn-mini" title="在当前目录新建目录">＋ 新建目录</button>
-            <button id="btn-sftp-upload" class="btn-mini" title="上传本地文件或文件夹到当前目录">上传</button>
-            <button id="btn-sftp-download" class="btn-mini" title="下载选中文件(可多选)">下载</button>
-            <button id="btn-sftp-delete" class="btn-mini" title="删除选中文件/目录(可多选)">删除</button>
-            <button id="btn-sftp-edit" class="btn-mini" title="编辑选中的远程文本文件(双击文件也行,保存即上传)">✏ 编辑</button>
-            <button id="btn-sftp-select-all" class="btn-mini" title="全选当前目录全部文件/目录(再点一次取消全选)">☑ 全选</button>
+            <div class="sftp-toolbar-row sftp-toolbar-main">
+              <button id="sftp-conn" class="sftp-conn dim" title="当前 SFTP 浏览的连接(点击切换浏览哪台已连接主机的文件)">—</button>
+              <span class="spacer"></span>
+              <button id="btn-sftp-up" class="btn-mini" title="返回上一级">⬆ 上一级</button>
+              <button id="btn-sftp-refresh" class="btn-mini" title="刷新当前目录(编辑保存/外部改动后点这里看最新)">🔄 刷新</button>
+              <button id="btn-sftp-mkdir" class="btn-mini" title="在当前目录新建目录">＋ 新建目录</button>
+              <button id="btn-sftp-upload" class="btn-mini" title="上传本地文件或文件夹到当前目录">上传</button>
+              <button id="btn-sftp-download" class="btn-mini" title="下载选中文件(可多选)">下载</button>
+              <button id="btn-sftp-delete" class="btn-mini" title="删除选中文件/目录(可多选)">删除</button>
+              <button id="btn-sftp-edit" class="btn-mini" title="编辑选中的远程文本文件(双击文件也行,保存即上传)">✏ 编辑</button>
+              <button id="btn-sftp-select-all" class="btn-mini" title="全选当前目录全部文件/目录(再点一次取消全选)">☑ 全选</button>
+            </div>
+            <!-- 第二行:完整路径(连接主机信息下方) -->
+            <div class="sftp-toolbar-row sftp-path-row">
+              <span class="sftp-path-label" title="当前浏览的完整远程路径">路径</span>
+              <div id="sftp-path" class="sftp-path" title="当前目录(点路径段可直接跳转)"></div>
+            </div>
           </div>
           <!-- 上传/下载进度(Xshell 式:每个文件一行+独立进度条;完成留在列表当"本次会话的历史",可删/清空,关 app 自动清) -->
           <div id="sftp-progress" class="sftp-progress hidden">
@@ -147,8 +148,11 @@
           <div id="sftp-list" class="sftp-list"></div>
           <!-- 传输记录:每次上传/下载/新建/删除都留一行(时间 + 操作 + 结果) -->
           <div id="sftp-log" class="sftp-log hidden"></div>
-          <div id="sftp-footer" class="sftp-footer dim">双击进入目录 · 单击选中(可多选,再点取消) · 点「全选」一次选完后下载/删除</div>
+          <div id="sftp-footer" class="sftp-footer dim">上传/下载都作用于路径栏显示的当前目录 · 双击进入目录 · 单击选中(可多选) · 左上角连接名可切换浏览的连接</div>
         </section>
+
+        <!-- SFTP 连接切换下拉(点左上角连接名弹出:列出所有已连接的 SSH 会话) -->
+        <div id="sftp-conn-menu" class="ctx-menu sftp-conn-menu hidden"></div>
       </section>
 
       <!-- ============ 命令记录面板(右侧,可收起) ============ -->
@@ -219,22 +223,6 @@
         </div>
         <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
         <div class="bastion-body">
-          <!-- web 标签页专属会话/资产列表:显示当前 web 标签页对应堡垒机的资产,双击连 SSH -->
-          <div id="bastion-asset-sidebar" class="bastion-asset-sidebar hidden">
-            <div class="bastion-asset-head">
-              <div class="bastion-asset-title" title="当前 web 标签页对应的堡垒机资产">
-                <span id="bastion-asset-srv" class="bastion-asset-srv">堡垒机</span>
-                <span id="bastion-asset-status" class="bastion-asset-status"></span>
-                <span id="bastion-asset-cnt" class="dim"></span>
-              </div>
-              <div class="bastion-asset-actions">
-                <button id="bastion-asset-refresh" class="btn-mini" title="刷新资产">↻</button>
-                <button id="bastion-asset-collapse" class="btn-mini" title="收起资产列表">≫</button>
-              </div>
-            </div>
-            <div id="bastion-asset-list" class="bastion-asset-list"></div>
-          </div>
-          <button id="bastion-asset-reopen" class="bastion-asset-reopen hidden" title="展开资产列表">🗂</button>
           <div class="bastion-web-wrap">
             <div id="bastion-empty" class="bastion-empty">
               <div class="be-title">🌐 堡垒机浏览器</div>
@@ -304,6 +292,59 @@
               <button id="ai-vendor-del" class="btn-mini danger" title="删除当前厂商的配置">🗑 删除厂商</button>
             </div>
             <button id="ai-config-save" class="btn-primary">保存配置</button>
+          </div>
+          <!-- ============ Agent Skill 技能库(参考 Chaterm) ============
+               技能 = 可复用的运维指令;启用中的技能会出现在 AI 的 AVAILABLE SKILLS
+               清单里,AI 用 use_skill 按需加载,也可把对话沉淀成新技能。 -->
+          <div class="ai-skills">
+            <div class="ai-skills-header">
+              <span>🧩 技能库</span>
+              <span class="dim small">AI 可加载的复用运维指令</span>
+              <span class="spacer"></span>
+              <button id="skills-open-folder" class="btn-mini" title="在文件管理器里打开技能目录(手动编辑/备份)">📂</button>
+              <button id="skills-new" class="btn-mini" title="新建技能">＋ 新建</button>
+            </div>
+            <div id="skills-list" class="skills-list">
+              <div class="dim small">加载中…</div>
+            </div>
+            <!-- 新建/编辑技能表单 -->
+            <div id="skills-editor" class="skills-editor hidden">
+              <label class="field"><span>技能名(小写字母/数字/连字符,如 deploy-docker-app)</span>
+                <input id="skills-edit-name" placeholder="deploy-docker-app" />
+              </label>
+              <label class="field"><span>描述(一行:做什么、何时用)</span>
+                <input id="skills-edit-desc" placeholder="一键部署 docker 应用(构建/推送/拉取/启动)" />
+              </label>
+              <label class="field"><span>技能正文(Markdown:步骤/命令/配置模板)</span>
+                <textarea id="skills-edit-content" rows="7" placeholder="## 步骤&#10;1. ...&#10;2. ..." class="skills-content"></textarea>
+              </label>
+              <label class="field skills-enabled-row"><span>启用</span>
+                <input id="skills-edit-enabled" type="checkbox" checked />
+              </label>
+              <div class="ai-config-actions-row">
+                <button id="skills-edit-save" class="btn-primary">保存技能</button>
+                <button id="skills-edit-cancel" class="btn-mini">取消</button>
+              </div>
+            </div>
+          </div>
+          <!-- ============ 用户知识库(参考 Chaterm) ============
+               导入运维手册/内部文档,AI 对话时自动检索相关片段参考回答。 -->
+          <div class="ai-skills ai-kb">
+            <div class="ai-skills-header">
+              <span>📚 知识库</span>
+              <span class="dim small">运维文档,AI 参考回答</span>
+              <span class="spacer"></span>
+              <button id="kb-open-folder" class="btn-mini" title="打开知识库目录(手动放入文档/备份)">📂</button>
+              <button id="kb-import" class="btn-mini" title="导入文档(.md/.txt/.log 等)到知识库">＋ 导入</button>
+            </div>
+            <label class="field kb-ai-toggle"><span>AI 对话时检索知识库</span>
+              <input id="kb-ai-toggle" type="checkbox" checked />
+            </label>
+            <div id="kb-list" class="skills-list">
+              <div class="dim small">加载中…</div>
+            </div>
+            <input id="kb-search" class="select kb-search" placeholder="搜索知识库(预览命中片段)…" />
+            <div id="kb-results" class="kb-results dim small"></div>
           </div>
         </div>
         <div id="ai-chat" class="ai-chat"></div>
@@ -521,6 +562,9 @@
       <label class="field field-check"><span>服务器指纹校验(known_hosts,首次连接会询问)</span>
         <input type="checkbox" id="set-verify" />
       </label>
+      <label class="field field-check"><span>自动信任新主机密钥(未记录的主机不再弹窗,直接信任并记录;仅建议在可信内网开启)</span>
+        <input type="checkbox" id="set-autotrust" />
+      </label>
       <div class="settings-sec">功能</div>
       <label class="field field-check"><span>启动时恢复上次打开的会话</span>
         <input type="checkbox" id="set-restore" />
@@ -689,6 +733,17 @@
     <div class="ctx-item" data-split="h">⬒ 横向分屏</div>
   </div>
 
+  <!-- ============ 智能命令推荐下拉(点工具栏「✨ 推荐」弹出) ============
+       基于当前激活标签的主机:历史高频命令 + 内置常用运维命令库,点击即发送。 -->
+  <div id="recommend-menu" class="ctx-menu recommend-menu hidden">
+    <div class="recommend-head">
+      <span>✨ 智能推荐</span>
+      <span id="recommend-host" class="dim small"></span>
+    </div>
+    <div id="recommend-list" class="recommend-list"></div>
+    <div class="recommend-foot dim small">历史高频(按主机)+ 常用运维命令 · 点击即发送到当前终端</div>
+  </div>
+
   <!-- ============ 快速命令(命令收藏)弹窗 ============ -->
   <div id="quick-modal" class="modal hidden">
     <div class="modal-card wide">
@@ -835,6 +890,7 @@
     <div class="debug-head">
       <span>🧾 终端调试日志</span>
       <span class="spacer"></span>
+      <button id="debug-download" class="btn-mini" title="下载完整日志(主进程 + 渲染层 + 调试日志 + 系统信息)">⬇ 下载日志</button>
       <button id="debug-copy" class="btn-mini" title="复制全部日志到剪贴板">📋 复制</button>
       <button id="debug-save" class="btn-mini" title="保存为 .log 文件(会话日志目录)">💾 保存</button>
       <button id="debug-clear" class="btn-mini" title="清空日志">🗑 清空</button>
