@@ -28,4 +28,4 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）：SFTP 家目录探测、面包屑修复、堡垒机（JMS/H3C）对接、全量日志、右键菜单/焦点/刷新稳定性修复均已完成并提交；**堡垒机浏览器已整合进左侧会话面板**（右侧面板删除，webview 内嵌 `#session-tree` 下方）。回归测试 `node verify-bastion-inline.js`（11 项）。待办见 `CONTEXT.md` 末尾章节。
+见 `CONTEXT.md`（已 @import）：SFTP 家目录探测、面包屑修复、堡垒机（JMS/H3C）对接、全量日志、右键菜单/焦点/刷新稳定性修复均已完成并提交；**堡垒机入口已整合**（头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单，右侧浏览器面板保留）。回归测试 `node verify-bastion-merge.js`。待办见 `CONTEXT.md` 末尾章节。

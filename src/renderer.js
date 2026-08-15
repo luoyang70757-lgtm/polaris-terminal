@@ -155,8 +155,6 @@ const els = {
   // 连接/中断二合一 + 锁定
   btnConnect: $('btn-connect'),
   btnLock: $('btn-lock'),
-  // JumpServer 资产面板
-  btnBastion2: $('btn-bastion2'),
   // 端口探测
   btnPortProbe: $('btn-port-probe'),
   probeModal: $('probe-modal'),
@@ -1389,6 +1387,11 @@ function renderSessionList(filter) {
           ]
         : [
             { label: '➕ 创建堡垒机连接', action: () => { openBastionCfg(); els.bastionCfgUrl.focus(); } },
+            { label: '🛡 JumpServer(API 对接)', action: openJmsModal },
+            { label: '🌐 JumpServer Web 界面', action: openJmsWeb },
+            { separator: true },
+            { label: '🌐 H3C(浏览器登录)', action: openBastionPanel },
+            { separator: true },
             { label: '🧹 清除堡垒机历史', action: () => els.bastionClear.click() },
           ];
       showCtxMenu(e.clientX, e.clientY, items);
@@ -5343,8 +5346,9 @@ function renderBastionSavedSessions(container, f) {
             row.appendChild(ic);
             row.appendChild(nm);
             row.appendChild(ad);
-            // 双击:通过该堡垒机连 SSH(复用 JMS 复合用户名走 KoKo 网关)
-            row.addEventListener('dblclick', () => {
+            // 双击:通过该堡垒机连 SSH(复用 JMS 复合用户名走 KoKo 网关);
+            // 未登录时自动用保存的账号密码登录(不必手动刷新)
+            row.addEventListener('dblclick', async () => {
               const jmsServer = {
                 id: 'saved-' + s.id, name: s.name, baseUrl: s.url,
                 sshHost: s.sshHost || (() => { try { return new URL(s.url).hostname; } catch { return ''; } })(),
@@ -5352,11 +5356,26 @@ function renderBastionSavedSessions(container, f) {
                 account: s.account || '', password: s.password || '', token: s.token || null, user: s.user || null,
               };
               if (!jmsServer.token) {
-                // 无登录态 → 提示先加载资产(自动登录)或检查账号
-                setStatus(`「${s.name}」未登录,右键「🔄 刷新资产」后重试`, 'var(--orange)');
-                return;
+                setStatus(`正在登录「${s.name}」…`, 'var(--accent)');
+                try {
+                  const pw = await decryptSecret(s.password || '');
+                  if (!s.account || !pw) {
+                    setStatus(`「${s.name}」未配置账号密码,无法登录`, 'var(--red)');
+                    return;
+                  }
+                  const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
+                  if (!lg.ok || !lg.token) {
+                    setStatus(`登录「${s.name}」失败: ${lg.error || '未知错误'}`, 'var(--red)');
+                    return;
+                  }
+                  s.token = lg.token; s.user = lg.user; // 存回连接,后续直接可用
+                  jmsServer.token = lg.token; jmsServer.user = lg.user;
+                } catch (e) {
+                  setStatus(`登录「${s.name}」失败: ${e.message}`, 'var(--red)');
+                  return;
+                }
               }
-              jmsConnect(jmsServer.id, a);
+              await bastionConnectAsset(s, a); // 不经过 jmsFind(该连接不在 state.jmsServers)
             });
             assetsWrap.appendChild(row);
           }
@@ -5371,6 +5390,35 @@ function renderBastionSavedSessions(container, f) {
       container.appendChild(assetsWrap);
     }
   }
+}
+
+// 通过已保存堡垒机连接连某资产 SSH(复用 JMS 复合用户名走 KoKo 网关)。
+// 不经过 jmsFind:该连接存于 bastionServers,不在 state.jmsServers。
+async function bastionConnectAsset(bastionServer, asset, accountName) {
+  const s = bastionServer;
+  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
+  const account = accountName || (asset.accounts && asset.accounts[0] && asset.accounts[0].username) || 'root';
+  const jmsUser = (s.user && s.user.username) || s.account || 'admin';
+  const username = `${jmsUser}@${protocol}@${account}@${asset.address}`;
+  const sshHost = s.sshHost || (() => { try { return new URL(s.url).hostname; } catch { return ''; } })();
+  // 密码是 safeStorage 密文(enc:v1:),连接前必须解密——否则 KoKo 收到密文 → 认证失败
+  const password = await decryptSecret(s.password || '');
+  const session = {
+    id: `jms-${++state.jmsSeq}`,
+    name: asset.name,
+    host: sshHost,
+    port: s.sshPort || 2222,
+    username,
+    password,
+    encoding: 'utf8',
+    tag_color: '',
+    jmsKey: `saved-${s.id}|${asset.address}|${account}`,
+    displayHost: asset.address || asset.ip || '',
+    displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
+  };
+  connectToServer(session);
+  setStatus(`连接 ${asset.name}(${account})…`, 'var(--accent)');
 }
 
 // 懒加载已保存堡垒机的资产:用保存的账号登录 JumpServer 拉资产列表
@@ -8217,17 +8265,6 @@ els.importTemplate.addEventListener('click', saveTemplate); // 下载导入模�
 els.btnBroadcast.addEventListener('click', toggleBroadcast); // 广播模式开关
 els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中断二合一
 els.btnLock.addEventListener('click', requestLock); // 锁定
-// 堡垒机按钮:弹出 JumpServer / H3C 选择菜单
-els.btnBastion2.addEventListener('click', (e) => {
-  e.stopPropagation(); // 阻止冒泡到 window 的 closeCtxMenu,否则菜单刚弹出就被收起
-  const r = e.currentTarget.getBoundingClientRect();
-  showCtxMenu(r.left, r.bottom, [
-    { label: '🛡 JumpServer(API 对接)', action: openJmsModal },
-    { label: '🌐 JumpServer Web 界面', action: openJmsWeb },
-    { separator: true },
-    { label: '🌐 H3C(浏览器登录)', action: openBastionPanel },
-  ]);
-});
 els.bastionMini.addEventListener('click', restoreBastion);
 els.bastionCfg.addEventListener('click', openBastionCfg);
 // 🧹 清除历史:清空堡垒机浏览器全部记录(浏览历史/登录态/表单),webview 回到空白页
