@@ -723,7 +723,6 @@ input[type="checkbox"] {
   font-size: 11px; opacity: 0.6; padding: 0 2px; border-radius: 3px;
 }
 .bastion-tab .bt-close:hover { opacity: 1; background: var(--bg-hover); }
-.bastion-tab-add { flex-shrink: 0; font-size: 13px; padding: 2px 8px; margin-bottom: 4px; }
 /* 左侧"堡垒机连接"行:资产数量徽标 + 展开的资产列表缩进 */
 .bastion-saved-badge {
   font-size: 10px;
