@@ -1337,8 +1337,12 @@ function termIsFullIp(t) {
 function bastionAssetMatch(a, filter) {
   const terms = (filter || '').toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return true;
-  const hay = (a.name + ' ' + (a.ip || '') + ' ' + (a.accounts || []).join(' ')).toLowerCase();
-  return terms.some((t) => termIsFullIp(t) ? (a.ip || '').toLowerCase() === t : hay.includes(t));
+  // 资产 IP:JMS 资产用 address 字段(无 ip),H3C 资产用 ip 字段——两者都要搜,否则 JMS 按 IP 搜不到
+  const ip = (a.ip || a.address || '').toLowerCase();
+  // 账号:JMS 是 [{username}],H3C 是字符串数组,统一提取 username 再匹配
+  const accts = (a.accounts || []).map((x) => (typeof x === 'string' ? x : (x && x.username) || '')).filter(Boolean).join(' ');
+  const hay = (a.name + ' ' + ip + ' ' + accts).toLowerCase();
+  return terms.some((t) => termIsFullIp(t) ? ip === t : hay.includes(t));
 }
 
 // 按关键词过滤会话(搜索框):空格分隔多关键词,命中任意一个就显示
@@ -5260,7 +5264,12 @@ function renderBastionSavedSessions(container, f) {
   const saved = bastionServers();
   if (!saved.length) return;
   const kw = (f || '').toLowerCase();
-  const list = saved.filter((s) => !kw || ((s.name || '').toLowerCase().includes(kw) || (s.url || '').toLowerCase().includes(kw)));
+  // 连接本身(名称/URL)命中,或其已加载资产(名称/IP/地址/账号)命中,才显示
+  const list = saved.filter((s) => {
+    if (!kw) return true;
+    if (((s.name || '').toLowerCase().includes(kw)) || ((s.url || '').toLowerCase().includes(kw))) return true;
+    return (s.assets || []).some((a) => bastionAssetMatch(a, kw));
+  });
   if (!list.length) return;
   for (const s of list) {
     const item = document.createElement('div');
@@ -5311,9 +5320,9 @@ function renderBastionSavedSessions(container, f) {
       assetsWrap.className = 'bastion-saved-assets';
       if (s.assets && s.assets.length) {
         // 按主机分组(nodes 全部节点)归类:一个资产可属多个节点 → 在每个所属组都出现;
-        // 无 nodes → 未分组。badge 显示的是去重资产总数。
+        // 无 nodes → 未分组。badge 显示的是去重资产总数。搜索时按名称/IP/账号过滤资产。
         const groups = new Map();
-        for (const a of s.assets) {
+        for (const a of (kw ? s.assets.filter((x) => bastionAssetMatch(x, kw)) : s.assets)) {
           const nodeNames = (a.nodes && a.nodes.length)
             ? a.nodes.map((n) => n.name).filter(Boolean)
             : [a.dir || '__ungrouped__'];
