@@ -717,6 +717,40 @@ input[type="checkbox"] {
 }
 .bastion-tab .bt-close:hover { opacity: 1; background: var(--bg-hover); }
 .bastion-tab-add { flex-shrink: 0; font-size: 13px; padding: 2px 8px; margin-bottom: 4px; }
+/* 左侧"堡垒机连接"行:资产数量徽标 + 展开的资产列表缩进 */
+.bastion-saved-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0 6px;
+  margin-left: auto;
+}
+.bastion-saved-assets {
+  margin-left: 22px;
+  padding-left: 8px;
+  border-left: 1px dashed rgba(128, 128, 128, 0.2);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.bastion-saved-assets .asset-item { margin: 2px 0; }
+/* 堡垒机配置弹窗:从左侧现有堡垒机选择 */
+.bastion-cfg-from {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 5px;
+}
+.bastion-cfg-from select { width: 100%; }
+/* 资产按主机分组展示的小标题 */
+.bastion-asset-group-head {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 600;
+  padding: 4px 0 2px;
+  margin-top: 4px;
+  letter-spacing: 0.3px;
+}
 .bastion-bar {
   display: flex; gap: 5px; align-items: center; padding: 6px 8px;
   flex-wrap: nowrap; border-bottom: 1px solid var(--border);

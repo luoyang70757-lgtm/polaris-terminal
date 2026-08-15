@@ -624,16 +624,30 @@ ipcMain.handle('jms:restore', async () => {
   }
 });
 
-// 清除指定 origin 的登录态 cookie(左侧退出登录时,同步退出右侧 webview 里的堡垒机网页)
+// 清除指定 origin 的登录态 cookie(左侧退出登录/删除时,同步退出右侧 webview 里的堡垒机网页)
+// 注意:堡垒机 webview 用 partition="persist:bastion",cookie 存在该 partition,不是 defaultSession。
 ipcMain.handle('jms:webLogout', async (_e, { origin }) => {
   try {
     const url = new URL(origin);
     const host = url.hostname;
-    const cookies = await session.defaultSession.cookies.get({ domain: host });
+    const bs = session.fromPartition('persist:bastion');
+    const cookies = await bs.cookies.get({ domain: host });
     for (const c of cookies) {
-      try { await session.defaultSession.cookies.remove(url.origin + c.path, c.name); } catch { /* 逐个清,失败跳过 */ }
+      try { await bs.cookies.remove(url.origin + c.path, c.name); } catch { /* 逐个清,失败跳过 */ }
     }
     return { ok: true, removed: cookies.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 清除堡垒机浏览器的全部历史记录(浏览历史/登录态/表单/localStorage):清空 persist:bastion partition
+ipcMain.handle('bastion:clearAll', async () => {
+  try {
+    const bs = session.fromPartition('persist:bastion');
+    await bs.clearStorageData(); // cookie + localStorage + cache 全清
+    await bs.clearCache();
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }

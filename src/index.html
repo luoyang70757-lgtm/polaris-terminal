@@ -222,6 +222,7 @@
             <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
           </span>
           <button id="bastion-load" class="btn-mini" title="加载当前堡垒机并自动填充账号密码">加载</button>
+          <button id="bastion-clear" class="btn-mini" title="清除堡垒机浏览器历史记录(浏览历史/登录态/表单,下次需重新登录)">🧹 清除历史</button>
           <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
           <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
           <button id="bastion-close" class="btn-mini" title="关闭堡垒机面板">✕</button>
@@ -811,9 +812,24 @@
     <div class="modal-card wide">
       <h3>🌐 堡垒机配置(H3C 等)</h3>
       <p class="jms-hint dim">保存常用的堡垒机 Web 地址,方便切换;登录会话在浏览器里保持。</p>
+      <div id="bastion-cfg-from" class="bastion-cfg-from">
+        <label class="field"><span>从左侧现有堡垒机选择</span>
+          <select id="bastion-cfg-select" class="select">
+            <option value="">— 手动填写下方信息 —</option>
+          </select>
+        </label>
+      </div>
       <div id="bastion-cfg-list" class="jms-assets"></div>
       <div class="field-row">
+        <label class="field"><span>类型</span>
+          <select id="bastion-cfg-type" class="select">
+            <option value="jms">🛡 JumpServer</option>
+            <option value="h3c">🌐 H3C / 其他堡垒机</option>
+          </select>
+        </label>
         <label class="field"><span>名称</span><input id="bastion-cfg-name" placeholder="测试堡垒机" /></label>
+      </div>
+      <div class="field-row">
         <label class="field"><span>Web 地址</span><input id="bastion-cfg-url" placeholder="https://10.204.240.4" /></label>
       </div>
       <div class="field-row">
