@@ -3705,6 +3705,12 @@ function jmsSelectServer(id) {
   jmsFillForm(jmsActive());
 }
 
+// 编辑某个已创建的 JumpServer 服务器:选中并打开配置弹窗
+function jmsEditServer(id) {
+  state.jmsActiveId = id || null;
+  openJmsModal();
+}
+
 // 新增服务器
 function jmsAddServer() {
   const s = { id: `jms-server-${++state.jmsSeq}`, name: '新服务器', baseUrl: '', sshHost: '', sshPort: 2222, account: '', password: '', token: null, user: null, assets: [] };
@@ -4058,6 +4064,7 @@ function renderJmsInSessionList(container, f) {
       () => { collapsed ? state.collapsedJms.delete(s.id) : state.collapsedJms.add(s.id); renderSessionList(els.inputSessionSearch.value); },
       [
         { label: '🔗 批量连接全部', action: () => batchJmsConnect(s, list) },
+        { label: '✏️ 编辑服务器', action: () => jmsEditServer(s.id) },
         { label: '🔄 刷新资产', action: () => jmsRefreshServer(s.id) },
         { label: '🗑 删除服务器', danger: true, action: () => jmsDeleteServerCompletely(s.id) },
         { label: '🚪 退出登录', danger: true, action: () => jmsLogoutServer(s.id) },
@@ -4365,6 +4372,14 @@ function bastionRenderTabs() {
     tab.appendChild(close);
     // 点标签:切换加载该堡垒机
     tab.addEventListener('click', () => bastionSwitchTab(s.id));
+    // 右键:编辑 / 删除该堡垒机连接
+    tab.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showCtxMenu(e.clientX, e.clientY, [
+        { label: '✏️ 编辑连接', action: () => bastionCfgEdit(s.id) },
+        { label: '🗑 删除连接', danger: true, action: () => bastionRemoveTab(s.id) },
+      ]);
+    });
     list.appendChild(tab);
   }
   if (!bastionServers().length) {
