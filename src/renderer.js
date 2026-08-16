@@ -26,50 +26,135 @@ const SearchAddonClass =
 // 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
 const __bootT0 = performance.now();
 
-// ---- 主题预设(参考 Netcatty 的个性化)----
-// term = 终端配色;css = 应用外壳的 CSS 变量(--term-bg 是终端区域底色)
+// ---- 主题预设(参考 Netcatty / Chaterm 的个性化)----
+// term = 终端配色;css = 应用外壳的 CSS 变量覆盖(--term-bg 是终端区域底色)
+// css 省略时由 deriveUiTokens 从 term 配色按 appearance 自动派生,预设只写配色即可
 const THEMES = {
   dark: {
-    name: '深空(默认)',
+    name: '深空(默认)', appearance: 'dark',
     term: { background: '#070c18', foreground: '#c7dcff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
     css: { '--bg': '#070c18', '--bg-panel': '#0d1530', '--bg-panel-2': '#131d3d', '--bg-hover': '#1b2a52', '--border': '#1d3a66', '--text': '#c7dcff', '--text-dim': '#94a9da', '--term-bg': '#070c18', '--input-bg': '#0a1128' },
   },
   light: {
-    name: '浅色',
+    name: '浅色', appearance: 'light',
     term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
     css: { '--bg': '#f5f6f8', '--bg-panel': '#ffffff', '--bg-panel-2': '#eef0f3', '--bg-hover': '#e2e6ec', '--border': '#d4d7dc', '--text': '#1f2430', '--text-dim': '#5b6472', '--term-bg': '#ffffff', '--input-bg': '#ffffff' },
   },
   green: {
-    name: '经典绿',
+    name: '经典绿', appearance: 'dark',
     term: { background: '#001b00', foreground: '#33ff33', cursor: '#33ff33', selectionBackground: '#0e6b0e', selectionForeground: '#ffffff' },
     css: { '--bg': '#001100', '--bg-panel': '#002200', '--bg-panel-2': '#003300', '--bg-hover': '#004400', '--border': '#005500', '--text': '#33ff33', '--text-dim': '#1d7a1d', '--term-bg': '#001b00', '--input-bg': '#001a00' },
   },
   solarizedDark: {
-    name: 'Solarized 深',
+    name: 'Solarized 深', appearance: 'dark',
     term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
     css: { '--bg': '#002b36', '--bg-panel': '#073642', '--bg-panel-2': '#0a3d4a', '--bg-hover': '#0e4a58', '--border': '#0e4a58', '--text': '#839496', '--text-dim': '#586e75', '--term-bg': '#002b36', '--input-bg': '#00212b' },
   },
   solarizedLight: {
-    name: 'Solarized 浅',
+    name: 'Solarized 浅', appearance: 'light',
     term: { background: '#fdf6e3', foreground: '#657b83', cursor: '#657b83', selectionBackground: '#d9d2b5', selectionForeground: '#073642' },
     css: { '--bg': '#fdf6e3', '--bg-panel': '#eee8d5', '--bg-panel-2': '#e6e0c9', '--bg-hover': '#e3dcc9', '--border': '#d6cfb8', '--text': '#586e75', '--text-dim': '#93a1a1', '--term-bg': '#fdf6e3', '--input-bg': '#fdf6e3' },
   },
   nord: {
-    name: 'Nord',
+    name: 'Nord', appearance: 'dark',
     term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#5e81ac', selectionForeground: '#ffffff' },
     css: { '--bg': '#2e3440', '--bg-panel': '#3b4252', '--bg-panel-2': '#434c5e', '--bg-hover': '#4c566a', '--border': '#4c566a', '--text': '#d8dee9', '--text-dim': '#81a1c1', '--term-bg': '#2e3440', '--input-bg': '#2e3440' },
   },
   dracula: {
-    name: 'Dracula',
+    name: 'Dracula', appearance: 'dark',
     term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
     css: { '--bg': '#282a36', '--bg-panel': '#343746', '--bg-panel-2': '#3d4050', '--bg-hover': '#3d4050', '--border': '#44475a', '--text': '#f8f8f2', '--text-dim': '#bd93f9', '--term-bg': '#282a36', '--input-bg': '#1e2029' },
   },
   onedark: {
-    name: 'One Dark',
+    name: 'One Dark', appearance: 'dark',
     term: { background: '#282c34', foreground: '#abb2bf', cursor: '#528bff', selectionBackground: '#5c78d6', selectionForeground: '#ffffff' },
     css: { '--bg': '#282c34', '--bg-panel': '#2c313a', '--bg-panel-2': '#353b45', '--bg-hover': '#353b45', '--border': '#3e4451', '--text': '#abb2bf', '--text-dim': '#5c6370', '--term-bg': '#282c34', '--input-bg': '#21252b' },
   },
+  // ---- 以下新增预设只写配色,UI 变量走 deriveUiTokens 派生 ----
+  termiusDark: {
+    name: 'Graphite 深', appearance: 'dark',
+    term: { background: '#222426', foreground: '#c9c9c9', cursor: '#c9c9c9', selectionBackground: '#3e4142', selectionForeground: '#ffffff' },
+  },
+  termiusLight: {
+    name: 'Mist 浅', appearance: 'light',
+    term: { background: '#f5f5f5', foreground: '#222426', cursor: '#222426', selectionBackground: '#d9dcdE', selectionForeground: '#222426' },
+  },
+  flexokiDark: {
+    name: 'Ember 深', appearance: 'dark',
+    term: { background: '#100f0f', foreground: '#c6c3b5', cursor: '#c6c3b5', selectionBackground: '#282726', selectionForeground: '#ffffff' },
+  },
+  flexokiLight: {
+    name: 'Canvas 浅', appearance: 'light',
+    term: { background: '#fffcf0', foreground: '#100f0f', cursor: '#100f0f', selectionBackground: '#e6e4d9', selectionForeground: '#100f0f' },
+  },
+  kanagawaWave: {
+    name: 'Tide 靛', appearance: 'dark',
+    term: { background: '#1f1f28', foreground: '#dcd7ba', cursor: '#dcd7ba', selectionBackground: '#363646', selectionForeground: '#ffffff' },
+  },
+  kanagawaDragon: {
+    name: 'Forge 铜', appearance: 'dark',
+    term: { background: '#181616', foreground: '#c5c9c5', cursor: '#c5c9c5', selectionBackground: '#2d2a2e', selectionForeground: '#ffffff' },
+  },
+  kanagawaLotus: {
+    name: 'Dawn 花', appearance: 'light',
+    term: { background: '#f2ecbc', foreground: '#545464', cursor: '#545464', selectionBackground: '#b9b577', selectionForeground: '#ffffff' },
+  },
+  hackerBlue: {
+    name: 'Pulse 蓝', appearance: 'dark',
+    term: { background: '#001020', foreground: '#33aaff', cursor: '#33aaff', selectionBackground: '#003a6e', selectionForeground: '#ffffff' },
+  },
+  hackerGreen: {
+    name: 'Pulse 绿', appearance: 'dark',
+    term: { background: '#001300', foreground: '#00ff66', cursor: '#00ff66', selectionBackground: '#006e2a', selectionForeground: '#ffffff' },
+  },
+  catppuccinMocha: {
+    name: 'Truffle 摩卡', appearance: 'dark',
+    term: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#45475a', selectionForeground: '#ffffff' },
+  },
+  catppuccinLatte: {
+    name: 'Cream 拿铁', appearance: 'light',
+    term: { background: '#eff1f5', foreground: '#4c4f69', cursor: '#dc8a78', selectionBackground: '#ccd0da', selectionForeground: '#4c4f69' },
+  },
+  gruvboxDark: {
+    name: 'Grove 苔', appearance: 'dark',
+    term: { background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2', selectionBackground: '#3c3836', selectionForeground: '#ffffff' },
+  },
 };
+
+// ---- 颜色工具:hex→rgb→线性插值(Chaterm 参考的 colorUtils) ----
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+}
+function mix(a, b, t) {
+  const A = hexToRgb(a), B = hexToRgb(b);
+  const c = A.map((v, i) => Math.round(v + (B[i] - v) * t));
+  return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+const darken = (hex, t) => mix(hex, '#000000', t);
+const lighten = (hex, t) => mix(hex, '#ffffff', t);
+
+// 从终端配色派生 9 个 UI 变量(对齐现有 CSS 变量名,变量名不变 → styles.css 零改动)
+// 方向对齐现有预设:dark 面板/边框比 bg 提亮(--border #1d3a66 > bg #070c18),light 则加深
+function deriveUiTokens(term, appearance) {
+  const { background: bg, foreground: fg } = term;
+  if (appearance === 'light') {
+    return {
+      '--bg': bg, '--term-bg': bg,
+      '--bg-panel': lighten(bg, 0.02), '--bg-panel-2': darken(bg, 0.05),
+      '--bg-hover': darken(bg, 0.06), '--border': darken(bg, 0.12),
+      '--input-bg': lighten(bg, 0.015),
+      '--text': fg, '--text-dim': mix(fg, bg, 0.45),
+    };
+  }
+  return {
+    '--bg': bg, '--term-bg': bg,
+    '--bg-panel': lighten(bg, 0.05), '--bg-panel-2': lighten(bg, 0.09),
+    '--bg-hover': lighten(bg, 0.12), '--border': lighten(bg, 0.16),
+    '--input-bg': lighten(bg, 0.03),
+    '--text': fg, '--text-dim': mix(fg, bg, 0.55),
+  };
+}
 
 // 终端 ANSI 16 色默认色板(可用设置自定义覆盖)
 const DEFAULT_ANSI = ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'];
@@ -581,11 +666,19 @@ function saveSettings() {
   try { localStorage.setItem('jms-settings', JSON.stringify(state.settings)); } catch { /* ignore */ }
 }
 
-// 应用主题:改终端配色 + 应用外壳的 CSS 变量
+// 解析最终生效主题:auto 跟随系统明暗
+function resolveEffectiveThemeId() {
+  const t = state.settings.theme;
+  if (t !== 'auto') return THEMES[t] ? t : 'dark';
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// 应用主题:改终端配色 + 应用外壳的 CSS 变量(派生 + 预设 css 覆盖)
 function applyTheme() {
-  const th = THEMES[state.settings.theme] || THEMES.dark;
+  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
   const root = document.documentElement.style;
-  for (const [k, v] of Object.entries(th.css)) root.setProperty(k, v);
+  const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
+  for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
   const ansi = state.settings.customAnsi || DEFAULT_ANSI; // ANSI 16 色(可自定义)
   for (const t of state.tabs.values()) {
     try {
@@ -597,14 +690,29 @@ function applyTheme() {
 }
 
 function openSettingsModal() {
+  // 主题下拉:auto(跟随系统) + 按明暗分组,20 项平铺难扫
   els.setTheme.innerHTML = '';
-  for (const [key, th] of Object.entries(THEMES)) {
+  const addThemeOpt = (value, text) => {
     const opt = document.createElement('option');
-    opt.value = key;
-    opt.textContent = th.name;
+    opt.value = value;
+    opt.textContent = text;
     els.setTheme.appendChild(opt);
+  };
+  addThemeOpt('auto', '跟随系统 (自动明暗)');
+  for (const [appearance, label] of [['dark', '深色'], ['light', '浅色']]) {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    for (const [key, th] of Object.entries(THEMES)) {
+      if (th.appearance !== appearance) continue;
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = th.name;
+      g.appendChild(opt);
+    }
+    if (g.children.length) els.setTheme.appendChild(g);
   }
-  els.setTheme.value = THEMES[state.settings.theme] ? state.settings.theme : 'dark';
+  const cur = state.settings.theme;
+  els.setTheme.value = cur === 'auto' ? 'auto' : (THEMES[cur] ? cur : 'dark');
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
@@ -9243,6 +9351,10 @@ jmsRestore(); // 启动恢复 JumpServer 登录(静默重登已登录过的服�
 setTimeout(() => { try { if (state.settings.bastionUrl) restoreBastion(); } catch { /* ignore */ } }, 600);
 updateConnectBtn(); // 初始化"连接/中断"二合一按钮状态
 applyTheme();
+// auto 主题:系统明暗切换时即时跟随(仅 auto 模式下重应用,其他主题不受影响)
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (state.settings.theme === 'auto') applyTheme();
+});
 applyPanelCollapsed();
 syncViewButtons();
 fillVendorSelect(); // 填充 AI 厂商下拉框(启动时刷一次)
