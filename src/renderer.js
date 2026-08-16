@@ -468,8 +468,8 @@ const state = {
   splitZoom: null,       // 分屏"放大"的面板 sessionId,null=正常网格(点 Cmd+Enter 或面板 ⤢ 切换)
   groups: [],            // 分组列表 [{ id, name }]
   collapsedGroups: new Set(), // 被折叠的分组 id 集合
-  collapsedTopHost: false,   // 顶级"🖥 主机"分组是否折叠
-  collapsedTopBastion: false, // 顶级"🛡 堡垒机"分组是否折叠(默认展开,让已保存连接可见)
+  collapsedTopHost: true,    // 顶级"🖥 主机"分组是否折叠(默认收起)
+  collapsedTopBastion: true, // 顶级"🛡 堡垒机"分组是否折叠(默认收起)
   searchScope: 'all',        // 搜索/显示范围:all=全部 | host=仅主机 | bastion=仅堡垒机
   recentCollapsed: false, // "最近连接"分组是否折叠(点三角切换)
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
@@ -1911,6 +1911,8 @@ function menuDisconnect() {
 // 锁定覆盖层(临时锁定):铺满主窗口,保留窗口按钮;会话在底层保持,解锁后原样恢复
 function showLockOverlay() {
   els.lockOverlay.classList.remove('hidden');
+  // 锁定后窗口收成小卡片(美观),解锁再恢复原尺寸
+  if (window.api.lockResize) window.api.lockResize(true).catch(() => {});
   // Windows 上原生菜单栏(文件/编辑/…)在 DOM 之外,覆盖层盖不住,锁定必须显式隐藏
   if (window.api.lockMenu) window.api.lockMenu(false);
   // webview 是原生层,会盖在锁定覆盖层之上(参见 bastion-resize-fix),必须显式隐藏;用 display:none(Windows 上 visibility 不可靠)
@@ -1928,6 +1930,8 @@ function showLockOverlay() {
 function hideLockOverlay() {
   els.lockOverlay.classList.add('hidden');
   if (window.api.lockMenu) window.api.lockMenu(true);
+  // 解锁后恢复窗口原尺寸/最大化/全屏
+  if (window.api.lockResize) window.api.lockResize(false).catch(() => {});
   if (els.bastionWebview && els.bastionWebview.style.display === 'none') {
     els.bastionWebview.style.display = '';
     setTimeout(bastionFitToWidth, 200); // display:none→显示 后重新适配画面宽度

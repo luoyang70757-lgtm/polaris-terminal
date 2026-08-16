@@ -157,6 +157,7 @@ contextBridge.exposeInMainWorld('api', {
   lockHas: () => ipcRenderer.invoke('lock:has'),
   lockMenu: (visible) => ipcRenderer.invoke('lock:menu', visible), // 锁定后隐藏原生菜单栏(Windows)
   lockMenuState: () => ipcRenderer.invoke('lock:menuState'), // 查询菜单是否已移除(测试用)
+  lockResize: (shrink) => ipcRenderer.invoke('lock:resize', shrink), // 临时锁定/解锁时缩放窗口
   lockSetup: (password) => ipcRenderer.invoke('lock:setup', password),
   lockVerify: (password) => ipcRenderer.invoke('lock:verify', password),
   lockStatus: () => ipcRenderer.invoke('lock:status'),

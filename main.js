@@ -2551,6 +2551,35 @@ ipcMain.handle('lock:menu', (_e, visible) => {
 });
 // 查询应用菜单是否被移除(锁定后应为 null)。供测试断言"锁定后无菜单栏"。
 ipcMain.handle('lock:menuState', () => ({ ok: true, removed: Menu.getApplicationMenu() === null }));
+// 临时锁定/解锁时缩放主窗口:锁定收成小卡片(美观),解锁恢复原尺寸/最大化/全屏
+let lockResizeSaved = null, lockWasMaximized = false, lockWasFullscreen = false;
+ipcMain.handle('lock:resize', (_e, shrink) => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: '无主窗口' };
+    if (shrink) {
+      if (!lockResizeSaved) {
+        lockResizeSaved = mainWindow.getBounds();
+        lockWasMaximized = mainWindow.isMaximized();
+        lockWasFullscreen = mainWindow.isFullScreen();
+      }
+      if (mainWindow.isMaximized()) mainWindow.unmaximize();
+      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+      mainWindow.setMinimumSize(360, 380); // 临时放开默认最小尺寸(900x600),允许收成小卡片
+      mainWindow.setSize(400, 430);
+      mainWindow.center();
+    } else {
+      mainWindow.setMinimumSize(900, 600);
+      if (lockResizeSaved) {
+        mainWindow.setBounds(lockResizeSaved);
+        lockResizeSaved = null;
+        if (lockWasMaximized) mainWindow.maximize();
+        if (lockWasFullscreen) mainWindow.setFullScreen(true);
+        lockWasMaximized = false; lockWasFullscreen = false;
+      }
+    }
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle('lock:setup', (_e, password) => {
   try {
     // 最小密码长度:整库加密密钥由密码 PBKDF2 派生,1 字符密码 = 密钥可被秒级爆破拖垮
