@@ -2609,6 +2609,7 @@ function openLockWindow() {
     width: 400,
     height: has ? 374 : 437, // 居中卡片 364x338(已设密码)/364x401(加"确认密码"行),四周留白 18px
     resizable: false,
+    frame: false, // 无边框窗口:去掉标题栏/系统边框,只保留卡片自身的一个边框(合并成一个)
     title: 'Polaris · 解锁',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
