@@ -6981,6 +6981,7 @@ function updateTerminalVisibility() {
   const noTerm = state.tabs.size === 0;
   document.querySelector('.main-body').classList.toggle('no-term', noTerm);
   els.welcomeHintSession.classList.toggle('hidden', !noTerm);
+  applyPanelCollapsed(); // 无终端状态变化 → 重算左面板显隐(防"折叠+无终端"时右侧面板独占跑到最左)
 }
 
 function renderLayout() {
@@ -8089,7 +8090,10 @@ function toggleSessionPanel() {
   refitAll(); // 终端宽度变了,重新适配
 }
 function applyPanelCollapsed() {
-  const hidden = !!state.settings.panelCollapsed;
+  const noTerm = state.tabs.size === 0;
+  // 无终端时会话列表必须保留占位(占满窗口),不能折叠隐藏:否则 AI/命令/堡垒机等右侧面板
+  // 会成为 .main-body flex 行唯一可见项被顶到最左侧(x=0)。有终端时才允许折叠隐藏左面板。
+  const hidden = noTerm ? false : !!state.settings.panelCollapsed;
   els.sessionPanel.classList.toggle('hidden', hidden);
   els.dividerV.classList.toggle('hidden', hidden);
 }
