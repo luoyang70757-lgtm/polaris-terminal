@@ -331,6 +331,7 @@ const els = {
   setBootIntro: $('set-bootintro'),
   setHighlight: $('set-highlight'),
   setFontSize: $('set-font-size'),
+  setUiFontSize: $('set-ui-font-size'),
   setFontFamily: $('set-font-family'),
   setAutoReconnect: $('set-autoreconnect'),
   setVerify: $('set-verify'),
@@ -572,6 +573,7 @@ const state = {
     aiVendors: {},       // 多厂商配置: 厂商名 -> { url, key, format, model, models[] },每家独立互不影响
     aiActiveVendor: '',  // 当前激活的厂商名(AI 对话用这家)
     fontSize: 13,               // 终端字体大小
+    uiFontSize: 13,             // 界面字体大小(工具栏/会话列表等,与终端字号独立)
     fontFamily: '"SF Mono", Menlo, Consolas, "Courier New", monospace', // 终端字体
     autoReconnect: true,        // 断线自动重连开关
     verifyHostKey: true,        // 服务器指纹校验(known_hosts)
@@ -679,6 +681,7 @@ function applyTheme() {
   const root = document.documentElement.style;
   const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
   for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
+  root.setProperty('--ui-font', (state.settings.uiFontSize || 13) + 'px'); // 界面字体大小(工具栏/列表等)
   const ansi = state.settings.customAnsi || DEFAULT_ANSI; // ANSI 16 色(可自定义)
   for (const t of state.tabs.values()) {
     try {
@@ -716,6 +719,7 @@ function openSettingsModal() {
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
+  els.setUiFontSize.value = state.settings.uiFontSize || 13;
   els.setFontFamily.value = state.settings.fontFamily || '';
   els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
   els.setVerify.checked = state.settings.verifyHostKey !== false;
@@ -8616,6 +8620,11 @@ els.setFontSize.addEventListener('change', () => {
   state.settings.fontSize = parseInt(els.setFontSize.value, 10) || 13;
   saveSettings();
   applyFontSettings();
+});
+els.setUiFontSize.addEventListener('change', () => {
+  state.settings.uiFontSize = parseInt(els.setUiFontSize.value, 10) || 13;
+  saveSettings();
+  applyTheme(); // 应用新界面字号(--ui-font)
 });
 els.setFontFamily.addEventListener('change', () => {
   state.settings.fontFamily = els.setFontFamily.value;

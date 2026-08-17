@@ -1823,3 +1823,20 @@ input[type="checkbox"] {
   opacity: 0.6;
   border-top: 1px solid var(--border);
 }
+
+/* ---------- 界面字体缩放:设置「界面字体大小」控制工具栏/会话列表/右键菜单文字(与终端字号独立) ---------- */
+/* 用 #main-view 提升特异性,压过 .asset-group-head.top-group / .top-group-container .asset-group-head 等原有字号 */
+:root { --ui-font: 13px; }
+/* 顶部工具栏 */
+#main-view .toolbar .btn-mini,
+#main-view .toolbar .toolbar-item { font-size: var(--ui-font); }
+#main-view .toolbar .app-logo { font-size: calc(var(--ui-font) + 1px); }
+/* 会话列表:分组头/资产项/卡片 */
+#main-view .asset-group-head,
+#main-view .asset-group-name,
+#main-view .asset-group-count,
+#main-view .asset-item,
+#main-view .session-card .card-name,
+#main-view .session-card .card-addr { font-size: var(--ui-font); }
+/* 右键菜单 */
+#main-view .ctx-item { font-size: var(--ui-font); }
