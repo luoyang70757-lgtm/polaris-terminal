@@ -616,6 +616,7 @@ input[type="checkbox"] {
 }
 
 .modal-card {
+  position: relative; /* 供右上角 ✕ 关闭按钮定位 */
   width: 320px;
   max-height: calc(100vh - 48px); /* 内容超高时弹窗内部滚动,而不是被裁掉 */
   overflow-y: auto;
@@ -625,6 +626,14 @@ input[type="checkbox"] {
   padding: 20px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
+/* 弹窗右上角 ✕ 关闭按钮 */
+.modal-x {
+  position: absolute; top: 10px; right: 12px;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 15px; line-height: 1;
+  padding: 5px 7px; border-radius: 4px;
+}
+.modal-x:hover { background: var(--bg-hover); color: var(--text); }
 .modal-card.wide { width: 400px; }
 .modal-card::-webkit-scrollbar { width: 6px; }
 .modal-card::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }

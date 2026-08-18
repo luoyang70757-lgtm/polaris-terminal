@@ -331,7 +331,7 @@ const els = {
   setTheme: $('set-theme'),
   setBootIntro: $('set-bootintro'),
   setHighlight: $('set-highlight'),
-  setHighlightKw: $('set-highlight-kw'),
+  setCloseX: $('set-close-x'),
   setFontSize: $('set-font-size'),
   setUiFontSize: $('set-ui-font-size'),
   setFontFamily: $('set-font-family'),
@@ -720,7 +720,6 @@ function openSettingsModal() {
   els.setTheme.value = cur === 'auto' ? 'auto' : (THEMES[cur] ? cur : 'dark');
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
-  els.setHighlightKw.value = (state.settings.highlightKeywords || []).join(', ');
   els.setFontSize.value = state.settings.fontSize || 13;
   els.setUiFontSize.value = state.settings.uiFontSize || 13;
   els.setFontFamily.value = state.settings.fontFamily || '';
@@ -8769,13 +8768,8 @@ els.setHighlight.addEventListener('change', () => {
   state.settings.highlight = els.setHighlight.checked;
   saveSettings();
 });
-// 高亮关键词编辑:逗号/中文逗号分隔,去空去重;改后清正则缓存让新词立刻生效
-els.setHighlightKw.addEventListener('change', () => {
-  const kws = els.setHighlightKw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
-  state.settings.highlightKeywords = [...new Set(kws)];
-  highlightPatternKey = ''; // 强制重编高亮正则
-  saveSettings();
-});
+// 设置弹窗右上角 ✕ 关闭
+els.setCloseX.addEventListener('click', closeSettingsModal);
 els.setFontSize.addEventListener('change', () => {
   state.settings.fontSize = parseInt(els.setFontSize.value, 10) || 13;
   saveSettings();
@@ -9382,17 +9376,18 @@ window.api.onSshData((sessionId, data) => {
 
 // ---- 终端输出过滤(工具栏 🔍 框) ----
 let outputFilterKw = ''; // 全局过滤关键词(空=不过滤)
-// 含关键词的行原样显示(高亮照常),不匹配的行整体变暗。
+// 支持多个预设条件:逗号/空格分隔,行包含其中任意一个即常亮。
 // 用"变暗"而非"隐藏":隐藏会滤掉提示符/程序控制序列,交互式终端会错乱;变暗同样突出重点且不破坏终端。
 function filterWrite(text) {
   if (!outputFilterKw) return text;
-  const k = outputFilterKw.toLowerCase();
+  const kws = outputFilterKw.split(/[,，\s]+/).map((s) => s.toLowerCase()).filter(Boolean);
+  if (!kws.length) return text;
   const parts = String(text).split('\n');
   const last = parts.pop(); // 最后一段可能未完成(提示符/半行),原样通过,不延迟显示
   const filtered = parts.map((line) => {
     if (!line) return line;
-    const plain = line.replace(/\x1b\[[0-9;]*m/g, ''); // 去 ANSI 后判断是否含关键词
-    return plain.toLowerCase().includes(k) ? line : '\x1b[2m' + line + '\x1b[0m';
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, '').toLowerCase(); // 去 ANSI 后判断
+    return kws.some((k) => plain.includes(k)) ? line : '\x1b[2m' + line + '\x1b[0m';
   }).join('\n');
   return filtered + (filtered && last ? '\n' : '') + last;
 }
