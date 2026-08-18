@@ -5010,14 +5010,18 @@ function injectBastionAssetHook(requireStable) {
             var j = null; try { j = JSON.parse(t); } catch (e) {}
             if (j && j.content) {
               var ids = {};
+              var prev = window.__bastionAssets || [];
+              var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
+              var newDevs = []; // 目录查询返回、但资产集缺失的设备(扁平根查询可能漏掉只在子目录的设备)
               j.content.forEach(function(c){
                 var d = c.dev || {};
                 // devId 为空时用 name+ip 兜底,否则多台无 id 设备互相覆盖/无法归组
                 var key = String(d.id != null ? d.id : c.id || (d.name + d.ip));
-                if (key) ids[key] = 1;
+                if (key) {
+                  ids[key] = 1;
+                  if (!map.has(key)) newDevs.push({ name: d.name || c.name, ip: d.ip || '', devId: key, port: 22, proto: 'ssh', accounts: [], recentAccount: (c.recent && c.recent.account) || '', favorite: false, dir: '', dirs: [] });
+                }
               });
-              var prev = window.__bastionAssets || [];
-              var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
               map.forEach(function(x){
                 var k = x.devId || x.name + x.ip;
                 if (ids[k]) {
@@ -5027,6 +5031,10 @@ function injectBastionAssetHook(requireStable) {
                   if (x.dirs.indexOf(n.name) === -1) x.dirs.push(n.name);
                   x.dir = n.name; x.dirPath = n.path;
                 }
+              });
+              // 把缺失设备补进资产集并归入本目录(不依赖扁平根查询覆盖全部设备)
+              newDevs.forEach(function(nd){
+                if (!map.has(nd.devId)) { nd.dirs = [n.name]; nd.dir = n.name; nd.dirPath = n.path; map.set(nd.devId, nd); }
               });
               window.__bastionAssets = Array.from(map.values());
               done += Object.keys(ids).length;
