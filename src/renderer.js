@@ -4805,14 +4805,14 @@ function injectBastionAssetHook(requireStable) {
                 proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
                 accounts: accts,
                 recentAccount: (c.recent && c.recent.account) || '',
-                favorite: false, dir: ''
+                favorite: false, dir: '', dirs: []
               };
             }).filter(function(d){ return d.name; });
           } else if (j.children) { // 树结构:递归收集设备(有 ip 的节点)
             (function walk(nodes){
               for (var i = 0; i < (nodes || []).length; i++) {
                 var n = nodes[i];
-                if (n.ip) out.push({ name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '' });
+                if (n.ip) out.push({ name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] });
                 if (n.children) walk(n.children);
               }
             })(j.children);
@@ -4828,6 +4828,7 @@ function injectBastionAssetHook(requireStable) {
           var k = d.devId || d.name + d.ip;
           var old = map.get(k);
           if (old && old.dir && !d.dir) d.dir = old.dir;
+          if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) d.dirs = old.dirs;
           if (old && old.dirPath && !d.dirPath) d.dirPath = old.dirPath;
           if (old && old.favorite) d.favorite = true;
           map.set(k, d);
@@ -5019,7 +5020,13 @@ function injectBastionAssetHook(requireStable) {
               var map = new Map(prev.map(function(x){ return [x.devId || x.name + x.ip, x]; }));
               map.forEach(function(x){
                 var k = x.devId || x.name + x.ip;
-                if (ids[k]) { x.dir = n.name; x.dirPath = n.path; }
+                if (ids[k]) {
+                  // 一台设备可属多个业务目录(H3C 目录树是重叠的):全部记录到 dirs,
+                  // 左侧按 dirs 分组展示与网页一致;dir 保留最后一个匹配的作主目录。
+                  if (!x.dirs) x.dirs = [];
+                  if (x.dirs.indexOf(n.name) === -1) x.dirs.push(n.name);
+                  x.dir = n.name; x.dirPath = n.path;
+                }
               });
               window.__bastionAssets = Array.from(map.values());
               done += Object.keys(ids).length;
@@ -5715,14 +5722,16 @@ function renderBastionInSessionList(container, f) {
     return;
   }
   // ---- 空搜索:分组展示 ----
+  // 设备可属多个业务目录(与网页一致):按 dirs(全部所属目录)分组,同一设备出现在每个所属组。
   const dirs = [];
-  const dirOf = (a) => a.dir || '';
   const map = new Map();
   for (const a of all) {
     if (a.favorite) continue; // M4:收藏设备只出现在 ⭐收藏 置顶组,目录组/未分组不再重复渲染
-    const d = dirOf(a);
-    if (!map.has(d)) map.set(d, []);
-    map.get(d).push(a);
+    const groups = (a.dirs && a.dirs.length) ? a.dirs : [a.dir || ''];
+    for (const dn of groups) {
+      if (!map.has(dn)) map.set(dn, []);
+      map.get(dn).push(a);
+    }
   }
   for (const [d, arr] of map) dirs.push({ dir: d, assets: arr });
   // 排序:有目录的按目录名 → 未分组最后
