@@ -1394,13 +1394,6 @@ async function restoreBastionAssets() {
       state.bastionDirsInit = false; // 目录分组待首次渲染时默认折叠
       state.bastionAssets = all;
       for (const a of all) if (a.favorite) state.bastionFavSet.add(a.devId);
-      // 旧数据迁移:修复前捕获的资产只有 dir(单一目录)没有 dirs(所属全部目录),
-      // 分组计数与网页对不上。检测到这类旧数据 → 重置全量拉取状态,网页加载后自动
-      // 重跑逐目录补充,把 dirs 补全(此时分组会短暂退回"未分组/单目录",补完即恢复)。
-      if (all.some((a) => a.dir && !(a.dirs && a.dirs.length))) {
-        state.bastionAllFetched = false;
-        console.log('[堡垒机] 检测到旧版单目录数据,等待网页加载后自动重新分组');
-      }
       renderSessionList(els.inputSessionSearch.value);
       console.log('[堡垒机] 已从本地恢复资产:', all.length);
     }
@@ -5118,6 +5111,26 @@ function stableJson(v) {
   return JSON.stringify(v);
 }
 
+// 合并一次新的 webview 捕获到已有资产:重捕获/换页时注入钩子重置 guest 状态,
+// 新扁平捕获的设备 dir/dirs 全空,且逐目录补充是渐进式的(先处理的目录先把设备"拉走")。
+// 按 devId 把旧 state 的 dir/dirs 与新的 dirs 取并集:补充期间旧分组不丢、不渐进掏空,
+// 补充完成后新 dirs 已含全部目录(旧目录本就是设备所属,并集不再增加)。
+function mergeBastionCapture(prev, fresh) {
+  const prevMap = new Map((prev || []).map((a) => [a.devId || a.name + a.ip, a]));
+  return (fresh || []).map((a) => {
+    const old = prevMap.get(a.devId || a.name + a.ip);
+    if (!old) return a;
+    const m = { ...a };
+    if (!m.dir && old.dir) m.dir = old.dir;
+    const union = new Set(m.dirs && m.dirs.length ? m.dirs : []);
+    if (old.dirs && old.dirs.length) old.dirs.forEach((d) => union.add(d));
+    else if (old.dir) union.add(old.dir);
+    m.dirs = Array.from(union);
+    if (!m.dirPath || !m.dirPath.length) m.dirPath = old.dirPath ? old.dirPath.slice() : [];
+    return m;
+  });
+}
+
 function pollBastionAssets(force) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
@@ -5161,7 +5174,11 @@ function pollBastionAssets(force) {
       }
     })()`).then((r) => {
       r = r || {};
-      const list = r.assets || [];
+      // 重捕获时注入钩子重置 guest 状态,新扁平捕获的设备 dir/dirs 全空 → 若直接替换 state,
+      // 左侧 202 个分组会瞬间全部掉进「未分组」,直到逐目录补充跑完(1-2 分钟)。用旧的
+      // state 数据按 devId 回填 dir/dirs/dirPath(新数据为空才回填),重捕获期间旧分组不丢,
+      // 逐目录补充完成后 dirs 渐进合并成完整的多目录归属。
+      const list = mergeBastionCapture(state.bastionAssets, r.assets);
       let changed = false; // 仅当数据真变化才重渲染(旧版无条件 renderSessionList,每 4s 全量重建 870 资产 DOM)
       // 钩子存活检测:SPA 页面登录跳转/整页重载会重置 guest 环境(__bastionHookInjected 和
       // __bastionFetchAll 全丢)→ 前端资产请求不被捕获、fetchAll 也不存在,资产区静默消失

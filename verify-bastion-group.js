@@ -108,7 +108,9 @@ async function check(c, name, expr, expect = true) {
     const txt3 = await ev(c, dump);
     if (txt3.includes('📁 旧组A(2)') && txt3.includes('旧设备X')) ok('旧数据(无 dirs)按单目录分组正常显示');
     else bad('旧数据兼容', txt3.slice(0, 300).replace(/\n/g,'|'));
-    await check(c, '旧数据触发自动重新分组标记', `(function(){ const all=[{devId:'1',dir:'A',dirs:[]},{devId:'2',dir:'',dirs:['B']}]; return all.some(a=>a.dir && !(a.dirs&&a.dirs.length)); })()`, true);
+    // mergeBastionCapture:重捕获时旧 dir/dirs 与新 dirs 取并集,分组不丢
+    await check(c, '重捕获并集保留旧 dir', `(function(){ const r=mergeBastionCapture([{devId:'1',dir:'安全设备',dirs:[]}],[{devId:'1',dir:'',dirs:[],dirPath:[]}]); return r[0].dirs.join('|')==='安全设备'; })()`, true);
+    await check(c, '重捕获并集=旧+新(不丢已补充目录)', `(function(){ const r=mergeBastionCapture([{devId:'1',dir:'旧',dirs:['旧']}],[{devId:'1',dir:'',dirs:['麒麟','麒麟1'],dirPath:[]}]); const s=r[0].dirs; return s.includes('麒麟')&&s.includes('麒麟1')&&s.includes('旧')&&s.length===3; })()`, true);
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 
