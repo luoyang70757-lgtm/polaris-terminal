@@ -605,7 +605,7 @@ const state = {
   bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
   bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
   bastionCollapsed: true, // H3C 堡垒机区默认折叠(打开堡垒机后左侧分组收起,需展开才看资产)
-  collapsedBastionSaved: false, // 左侧"堡垒机连接"分组是否折叠
+  collapsedBastionSaved: true, // 左侧"堡垒机连接"分组是否折叠(默认收起,登录后不自动展开)
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
   sftp: {
@@ -5462,6 +5462,11 @@ function renderBastionSavedSessions(container, f) {
     return (s.assets || []).some((a) => bastionAssetMatch(a, kw));
   });
   if (!list.length) return;
+  // 已保存堡垒机连接:默认折叠(登录后不自动展开);搜索时忽略折叠直接展示命中项
+  const savedCollapsed = !!state.collapsedBastionSaved && !kw;
+  container.appendChild(makeSectionHead(`🛡 已保存堡垒机连接(${list.length})`, savedCollapsed,
+    () => { state.collapsedBastionSaved = !state.collapsedBastionSaved; renderSessionList(els.inputSessionSearch.value); }, []));
+  if (savedCollapsed) return;
   for (const s of list) {
     const item = document.createElement('div');
     item.className = 'asset-item jms-asset-item bastion-saved-item';
