@@ -1394,6 +1394,13 @@ async function restoreBastionAssets() {
       state.bastionDirsInit = false; // 目录分组待首次渲染时默认折叠
       state.bastionAssets = all;
       for (const a of all) if (a.favorite) state.bastionFavSet.add(a.devId);
+      // 旧数据迁移:修复前捕获的资产只有 dir(单一目录)没有 dirs(所属全部目录),
+      // 分组计数与网页对不上。检测到这类旧数据 → 重置全量拉取状态,网页加载后自动
+      // 重跑逐目录补充,把 dirs 补全(此时分组会短暂退回"未分组/单目录",补完即恢复)。
+      if (all.some((a) => a.dir && !(a.dirs && a.dirs.length))) {
+        state.bastionAllFetched = false;
+        console.log('[堡垒机] 检测到旧版单目录数据,等待网页加载后自动重新分组');
+      }
       renderSessionList(els.inputSessionSearch.value);
       console.log('[堡垒机] 已从本地恢复资产:', all.length);
     }

@@ -41,6 +41,9 @@ async function ev(c, expr, tries = 3) {
 let passed = 0, failed = 0;
 const ok = (n, d) => { passed++; console.log('  ✓ ' + n + (d ? '  → ' + d : '')); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? '  → ' + e : '')); };
+async function check(c, name, expr, expect = true) {
+  try { const v = await ev(c, expr); if (v === expect) ok(name, '=' + JSON.stringify(v)); else bad(name, 'got ' + JSON.stringify(v) + ' want ' + JSON.stringify(expect)); } catch (e) { bad(name, e.message); }
+}
 
 (async () => {
   console.log('\n=== 堡垒机资产按全部所属目录分组 ===\n');
@@ -88,6 +91,26 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? '  → ' + e
     const secondA = txt2.indexOf('设备A', firstA + 1);
     if (firstA >= 0 && secondA >= 0) ok('设备A 在麒麟 和 麒麟1 两组各出现一次(与网页一致)');
     else bad('设备A 重复出现', txt2.slice(0, 400).replace(/\n/g,'|'));
+
+    // 旧数据兼容:只有 dir(单一目录)没有 dirs 的资产仍按单目录分组显示(等重新捕获才补全)
+    await ev(c, `(function(){
+      state.bastionAssets = [
+        { devId:'5', name:'旧设备X', ip:'10.0.0.5', port:22, proto:'ssh', accounts:[], recentAccount:'', favorite:false, dir:'旧组A', dirs:[] },
+        { devId:'6', name:'旧设备Y', ip:'10.0.0.6', port:22, proto:'ssh', accounts:[], recentAccount:'', favorite:false, dir:'旧组A', dirs:[] },
+      ];
+      state.bastionCollapsed = false; state.bastionDirsInit = false;
+      renderSessionList('');
+      return true;
+    })()`);
+    await sleep(300);
+    await ev(c, `(function(){ state.bastionDirCollapsed.clear(); renderSessionList(''); return true; })()`);
+    await sleep(300);
+    const txt3 = await ev(c, dump);
+    if (txt3.includes('📁 旧组A(2)') && txt3.includes('旧设备X')) ok('旧数据(无 dirs)按单目录分组正常显示');
+    else bad('旧数据兼容', txt3.slice(0, 300).replace(/\n/g,'|'));
+    await check(c, '旧数据触发自动重新分组标记', `(function(){ const all=[{devId:'1',dir:'A',dirs:[]},{devId:'2',dir:'',dirs:['B']}]; return all.some(a=>a.dir && !(a.dirs&&a.dirs.length)); })()`, true);
+
+    console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) { console.error('\n测试异常:', e && e.message); failed++; console.log(`\n结果: ${passed} 通过, ${failed} 失败`); }
