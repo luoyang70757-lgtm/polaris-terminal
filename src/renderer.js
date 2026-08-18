@@ -317,7 +317,15 @@ const els = {
   viewMenu: $('view-menu'),
   // 设置
   btnSettings: $('btn-settings'),
-  outputFilter: $('output-filter'),
+  btnFilter: $('btn-filter'),
+  filterModal: $('filter-modal'),
+  filterNewKw: $('filter-new-kw'),
+  filterAdd: $('filter-add'),
+  filterList: $('filter-list'),
+  filterStatus: $('filter-status'),
+  filterClear: $('filter-clear'),
+  filterApply: $('filter-apply'),
+  filterCloseX: $('filter-close-x'),
   settingsModal: $('settings-modal'),
   // 终端调试日志
   btnDebug: $('btn-debug'),
@@ -566,6 +574,7 @@ const state = {
     theme: 'dark',       // 主题名(对应 THEMES 的键)
     highlight: true,     // 终端关键字高亮开关
     highlightKeywords: ['error', 'warning', 'fail', 'failed', 'fatal'],
+    outputFilters: [],           // 终端输出过滤条件列表: [{ id, kw, on }],可多选启用
     aiKey: '',           // (兼容旧数据)AI API Key —— 新结构见 aiVendors
     aiVendor: '',        // (兼容旧数据)模型厂商名 —— 新结构见 aiVendors
     aiUrl: 'https://api.deepseek.com/anthropic', // (兼容旧数据)新默认:DeepSeek Anthropic 兼容端点
@@ -8714,10 +8723,93 @@ els.btnSettings.addEventListener('click', () => {
   if (els.settingsModal.classList.contains('hidden')) openSettingsModal();
   else closeSettingsModal();
 });
-// 工具栏输出过滤:实时输入即生效(空=取消过滤)
-els.outputFilter.addEventListener('input', () => {
-  outputFilterKw = els.outputFilter.value.trim();
+// ---- 输出过滤:工具栏按钮 → 弹窗创建多个条件、复选框多选启用 ----
+let outputFilterSeq = 0; // 条件 id 自增
+function outputFilters() { return state.settings.outputFilters || (state.settings.outputFilters = []); }
+// 生效的过滤词 = 勾选的条件(逗号连接),供 filterWrite 使用
+function computeOutputFilter() {
+  outputFilterKw = outputFilters().filter((f) => f.on).map((f) => f.kw).filter(Boolean).join(', ');
+}
+function renderFilterStatus() {
+  const on = outputFilters().filter((f) => f.on);
+  if (on.length) {
+    els.filterStatus.textContent = `当前生效 ${on.length} 个: ${on.map((f) => f.kw).join('、')}`;
+    els.filterStatus.classList.add('active');
+    els.btnFilter.classList.add('active');
+  } else {
+    els.filterStatus.textContent = '未启用过滤条件(全部输出常亮)';
+    els.filterStatus.classList.remove('active');
+    els.btnFilter.classList.remove('active');
+  }
+}
+function renderFilterList() {
+  const list = outputFilters();
+  els.filterList.innerHTML = '';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'filter-empty';
+    empty.textContent = '还没有过滤条件,输入关键词点「＋ 添加」';
+    els.filterList.appendChild(empty);
+    return;
+  }
+  for (const f of list) {
+    const row = document.createElement('div');
+    row.className = 'filter-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!f.on;
+    cb.title = '勾选则启用该条件';
+    cb.addEventListener('change', () => { f.on = cb.checked; computeOutputFilter(); renderFilterStatus(); });
+    const txt = document.createElement('span');
+    txt.className = 'filter-kw-text';
+    txt.textContent = f.kw;
+    const del = document.createElement('button');
+    del.className = 'filter-del';
+    del.textContent = '✕';
+    del.title = '删除该条件';
+    del.addEventListener('click', () => {
+      state.settings.outputFilters = outputFilters().filter((x) => x.id !== f.id);
+      computeOutputFilter();
+      renderFilterStatus();
+      renderFilterList();
+      saveSettings();
+    });
+    row.appendChild(cb);
+    row.appendChild(txt);
+    row.appendChild(del);
+    els.filterList.appendChild(row);
+  }
+}
+function openFilterModal() {
+  renderFilterList();
+  renderFilterStatus();
+  els.filterModal.classList.remove('hidden');
+  els.filterNewKw.focus();
+}
+function closeFilterModal() { els.filterModal.classList.add('hidden'); }
+function addOutputFilter() {
+  const kw = els.filterNewKw.value.trim();
+  if (!kw) { els.filterNewKw.focus(); return; }
+  outputFilters().push({ id: ++outputFilterSeq, kw, on: true });
+  els.filterNewKw.value = '';
+  computeOutputFilter();
+  renderFilterList();
+  renderFilterStatus();
+  saveSettings();
+  els.filterNewKw.focus();
+}
+els.btnFilter.addEventListener('click', openFilterModal);
+els.filterAdd.addEventListener('click', addOutputFilter);
+els.filterNewKw.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); addOutputFilter(); } });
+els.filterApply.addEventListener('click', () => { closeFilterModal(); });
+els.filterClear.addEventListener('click', () => {
+  state.settings.outputFilters = [];
+  computeOutputFilter();
+  renderFilterList();
+  renderFilterStatus();
+  saveSettings();
 });
+els.filterCloseX.addEventListener('click', closeFilterModal);
 // 终端调试日志面板
 initDebugPanelDrag(); // 面板头部可拖动 + 位置记忆
 els.btnDebug.addEventListener('click', toggleDebugPanel);
@@ -9575,6 +9667,7 @@ els.kbdFields.addEventListener('keydown', (e) => {
 window.addEventListener('error', (e) => console.warn('[渲染层]', e.message));
 
 loadSettings();
+computeOutputFilter(); // 启动时按持久化的过滤条件恢复生效关键词
 resetIdleLock(); // 启动即开始闲置自动锁定计时
 jmsRestore(); // 启动恢复 JumpServer 登录(静默重登已登录过的服务器;localStorage 丢失时回退 jms-servers.json 文件备份)
 // 恢复堡垒机 web 标签页:保存过 bastionUrl(说明上次用了 web 堡垒机)→ 自动打开面板并加载。

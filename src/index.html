@@ -33,10 +33,7 @@
       <button id="btn-recommend" class="btn-mini" title="智能命令推荐:本主机历史高频命令 + 常用运维命令,点击即发送">✨ 推荐</button>
       <span class="toolbar-sep"></span>
       <button id="btn-rec" class="btn-mini" title="录制与回放">⏺ 录制</button>
-      <span class="output-filter-wrap" title="过滤终端输出:含关键词的行常亮、其余变暗;留空取消">
-        <span class="output-filter-icon">🔍</span>
-        <input id="output-filter" class="output-filter" placeholder="过滤…" spellcheck="false" />
-      </span>
+      <button id="btn-filter" class="btn-mini" title="输出过滤:创建/清除过滤条件(含关键词的行常亮、其余变暗)">🔍 过滤</button>
       <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持)">🔒 锁定</button>
       <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI)">⚙ 设置</button>
       <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题">🧾 调试</button>
@@ -607,6 +604,24 @@
       </div>
       <div class="modal-actions">
         <button id="set-close" class="btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 输出过滤弹窗(创建多个条件 + 多选启用) ============ -->
+  <div id="filter-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>输出过滤<button id="filter-close-x" class="modal-x" title="关闭">✕</button></h3>
+      <div class="filter-add-row">
+        <input id="filter-new-kw" type="text" placeholder="添加过滤条件,如 error / 失败 / 80%" spellcheck="false" />
+        <button id="filter-add" class="btn-mini" title="添加一个过滤条件">＋ 添加</button>
+      </div>
+      <div id="filter-list" class="filter-list"></div>
+      <div class="filter-status" id="filter-status"></div>
+      <div class="filter-hint dim">勾选的条件任一命中即常亮,其余变暗</div>
+      <div class="modal-actions">
+        <button id="filter-clear" class="btn-ghost" title="删除全部过滤条件">🧹 清除全部</button>
+        <button id="filter-apply" class="btn-primary">✓ 应用</button>
       </div>
     </div>
   </div>
