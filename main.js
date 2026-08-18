@@ -641,14 +641,13 @@ ipcMain.handle('jms:webLogout', async (_e, { origin }) => {
   }
 });
 
-// 清除堡垒机浏览器的全部历史记录(浏览历史/登录态/表单/localStorage):清空 persist:bastion partition
+// 清除堡垒机浏览器的会话记录(浏览历史/登录态/表单/localStorage):清空 persist:bastion partition。
+// 只清浏览器会话,不动 SQLite 捕获的堡垒机资产——那些是左侧面板的连接/主机(app 自己的数据,不属于浏览历史)。
 ipcMain.handle('bastion:clearAll', async () => {
   try {
     const bs = session.fromPartition('persist:bastion');
     await bs.clearStorageData(); // cookie + localStorage + cache 全清
     await bs.clearCache();
-    sessionStore.deleteAllBastionAssets(); // 同步清 SQLite 捕获的堡垒机资产(否则重启又恢复)
-    schedulePersist();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };

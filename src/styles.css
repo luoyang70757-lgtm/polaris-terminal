@@ -911,6 +911,20 @@ input[type="checkbox"] {
   flex-direction: column;
   flex-shrink: 0;
 }
+/* AI 面板隐藏不用 display:none:那会销毁合成层,Windows 物理机(Win11,真实 GPU/DWM)
+   下 AI 面板反复开关时重建大配置层会触发 Chromium 合成器卡死(整窗冻结/工具栏空白、
+   JS 还在跑)。改成保留合成层、折叠成 0 宽:visibility:hidden 藏内容,width:0 不占布局,
+   层不销毁所以重开不重建,避开崩溃路径。 */
+.ai-panel.hidden {
+  display: flex !important;   /* 覆盖 .hidden 的 display:none!important,保住合成层 */
+  visibility: hidden;
+  width: 0 !important;
+  min-width: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  border-left: none !important;
+  overflow: hidden;
+}
 /* 命令记录面板:与 AI 面板并列,记录每台主机执行过的命令 */
 .cmd-panel {
   width: 340px;

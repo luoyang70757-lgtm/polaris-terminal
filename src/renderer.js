@@ -1044,6 +1044,7 @@ let aiSentHistory = [];   // AI 输入框历史(用户发过的提问),↑↓ �
 let aiHistoryIndex = -1;  // 当前浏览到的历史位置:-1=未在浏览
 
 function toggleAiPanel() {
+  hideWebviewDuringAiToggle();
   els.aiPanel.classList.toggle('hidden');
   if (!els.aiPanel.classList.contains('hidden')) {
     updateAiHostList();
@@ -1053,6 +1054,24 @@ function toggleAiPanel() {
   }
   refitAll(); // 终端区域宽度变了,重新适配
   syncPanelButtons();
+}
+
+// AI 面板开关会让右侧 dock(堡垒机 webview 等)重新布局,Windows 软件渲染下
+// webview 原生表面被平移可能拖垮合成器(整窗冻结/工具栏空白、JS 仍在跑)。
+// 开关瞬间把 webview 隐藏一帧、布局稳定后再恢复,避开表面重定位的崩溃路径。
+// 堡垒机面板没开(webview 本就 display:none)则无操作。
+function hideWebviewDuringAiToggle() {
+  const wv = els.bastionWebview;
+  if (!wv || !wv.style || !els.bastionSlot) return;
+  if (els.bastionSlot.classList.contains('hidden')) return; // 堡垒机面板收起,webview 不可见
+  if (wv.style.display === 'none') return;                  // 已隐藏,无需处理
+  const prev = wv.style.display;
+  wv.style.display = 'none';
+  // 等 2 帧布局稳定后再恢复;若合成器卡住 rAF 不触发,webview 保持隐藏(比冻结安全)
+  let restored = false;
+  const restore = () => { if (!restored) { restored = true; wv.style.display = prev; } };
+  requestAnimationFrame(() => requestAnimationFrame(restore));
+  setTimeout(restore, 100); // 兜底:rAF 因合成器卡住不触发时,100ms 后强制恢复
 }
 
 // 刷新 AI 面板的主机多选下拉:列出所有已连接主机(带复选框),可勾选多个
@@ -4461,9 +4480,15 @@ function closeBastionPanel() {
 }
 function restoreBastion() { openBastionPanel(); }
 
+// 堡垒机会话 id:accessclient 解码连的用 bastion-*,JumpServer API 资产连的用 jms-*
+function isBastionSessionId(id) {
+  const s = String(id);
+  return s.startsWith('bastion-') || s.startsWith('jms-');
+}
+
 // 更新最小化入口:显示从堡垒机连了几台终端
 function updateBastionMini() {
-  const n = [...state.tabs.values()].filter((t) => t.session && String(t.session.id).startsWith('bastion-')).length;
+  const n = [...state.tabs.values()].filter((t) => t.session && isBastionSessionId(t.session.id)).length;
   els.bastionMini.textContent = n ? `🌐 堡垒机(${n})` : '🌐 堡垒机';
 }
 
@@ -5431,14 +5456,17 @@ function renderBastionSavedSessions(container, f) {
     });
     // 双击:打开右侧浏览器加载该堡垒机
     item.addEventListener('dblclick', () => { openBastionPanel(); bastionSelectServer('B:' + s.id); });
-    // 右键:编辑 / 刷新资产 / 删除
+    // 右键:编辑 / 刷新资产(JMS 站点才有,可 REST 拉取)/ 删除
     item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      showCtxMenu(e.clientX, e.clientY, [
+      const menu = [
         { label: '✏️ 编辑连接', action: () => bastionCfgEdit(s.id) },
-        { label: '🔄 刷新资产', action: () => { s.assetsExpanded = true; s.assets = null; s.assetsLoadFailed = false; bastionLoadSavedAssets(s); } },
-        { label: '🗑 删除连接', danger: true, action: () => bastionRemoveTab(s.id) },
-      ]);
+      ];
+      if (!isH3CSavedConn(s)) {
+        menu.push({ label: '🔄 刷新资产', action: () => { s.assetsExpanded = true; s.assets = null; s.assetsLoadFailed = false; s.assetsLoadError = ''; bastionLoadSavedAssets(s); } });
+      }
+      menu.push({ label: '🗑 删除连接', danger: true, action: () => bastionRemoveTab(s.id) });
+      showCtxMenu(e.clientX, e.clientY, menu);
     });
     container.appendChild(item);
     // 展开状态:连接下方渲染资产主机列表(按主机分组归类)
@@ -5523,7 +5551,11 @@ function renderBastionSavedSessions(container, f) {
       } else if (s.assetsLoading) {
         assetsWrap.textContent = '加载资产中…';
       } else if (s.assetsLoadFailed) {
-        assetsWrap.textContent = '资产加载失败(确认站点为 JumpServer 且账号可登录)';
+        assetsWrap.textContent = s.assetsLoadError
+          ? `资产加载失败: ${s.assetsLoadError}`
+          : '资产加载失败(确认站点为 JumpServer 且账号可登录)';
+      } else if (isH3CSavedConn(s)) {
+        assetsWrap.textContent = 'H3C 站点:资产由右侧浏览器登录后捕获,展开「🌐 H3C 堡垒机」区块查看;双击连接可打开右侧浏览器';
       } else {
         assetsWrap.textContent = '点击连接行加载资产…';
       }
@@ -5561,30 +5593,102 @@ async function bastionConnectAsset(bastionServer, asset, accountName) {
   setStatus(`连接 ${asset.name}(${account})…`, 'var(--accent)');
 }
 
+// H3C Shterm 站点:URL 含 /shterm 或配置类型为 h3c。这类站点没有 JumpServer REST API,
+// 资产由右侧浏览器登录后从网页捕获(见「🌐 H3C 堡垒机」区块),不走 jmsLogin/jmsAssets。
+function isH3CSavedConn(s) {
+  return !!(s && (s.type === 'h3c' || (s.url && /\/shterm/.test(s.url))));
+}
+
 // 懒加载已保存堡垒机的资产:用保存的账号登录 JumpServer 拉资产列表
+// 失败时把真实原因存进 s.assetsLoadError,界面显示具体错误(原来只显示笼统的
+// "确认站点为 JumpServer…",登录失败的具体原因被吞了没法排查)。
 async function bastionLoadSavedAssets(s) {
   if (s.assetsLoading) return;
+  // H3C 站点没有 JMS REST 接口:这里调 jmsLogin 会用 H3C 地址拼出
+  // {url}/login/api/v1/authentication/auth/ → H3C 返回 HTTP 401。直接提示走右侧浏览器捕获。
+  if (isH3CSavedConn(s)) {
+    s.assetsLoading = false;
+    s.assetsLoadFailed = false;
+    s.assetsLoadError = '';
+    renderSessionList(els.inputSessionSearch.value);
+    setStatus('H3C 站点资产由右侧浏览器登录后捕获,展开「🌐 H3C 堡垒机」区块查看(双击该连接打开浏览器)', 'var(--accent)');
+    return;
+  }
   s.assetsLoading = true;
+  s.assetsLoadError = '';
   renderSessionList(els.inputSessionSearch.value);
+  const fail = (msg) => {
+    s.assetsLoadFailed = true;
+    s.assetsLoadError = msg;
+    s.assetsLoading = false;
+    renderSessionList(els.inputSessionSearch.value);
+  };
   try {
     // 已有 token 直接用;否则用保存的账号密码登录
     if (!s.token) {
       const pw = await decryptSecret(s.password || '');
-      if (!s.account || !pw) { s.assetsLoadFailed = true; s.assetsLoading = false; renderSessionList(els.inputSessionSearch.value); return; }
+      if (!s.account || !pw) { fail('未配置账号或密码,无法登录'); return; }
       const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
-      if (!lg.ok || !lg.token) { s.assetsLoadFailed = true; s.assetsLoading = false; renderSessionList(els.inputSessionSearch.value); return; }
+      // MFA 双因素账号:弹验证码输入框,输对后完成登录再拉资产(复用 jms:mfa 链路)
+      if (lg && lg.mfaRequired) {
+        s.assetsLoading = false;
+        s.assetsLoadError = '';
+        renderSessionList(els.inputSessionSearch.value);
+        promptJmsMfa(s, {
+          cookie: lg.cookie, challengeUrl: lg.challengeUrl,
+          choices: lg.choices, username: s.account, password: pw,
+        });
+        return;
+      }
+      if (!lg || !lg.ok || !lg.token) { fail((lg && lg.error) || '登录失败'); return; }
       s.token = lg.token; s.user = lg.user;
     }
     const r = await window.api.jmsAssets({ baseUrl: s.url, token: s.token });
-    if (r.ok && r.assets) {
+    if (r && r.ok && r.assets) {
       s.assets = r.assets || [];
       s.assetsLoadFailed = false;
     } else {
-      s.assetsLoadFailed = true;
+      // token 过期是常见原因:清掉,下次自动重新登录
+      if (r && /401|403|未登录|invalid token|expired/i.test(r.error || '')) s.token = null;
+      fail((r && r.error) || '资产列表为空');
     }
-  } catch { s.assetsLoadFailed = true; }
+  } catch (e) { fail((e && e.message) || String(e)); }
   s.assetsLoading = false;
   renderSessionList(els.inputSessionSearch.value);
+}
+
+// 已保存堡垒机登录遇到 MFA 双因素:弹验证码输入框,输对后完成登录(登录态写回 s.token,
+// 再重走 bastionLoadSavedAssets 拉资产);验证码错了重弹让用户重输,取消则恢复原状。
+function promptJmsMfa(s, { cookie, challengeUrl, choices, username, password }) {
+  const mfaType = (choices && choices[0]) || 'otp';
+  const attempt = () => {
+    showPrompt({
+      title: `「${s.name}」双因素验证`,
+      label: '该账号开启了双因素认证,请输入验证码(OTP/动态码)', value: '', password: false,
+      onOk: (code) => {
+        code = (code || '').trim();
+        if (!code) { setStatus('未输入验证码', 'var(--red)'); attempt(); return; }
+        setStatus(`验证「${s.name}」…`, 'var(--accent)');
+        window.api.jmsMfa({
+          baseUrl: s.url, cookie, challengeUrl, type: mfaType, code, username, password,
+        }).then((r) => {
+          if (r && r.ok && r.token) {
+            s.token = r.token; s.user = r.user;
+            s.assetsLoadFailed = false; s.assetsLoadError = '';
+            setStatus(`「${s.name}」登录成功`, 'var(--green)');
+            bastionLoadSavedAssets(s); // 已有 token,重走直接拉资产
+          } else {
+            setStatus(`验证失败: ${(r && r.error) || '未知错误'}`, 'var(--red)');
+            attempt(); // 验证码错了,再弹一次重输
+          }
+        }).catch((e) => {
+          setStatus(`验证异常: ${(e && e.message) || e}`, 'var(--red)');
+          attempt();
+        });
+      },
+    });
+  };
+  attempt();
 }
 
 // 会话列表里的"🌐 H3C 堡垒机"资产区:
@@ -5707,10 +5811,11 @@ function bastionDisconnect(asset) {
   setStatus(n ? `已断开「${asset.name}」的连接` : `「${asset.name}」无进行中的连接`, n ? 'var(--green)' : 'var(--orange)');
 }
 
-// 断开所有堡垒机(accessclient://)发起的连接(会话 id 以 bastion- 开头)
+// 断开所有堡垒机连接:accessclient 连的(bastion-*)和 JumpServer API 连的(jms-*)都断。
+// 原来只断 bastion-*,JMS 方式连的会话断不掉(点"断开全部"没反应)。
 function disconnectBastionAll() {
   for (const sid of [...state.tabs.keys()]) {
-    if (String(sid).startsWith('bastion-')) closeTab(sid);
+    if (isBastionSessionId(sid)) closeTab(sid);
   }
 }
 
@@ -8414,38 +8519,24 @@ els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中
 els.btnLock.addEventListener('click', requestLock); // 锁定
 els.bastionMini.addEventListener('click', restoreBastion);
 els.bastionCfg.addEventListener('click', openBastionCfg);
-// 🧹 清除历史:清空堡垒机浏览器全部记录(浏览历史/登录态/表单/捕获资产),webview 回到空白页
+// 🧹 清除历史:只清堡垒机浏览器的会话记录(浏览历史/登录态/表单/缓存),webview 回到空白页。
+// 不动左侧已保存的连接与已捕获的资产——那些是 app 自己的数据(主机列表),不属于浏览历史,误删会让用户以为连接丢了。
 els.bastionClear.addEventListener('click', async () => {
-  if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单、缓存与已捕获的资产。所有堡垒机站点需重新登录。')) return;
+  if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单与缓存。所有堡垒机站点需重新登录。')) return;
   try {
-    await window.api.bastionClearAll(); // 清 persist:bastion partition + SQLite 捕获资产
+    await window.api.bastionClearAll(); // 清 persist:bastion partition(webview 会话)
     // webview 回到空白页
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
     els.bastionUrl.value = '';
     // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
     state.settings.bastionUrl = '';
-    // 清掉已保存连接的登录态(token/资产缓存),但保留连接配置(名称/地址/账号/密码)
+    // 清掉已保存连接的登录态(token/user),保留连接配置与已缓存资产(名称/地址/账号/密码/主机列表)
     for (const s of bastionServers()) {
       s.token = null;
       s.user = null;
-      s.assets = null;
-      s.assetsExpanded = false;
-      s.assetsLoading = false;
-      s.assetsLoadFailed = false;
     }
     saveSettings();
-    // 清内存里的堡垒机资产与折叠状态,重绘会话列表
-    state.bastionAssets = [];
-    state.bastionTree = [];
-    state.bastionFavSet = new Set();
-    state.bastionFavTree = null;
-    state.bastionDirCollapsed.clear();
-    state.bastionDirsInit = false;
-    state.bastionGrouping = false;
-    state.bastionUrl = '';
-    state.bastionAllFetched = false;
-    state.bastionLastAutoFetch = 0;
     renderSessionList(els.inputSessionSearch.value);
     setStatus('堡垒机浏览器历史已清除,所有站点需重新登录', 'var(--green)');
   } catch (e) {
@@ -8756,7 +8847,7 @@ els.aiHostToggle.addEventListener('click', (e) => { e.stopPropagation(); els.aiH
 document.addEventListener('click', (e) => {
   if (els.aiHostDrop && !els.aiHostDrop.contains(e.target)) els.aiHostPanel.classList.add('hidden');
 });
-els.aiClose.addEventListener('click', () => { els.aiPanel.classList.add('hidden'); syncPanelButtons(); });
+els.aiClose.addEventListener('click', () => { hideWebviewDuringAiToggle(); els.aiPanel.classList.add('hidden'); syncPanelButtons(); });
 // 命令记录面板:开关 / 清空 / 导出 / 关闭
 els.btnCmd.addEventListener('click', toggleCmdPanel);
 els.cmdClose.addEventListener('click', () => { els.cmdPanel.classList.add('hidden'); syncPanelButtons(); });

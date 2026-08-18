@@ -48,3 +48,6 @@ mock/sftp-root/
 /verify-realdl.js
 /verify-ui-dl.js
 /verify-tcc.js
+
+# ---- 堡垒机诊断导出(含资产数据,不入库)----
+Polaris-bastion-diag-*.json
