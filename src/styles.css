@@ -174,7 +174,7 @@ select.select:focus { border-color: var(--accent); }
   display: flex;
   flex-wrap: wrap; /* 窄窗口/高 DPI 时按钮换到下一行,不再横向溢出(Windows 上溢出滚动条会压住/裁掉内容) */
   align-items: center;
-  gap: var(--toolbar-gap, 14px); /* packToolbar() 按内容宽度把间距压到最小(4px)仍放不下才换行 */
+  gap: var(--toolbar-gap, 8px); /* packToolbar() 按内容宽度把间距压到最小(4px)仍放不下才换行 */
   min-height: 40px;
   height: auto;
   padding: 5px 12px;
@@ -196,7 +196,24 @@ select.select:focus { border-color: var(--accent); }
 .toolbar .app-logo,
 .toolbar .btn-mini,
 .toolbar .toolbar-item,
-.toolbar .toolbar-sep { flex-shrink: 0; }
+.toolbar .toolbar-sep,
+.toolbar .output-filter-wrap { flex-shrink: 0; }
+
+/* 工具栏输出过滤框(🔍 关键词,匹配行常亮、其余变暗) */
+.output-filter-wrap {
+  display: flex; align-items: center; gap: 3px;
+  background: var(--bg-hover, rgba(255,255,255,0.06));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.output-filter-icon { font-size: 12px; opacity: 0.7; }
+.output-filter {
+  width: 84px;
+  background: transparent; border: none; outline: none;
+  color: var(--text); font-size: 12px; padding: 2px 0;
+}
+.output-filter::placeholder { color: var(--text-dim); }
 
 .main-body { flex: 1; display: flex; min-height: 0; }
 

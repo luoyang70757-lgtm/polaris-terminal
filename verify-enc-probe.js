@@ -36,6 +36,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? '  → ' + e
     let c = null;
     for (let i = 0; i < 50; i++) { await sleep(400); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { c = await connect(m.webSocketDebuggerUrl); break; } }
     if (!c) throw new Error('主窗口未就绪');
+    // 等 renderer 完全加载(loadSessions 可用),避免时序不稳定
+    let ready = false;
+    for (let i = 0; i < 60; i++) { if (await ev(c, `(typeof state !== 'undefined' && typeof loadSessions === 'function')`)) { ready = true; break; } await sleep(300); }
+    if (!ready) throw new Error('renderer 未就绪');
 
     // ① 默认 utf8 会话:连接后探针启动
     await ev(c, `(async()=>{ await window.api.createSession({name:'encA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); state.settings.sessionView='list'; renderSessionList(''); return true; })()`);

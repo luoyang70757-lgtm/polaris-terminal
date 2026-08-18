@@ -317,6 +317,7 @@ const els = {
   viewMenu: $('view-menu'),
   // 设置
   btnSettings: $('btn-settings'),
+  outputFilter: $('output-filter'),
   settingsModal: $('settings-modal'),
   // 终端调试日志
   btnDebug: $('btn-debug'),
@@ -1323,6 +1324,8 @@ function getHighlightPattern() {
     // 含中文的关键词用子串匹配(JS 的 \b 不认 CJK 边界,"失败"在"命令失败"里会被 \b 漏掉);
     // 纯 ASCII 关键词保留 \b 词边界(避免 "error" 匹配到 "outerror")。
     const parts = kws.map((k) => (/[一-鿿]/.test(k) ? esc(k) : `\\b${esc(k)}\\b`));
+    // 百分比恒高亮(如 80%、100%、>80%、80.5%),无需用户配置;覆盖在关键词之后
+    parts.push('\\d+(?:\\.\\d+)?%');
     highlightPattern = new RegExp(`(${parts.join('|')})`, 'gi'); // 整组捕获,替换 $1 = 命中的关键词
     highlightPatternKey = key;
   }
@@ -7232,7 +7235,7 @@ function packToolbar() {
   const tb = document.querySelector('.toolbar');
   if (!tb) return;
   const items = tb.children.length;
-  const MAXG = 14, MING = 4;
+  const MAXG = 8, MING = 4; // 间距上限降到 8px:工具栏更紧凑
   const prevWrap = tb.style.flexWrap, prevGap = tb.style.gap;
   const prevFlex = [];
   try {
@@ -8707,7 +8710,15 @@ document.addEventListener('click', (e) => {
 });
 
 // 设置
-els.btnSettings.addEventListener('click', openSettingsModal);
+els.btnSettings.addEventListener('click', () => {
+  // 打开按钮兼关闭:已打开再点一下收起
+  if (els.settingsModal.classList.contains('hidden')) openSettingsModal();
+  else closeSettingsModal();
+});
+// 工具栏输出过滤:实时输入即生效(空=取消过滤)
+els.outputFilter.addEventListener('input', () => {
+  outputFilterKw = els.outputFilter.value.trim();
+});
 // 终端调试日志面板
 initDebugPanelDrag(); // 面板头部可拖动 + 位置记忆
 els.btnDebug.addEventListener('click', toggleDebugPanel);
@@ -9357,14 +9368,34 @@ window.api.onSshData((sessionId, data) => {
     }
   }
   if (typeof data === 'string') {
-    // 主进程已把 GBK/GB2312 转成 UTF-8 字符串,直接写
-    t.term.write(state.settings.highlight ? highlightString(data) : data);
+    // 主进程已把 GBK/GB2312 转成 UTF-8 字符串
+    let out = data;
+    if (state.settings.highlight) out = highlightString(out);
+    t.term.write(filterWrite(out));
   } else {
-    // UTF-8 原始字节
-    if (state.settings.highlight) t.term.write(highlightText(t, new Uint8Array(data)));
-    else t.term.write(new Uint8Array(data));
+    // UTF-8 原始字节:统一走 t.decoder 流式解码(与 highlightText 同一解码器,流状态一致)→ 高亮 → 过滤
+    let out = t.decoder.decode(new Uint8Array(data), { stream: true });
+    if (state.settings.highlight) out = highlightString(out);
+    t.term.write(filterWrite(out));
   }
 });
+
+// ---- 终端输出过滤(工具栏 🔍 框) ----
+let outputFilterKw = ''; // 全局过滤关键词(空=不过滤)
+// 含关键词的行原样显示(高亮照常),不匹配的行整体变暗。
+// 用"变暗"而非"隐藏":隐藏会滤掉提示符/程序控制序列,交互式终端会错乱;变暗同样突出重点且不破坏终端。
+function filterWrite(text) {
+  if (!outputFilterKw) return text;
+  const k = outputFilterKw.toLowerCase();
+  const parts = String(text).split('\n');
+  const last = parts.pop(); // 最后一段可能未完成(提示符/半行),原样通过,不延迟显示
+  const filtered = parts.map((line) => {
+    if (!line) return line;
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, ''); // 去 ANSI 后判断是否含关键词
+    return plain.toLowerCase().includes(k) ? line : '\x1b[2m' + line + '\x1b[0m';
+  }).join('\n');
+  return filtered + (filtered && last ? '\n' : '') + last;
+}
 
 // ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
 // 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
