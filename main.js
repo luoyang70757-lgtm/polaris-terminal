@@ -1873,6 +1873,7 @@ ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resol
     port: opts.port || 23,
     timeoutMs: opts.timeoutMs || 15000,
     cols: opts.cols, rows: opts.rows,
+    encoding: opts.encoding || 'utf8', // 输入按此编码发送(GBK 设备)
     autoLogin: (opts.username || opts.password) ? { username: opts.username, password: opts.password } : null,
     onConnect: () => {
       telnetConnected = true;
@@ -1936,12 +1937,28 @@ ipcMain.on('ssh:write', (_e, sessionId, data) => {
   writeSessionInput(sessionId, data); // 会话日志:按行缓冲记录输入(命令回车后整行落盘)
   const s = sshSessions.get(sessionId);
   if (s && s.stream && !s.stream.destroyed) {
-    s.stream.write(Buffer.from(data));
+    // 输入按会话编码编码:GBK/GB2312 会话不能恒发 UTF-8,否则服务器按 GBK 解出乱码。
+    // 编码已含连接后自动探测的结果(ssh:setEncoding 会更新 s.encoding)。
+    const enc = s.encoding || 'utf8';
+    s.stream.write(enc === 'utf8' ? Buffer.from(data) : iconv.encode(String(data || ''), enc));
     return;
   }
-  // Telnet 会话:CRLF 映射 + 本地回显在 telnet 客户端内处理
+  // Telnet 会话:CRLF 映射 + 本地回显在 telnet 客户端内处理(编码也在其 write 内按会话编码处理)
   const t = telnetSessions.get(sessionId);
-  if (t) t.write(Buffer.from(data));
+  if (t) t.write(data);
+});
+
+// 自动探测到非 utf8 字符集后切换会话编码:更新输入编码 + 重建输出解码器。
+// 注意连接中途切换,切换前已按旧编码发出去的数据不会再改(仅影响后续收发)。
+ipcMain.on('ssh:setEncoding', (_e, sessionId, enc) => {
+  const s = sshSessions.get(sessionId);
+  if (!s) return;
+  s.encoding = enc;
+  try {
+    const old = sshDecoders.get(sessionId);
+    if (old) { try { old.end(); } catch { /* ignore */ } sshDecoders.delete(sessionId); }
+    if (enc !== 'utf8') sshDecoders.set(sessionId, iconv.getDecoder(enc));
+  } catch { /* 不支持的编码 */ }
 });
 
 ipcMain.on('ssh:resize', (_e, sessionId, cols, rows) => {

@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   // ---- SSH 直连 ----
   sshConnect: (sessionId, opts) => ipcRenderer.invoke('ssh:connect', { sessionId, opts }),
   sshWrite: (sessionId, data) => ipcRenderer.send('ssh:write', sessionId, data),
+  sshSetEncoding: (sessionId, enc) => ipcRenderer.send('ssh:setEncoding', sessionId, enc),
   sshResize: (sessionId, cols, rows) => ipcRenderer.send('ssh:resize', sessionId, cols, rows),
   sshClose: (sessionId) => ipcRenderer.send('ssh:close', sessionId),
   // ---- Telnet 直连(复用整条 ssh:data/ssh:write 管线) ----

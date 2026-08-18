@@ -330,6 +330,7 @@ const els = {
   setTheme: $('set-theme'),
   setBootIntro: $('set-bootintro'),
   setHighlight: $('set-highlight'),
+  setHighlightKw: $('set-highlight-kw'),
   setFontSize: $('set-font-size'),
   setUiFontSize: $('set-ui-font-size'),
   setFontFamily: $('set-font-family'),
@@ -718,6 +719,7 @@ function openSettingsModal() {
   els.setTheme.value = cur === 'auto' ? 'auto' : (THEMES[cur] ? cur : 'dark');
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
+  els.setHighlightKw.value = (state.settings.highlightKeywords || []).join(', ');
   els.setFontSize.value = state.settings.fontSize || 13;
   els.setUiFontSize.value = state.settings.uiFontSize || 13;
   els.setFontFamily.value = state.settings.fontFamily || '';
@@ -1318,7 +1320,10 @@ function getHighlightPattern() {
   const key = kws.join('\u0000'); // 关键词数组变成缓存 key
   if (highlightPatternKey !== key) {
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    highlightPattern = new RegExp(`\\b(${kws.map(esc).join('|')})\\b`, 'gi');
+    // 含中文的关键词用子串匹配(JS 的 \b 不认 CJK 边界,"失败"在"命令失败"里会被 \b 漏掉);
+    // 纯 ASCII 关键词保留 \b 词边界(避免 "error" 匹配到 "outerror")。
+    const parts = kws.map((k) => (/[一-鿿]/.test(k) ? esc(k) : `\\b${esc(k)}\\b`));
+    highlightPattern = new RegExp(`(${parts.join('|')})`, 'gi'); // 整组捕获,替换 $1 = 命中的关键词
     highlightPatternKey = key;
   }
   return highlightPattern;
@@ -8753,6 +8758,13 @@ els.setHighlight.addEventListener('change', () => {
   state.settings.highlight = els.setHighlight.checked;
   saveSettings();
 });
+// 高亮关键词编辑:逗号/中文逗号分隔,去空去重;改后清正则缓存让新词立刻生效
+els.setHighlightKw.addEventListener('change', () => {
+  const kws = els.setHighlightKw.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+  state.settings.highlightKeywords = [...new Set(kws)];
+  highlightPatternKey = ''; // 强制重编高亮正则
+  saveSettings();
+});
 els.setFontSize.addEventListener('change', () => {
   state.settings.fontSize = parseInt(els.setFontSize.value, 10) || 13;
   saveSettings();
@@ -9275,9 +9287,51 @@ async function detectOsForTab(t) {
 // 主进程日志 → 调试面板(MAIN/MAIN·错误 前缀;主进程启动、SSH 连接、异常等)
 window.api.onMainLog((level, msg) => dlog(level === 'error' ? 'MAIN·错误' : 'MAIN', msg));
 
+// ---- 字符集自动探测:连接后发 OSC-0(标题)探针取服务器 $LANG,自动切编码 ----
+// 只在会话是默认 utf8(用户没手动指定编码)时探测;SSH 会话才探(Telnet 网络设备多无 $LANG)。
+// 探针输出经 OSC 标题携带,终端里不可见,回显只有一行 printf 命令(探测完成后清掉)。
+function startEncodingProbe(t) {
+  if (!t || !t.session || t.encProbe) return;
+  if ((t.session.protocol || 'ssh') === 'telnet') return;
+  if (t.session.encoding && t.session.encoding !== 'utf8') return; // 用户手动指定了编码,尊重
+  t.encProbe = { buf: '', done: false };
+  window.api.sshWrite(t.sessionId, `printf ']0;POLARISENC:%s' "\${LC_ALL:-\$LANG}"\r`);
+  // 3s 兜底:探针没回音就放弃(服务器无 printf/shell 异常),不卡会话
+  setTimeout(() => { if (t.encProbe && !t.encProbe.done) { t.encProbe.done = true; t.encProbe = null; } }, 3000);
+}
+
+// 服务器 locale(LANG/LC_ALL)→ 会话编码
+function langToEncoding(lang) {
+  const l = (lang || '').toLowerCase();
+  if (!l) return 'utf8';
+  if (l.includes('gb18030')) return 'gb18030';
+  if (l.includes('gbk') || l.includes('gb2312') || l.includes('936')) return 'gbk';
+  if (l.includes('big5') || l.includes('950')) return 'big5';
+  if (l.includes('latin1') || l.includes('iso-8859-1')) return 'latin1';
+  return 'utf8'; // utf8/C/POSIX/未知 → 默认 utf8(安全)
+}
+
 window.api.onSshData((sessionId, data) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
+  // ---- 字符集自动探测:扫探针 OSC,拿到 locale 后切编码并清掉回显的探测命令 ----
+  if (t.encProbe && !t.encProbe.done) {
+    try {
+      if (!t.encProbeDec) t.encProbeDec = new TextDecoder();
+      const piece = typeof data === 'string' ? data : t.encProbeDec.decode(new Uint8Array(data), { stream: true });
+      t.encProbe.buf = (t.encProbe.buf + piece).slice(-200);
+      // 回显里是 POLARISENC:%s(以 % 开头,不匹配),探针输出才是真实 locale
+      const m = t.encProbe.buf.match(/POLARISENC:([a-zA-Z_][a-zA-Z0-9_@.\-]*)/);
+      if (m) {
+        t.encProbe.done = true;
+        const enc = langToEncoding(m[1]);
+        t.encProbe = null;
+        if (enc !== 'utf8') window.api.sshSetEncoding(t.sessionId, enc);
+        // 等当前数据块写完后再清掉回显的 printf 行(上移一行清除,回到提示符行)
+        setTimeout(() => { try { if (t.term && !t.term.isDisposed) t.term.write('\x1b[1A\x1b[2K\x1b[1B'); } catch { /* ignore */ } }, 60);
+      }
+    } catch { /* ignore */ }
+  }
   // 接收数据只在面板打开时记(否则滚屏日志会瞬间刷爆环形缓冲,挤掉按键/焦点这些关键记录)
   if (els.debugPanel && !els.debugPanel.classList.contains('hidden')) {
     if (typeof data === 'string') dlog('RECV', `${sessionId} +${data.length}B ${JSON.stringify(data.slice(0, 60))}${data.length > 60 ? '…' : ''}`);
@@ -9394,6 +9448,7 @@ window.api.onSshStatus((sessionId, status) => {
     if (dot) dot.title = '已连接';
     setStatus(`已连接: ${t.title}`, 'var(--green)');
     detectOsForTab(t); // 探测系统类型(结果给 AI 助手用,标签上不显示徽标)
+    startEncodingProbe(t); // 自动探测服务器字符集(仅默认 utf8 的 SSH 会话)
     updateAiHostList(); // AI 主机选择器刷新
     // 登录宏:连接成功后逐条发送会话里配置的 on_connect 命令(每行一条)
     if (t.session && t.session.on_connect) {
