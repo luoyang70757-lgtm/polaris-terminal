@@ -47,22 +47,17 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Build macOS app (x64 + arm64)
-        # macos-latest runner 是 arm64,electron-builder 默认输出 release/mac-arm64;
-        # 显式 --x64 --arm64 双架构,Intel/Apple Silicon 都能用
-        run: npm run dist -- --mac --x64 --arm64
+      - name: Build macOS app (x64 仅 Intel;arm64 不编译)
+        run: npm run dist -- --mac --x64
       - name: Read version
         id: ver
         shell: bash
         run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-      - name: Zip .app (两个架构各一个;.app 是目录,GitHub Release 需要单文件)
+      - name: Zip .app (.app 是目录,GitHub Release 需要单文件;仅 x64)
         shell: bash
         run: |
-          for d in release/mac release/mac-arm64; do
-            [ -d "$d/Polaris.app" ] || continue
-            arch=x64; [[ "$d" == *arm64* ]] && arch=arm64
-            ditto -c -k --sequesterRsrc --keepParent "$d/Polaris.app" "release/Polaris-${{ steps.ver.outputs.v }}-mac-${arch}.zip"
-          done
+          [ -d release/mac/Polaris.app ] || { echo "release/mac/Polaris.app 不存在"; exit 1; }
+          ditto -c -k --sequesterRsrc --keepParent release/mac/Polaris.app "release/Polaris-${{ steps.ver.outputs.v }}-mac-x64.zip"
           ls -la release/Polaris-*-mac-*.zip
       - name: Upload macOS zip (artifact)
         uses: actions/upload-artifact@v4
