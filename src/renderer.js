@@ -4847,7 +4847,9 @@ function injectBastionAssetHook(requireStable) {
           if (old && old.dir && !d.dir) d.dir = old.dir;
           if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) d.dirs = old.dirs;
           if (old && old.dirPath && !d.dirPath) d.dirPath = old.dirPath;
-          if (old && old.favGroup && !d.favGroup) d.favGroup = old.favGroup;
+          // 保留旧 favGroup 前先剔除历史脏数据("undefinedxxx" 是早期版本映射 bug 产物),
+          // 否则合并时会把残留的坏分组一直带下去;干净的 favGroup 正常保留
+          if (old && old.favGroup && !d.favGroup && old.favGroup.indexOf('undefined') !== 0) d.favGroup = old.favGroup;
           if (old && old.favorite) d.favorite = true;
           map.set(k, d);
         });
@@ -5091,15 +5093,20 @@ function injectBastionAssetHook(requireStable) {
       window.__bastionFetchFavGroups = function() {
         if (window.__bastionFetchState.favRunning) return Promise.resolve(false);
         var favTree = window.__bastionFavTree;
-        // 递归所有层级(收藏分组可嵌套):favGroup 存全路径"父/子",渲染端据此缩进
+        // 递归所有层级(收藏分组可嵌套):favGroup 存全路径"父/子",渲染端据此缩进。
+        // 组名/id 字段因堡垒机版本而异,统一兜底,绝不出现 "undefined" 前缀。
         var groups = [];
         (function walk(ns, prefix) {
           (ns || []).forEach(function(n){
-            groups.push({ id: n.id, name: prefix + (prefix ? '/' : '') + n.name });
-            walk(n.children, prefix + (prefix ? '/' : '') + n.name);
+            var gid = n.id != null ? n.id : (n.key != null ? n.key : n.favId);
+            var nm = n.name || n.label || n.title || n.text || n.favName || ('组' + (gid != null ? gid : '?'));
+            groups.push({ id: gid, name: prefix + (prefix ? '/' : '') + nm });
+            walk(n.children || n.nodes || n.items, prefix + (prefix ? '/' : '') + nm);
           });
-        })((favTree && favTree.children) || []);
+        })((favTree && (favTree.children || favTree.nodes)) || []);
         if (!groups.length) return Promise.resolve(false);
+        // 清除历史残留的 favGroup(早期版本映射出过 "undefinedxxx"),再按组重新映射,保证数据干净
+        (window.__bastionAssets || []).forEach(function(x){ delete x.favGroup; });
         window.__bastionFetchState.favRunning = true;
         var idx = 0, done = 0;
         function one() {
@@ -5864,32 +5871,30 @@ function renderBastionInSessionList(container, f) {
     if (!y.dir) return -1;
     return x.dir.localeCompare(y.dir, 'zh');
   });
-  // 建目录渲染树(从 state.bastionTree,过滤与 guest 一致:path>=2 且非 empty;树缺失则平铺降级)
-  // 资产归属仍用上面的 name→assets map(不改归属逻辑);父组头设备数 = 自身 + 后代
-  function buildDirRenderTree(nodes) {
-    const out = [];
-    (nodes || []).forEach((n) => {
-      if (!(n.path && n.path.length >= 2 && !n.empty)) { out.push(...buildDirRenderTree(n.children)); return; }
-      const children = buildDirRenderTree(n.children);
-      const direct = map.get(n.name) || [];
-      if (!direct.length && !children.length) return; // 无资产无子级:剪枝
-      out.push({ key: n.path.join('/'), name: n.name, direct, children });
-    });
-    return out;
-  }
-  const renderTree = buildDirRenderTree(state.bastionTree || []);
-  const treeNames = new Set();
-  (function collectNames(ns) { (ns || []).forEach((n2) => { treeNames.add(n2.name); collectNames(n2.children); }); })(state.bastionTree || []);
-  const dirTotal = (n) => n.direct.length + n.children.reduce((s, c) => s + dirTotal(c), 0);
-  const collectDirAssets = (n) => n.direct.concat(...n.children.map(collectDirAssets));
+  // 业务目录分组:有资产的目录(flat map)全部渲染,不漏(树 path 长度/空标记因堡垒机版本而异,
+  // 不能拿树过滤有资产的目录)。层级:按资产的 dirPath[0](业务根,如"中华人寿大连IDC")分组,
+  // 根作父级、其下目录缩进;无 dirPath 的目录平铺。树缺失也能工作(靠 dirPath 而非 tree)。
   const groupKeys = dirs.filter((g) => g.dir && g.dir !== '__fav__');
-  const treeUnknown = groupKeys.filter((g) => !treeNames.has(g.dir)); // 树未覆盖的目录名:平铺兜底
   const ungrouped = dirs.find((g) => !g.dir);
+  const dirRoot = new Map(); // 目录名 → 业务根(取该目录任一资产的 dirPath[0])
+  const roots = new Map();   // 业务根 → [目录名]
+  const rootless = [];       // 无业务根的目录名(平铺)
+  for (const g of groupKeys) {
+    const sample = (g.assets || []).find((a) => a.dirPath && a.dirPath[0]);
+    if (sample) {
+      const r = sample.dirPath[0];
+      dirRoot.set(g.dir, r);
+      if (!roots.has(r)) roots.set(r, []);
+      roots.get(r).push(g.dir);
+    } else rootless.push(g.dir);
+  }
+  const rootTotal = (r) => (roots.get(r) || []).reduce((s, dn) => s + (map.get(dn) || []).length, 0);
+  const collectRootAssets = (r) => (roots.get(r) || []).reduce((acc, dn) => acc.concat(map.get(dn) || []), []);
   // 首次渲染分组视图:所有目录/收藏分组默认折叠(左侧分组收起,展开才看资产)
   if (!state.bastionDirsInit && !kw) {
     state.bastionDirsInit = true;
-    (function initCollapse(ns) { (ns || []).forEach((n) => { state.bastionDirCollapsed.add(n.key); initCollapse(n.children); }); })(renderTree);
-    for (const g of treeUnknown) state.bastionDirCollapsed.add(g.dir);
+    for (const r of roots.keys()) state.bastionDirCollapsed.add('__root__' + r);
+    for (const g of groupKeys) state.bastionDirCollapsed.add(g.dir);
     state.bastionDirCollapsed.add('__ungrouped__');
   }
   // 收藏组(置顶,独立分组,可折叠;内部再按收藏分组 favGroup 展示,嵌套分组按 "/" 段缩进)
@@ -5935,27 +5940,35 @@ function renderBastionInSessionList(container, f) {
       renderFavNode(favRoot, '', 0);
     }
   }
-  // 按目录树分组(上下级缩进渲染;父组设备数=自身+后代)
-  function renderDirNode(n, depth) {
-    const collapsed = state.bastionDirCollapsed.has(n.key);
-    const head = makeSectionHead(`📁 ${n.name}(${dirTotal(n)})`, collapsed,
-      () => { collapsed ? state.bastionDirCollapsed.delete(n.key) : state.bastionDirCollapsed.add(n.key); renderSessionList(els.inputSessionSearch.value); },
-      [{ label: '🔗 批量连接', action: () => batchBastionConnect(collectDirAssets(n)) }]);
-    if (depth > 0) head.style.paddingLeft = (8 + depth * 14) + 'px';
-    container.appendChild(head);
-    if (collapsed) return;
-    for (const a of n.direct) container.appendChild(makeBastionAssetItem(a));
-    for (const c of n.children) renderDirNode(c, depth + 1);
+  // 按业务根分组渲染:根父级 → 其下目录缩进一级;无根的目录平铺(上下级缩进,不漏目录)
+  for (const [r, dirNames] of roots) {
+    const rk = '__root__' + r;
+    const rCollapsed = state.bastionDirCollapsed.has(rk);
+    container.appendChild(makeSectionHead(`📁 ${r}(${rootTotal(r)})`, rCollapsed,
+      () => { rCollapsed ? state.bastionDirCollapsed.delete(rk) : state.bastionDirCollapsed.add(rk); renderSessionList(els.inputSessionSearch.value); },
+      [{ label: '🔗 批量连接', action: () => batchBastionConnect(collectRootAssets(r)) }]));
+    if (rCollapsed) continue;
+    for (const dn of dirNames) {
+      const assets = map.get(dn) || [];
+      const collapsed = state.bastionDirCollapsed.has(dn);
+      const head = makeSectionHead(`📁 ${dn}(${assets.length})`, collapsed,
+        () => { collapsed ? state.bastionDirCollapsed.delete(dn) : state.bastionDirCollapsed.add(dn); renderSessionList(els.inputSessionSearch.value); },
+        [{ label: '🔗 批量连接', action: () => batchBastionConnect(assets) }]);
+      head.style.paddingLeft = (8 + 14) + 'px'; // 子目录缩进一级
+      container.appendChild(head);
+      if (collapsed) continue;
+      for (const a of assets) container.appendChild(makeBastionAssetItem(a));
+    }
   }
-  for (const n of renderTree) renderDirNode(n, 0);
-  // 树里没覆盖到的目录名(树未抓到/设备目录不在树中):旧逻辑平铺兜底
-  for (const g of treeUnknown) {
-    const collapsed = state.bastionDirCollapsed.has(g.dir);
-    container.appendChild(makeSectionHead(`📁 ${g.dir}(${g.assets.length})`, collapsed,
-      () => { collapsed ? state.bastionDirCollapsed.delete(g.dir) : state.bastionDirCollapsed.add(g.dir); renderSessionList(els.inputSessionSearch.value); },
-      [{ label: '🔗 批量连接', action: () => batchBastionConnect(g.assets) }]));
+  // 无业务根的目录:平铺
+  for (const dn of rootless) {
+    const assets = map.get(dn) || [];
+    const collapsed = state.bastionDirCollapsed.has(dn);
+    container.appendChild(makeSectionHead(`📁 ${dn}(${assets.length})`, collapsed,
+      () => { collapsed ? state.bastionDirCollapsed.delete(dn) : state.bastionDirCollapsed.add(dn); renderSessionList(els.inputSessionSearch.value); },
+      [{ label: '🔗 批量连接', action: () => batchBastionConnect(assets) }]));
     if (collapsed) continue;
-    for (const a of g.assets) container.appendChild(makeBastionAssetItem(a));
+    for (const a of assets) container.appendChild(makeBastionAssetItem(a));
   }
   // 未分组(目录请求未完成或该设备不在任何目录)
   if (ungrouped && ungrouped.assets.length) {
