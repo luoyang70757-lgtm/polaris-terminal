@@ -111,6 +111,23 @@ async function check(c, name, expr, expect = true) {
     // mergeBastionCapture:重捕获时旧 dir/dirs 与新 dirs 取并集,分组不丢
     await check(c, '重捕获并集保留旧 dir', `(function(){ const r=mergeBastionCapture([{devId:'1',dir:'安全设备',dirs:[]}],[{devId:'1',dir:'',dirs:[],dirPath:[]}]); return r[0].dirs.join('|')==='安全设备'; })()`, true);
     await check(c, '重捕获并集=旧+新(不丢已补充目录)', `(function(){ const r=mergeBastionCapture([{devId:'1',dir:'旧',dirs:['旧']}],[{devId:'1',dir:'',dirs:['麒麟','麒麟1'],dirPath:[]}]); const s=r[0].dirs; return s.includes('麒麟')&&s.includes('麒麟1')&&s.includes('旧')&&s.length===3; })()`, true);
+    await check(c, '重捕获保留 favGroup', `(function(){ const r=mergeBastionCapture([{devId:'1',favGroup:'默认收藏'}],[{devId:'1'}]); return r[0].favGroup==='默认收藏'; })()`, true);
+
+    // ---- 收藏按分组展示 ----
+    await ev(c, `(function(){
+      state.bastionAssets = [
+        { devId:'f1', name:'收藏A', ip:'10.0.0.1', port:22, proto:'ssh', accounts:[], recentAccount:'', favorite:true, favGroup:'111', dir:'', dirs:[] },
+        { devId:'f2', name:'收藏B', ip:'10.0.0.2', port:22, proto:'ssh', accounts:[], recentAccount:'', favorite:true, favGroup:'默认收藏', dir:'', dirs:[] },
+        { devId:'f3', name:'收藏C', ip:'10.0.0.3', port:22, proto:'ssh', accounts:[], recentAccount:'', favorite:true, favGroup:'111', dir:'', dirs:[] },
+      ];
+      state.bastionCollapsed = false; state.bastionDirsInit = false; state.bastionDirCollapsed.clear();
+      renderSessionList('');
+      return true;
+    })()`);
+    await sleep(300);
+    const ftxt = await ev(c, dump);
+    if (ftxt.includes('⭐ 收藏(3)') && ftxt.includes('📁 111(2)') && ftxt.includes('📁 默认收藏(1)')) ok('收藏按分组展示(111/默认收藏)');
+    else bad('收藏分组', ftxt.slice(0, 300).replace(/\n/g,'|'));
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 

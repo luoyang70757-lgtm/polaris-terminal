@@ -4846,6 +4846,7 @@ function injectBastionAssetHook(requireStable) {
           if (old && old.dir && !d.dir) d.dir = old.dir;
           if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) d.dirs = old.dirs;
           if (old && old.dirPath && !d.dirPath) d.dirPath = old.dirPath;
+          if (old && old.favGroup && !d.favGroup) d.favGroup = old.favGroup;
           if (old && old.favorite) d.favorite = true;
           map.set(k, d);
         });
@@ -4935,7 +4936,7 @@ function injectBastionAssetHook(requireStable) {
         });
       };
       // ---- 主动拉全量(宿主触发,不依赖前端 UI 行为;失败单页重试 2 次,串行 150ms 防压垮堡垒机) ----
-      window.__bastionFetchState = { running: false, dirRunning: false };
+      window.__bastionFetchState = { running: false, dirRunning: false, favRunning: false };
       function bdelay(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
       // 网络层用 XHR 而非 window.fetch:SPA 前端框架可能覆盖 window.fetch
       // (注入的 fetch 钩子会因此失效),XHR 我们只加捕获监听、不改行为,最可靠。
@@ -5072,6 +5073,39 @@ function injectBastionAssetHook(requireStable) {
         }
         return one();
       };
+      // ---- 收藏分组:按 userFav/getTree 的分组逐个查设备,映射 favGroup(左侧收藏按分组展示) ----
+      // getFavoriteDevices 带 favId=组id 只返回该组收藏;favId=null 才是全部。平铺抓取拿不到分组归属。
+      window.__bastionFetchFavGroups = function() {
+        if (window.__bastionFetchState.favRunning) return Promise.resolve(false);
+        var favTree = window.__bastionFavTree;
+        var groups = (favTree && favTree.children) || [];
+        if (!groups.length) return Promise.resolve(false);
+        window.__bastionFetchState.favRunning = true;
+        var idx = 0, done = 0;
+        function one() {
+          if (idx >= groups.length) {
+            window.__bastionFetchState.favRunning = false;
+            return Promise.resolve(true);
+          }
+          var g = groups[idx++];
+          var body = JSON.stringify({ page: 0, size: 100, favId: g.id != null ? g.id : null });
+          return bxhr('PUT', '/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', body).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && j.content && j.content.length) {
+              var map = new Map((window.__bastionAssets || []).map(function(x){ return [x.devId || x.name + x.ip, x]; }));
+              j.content.forEach(function(c){
+                var d = c.dev || {};
+                var key = String(d.id != null ? d.id : c.id || (d.name + d.ip));
+                if (map.has(key)) { map.get(key).favorite = true; map.get(key).favGroup = g.name; }
+              });
+              window.__bastionAssets = Array.from(map.values());
+              done += j.content.length;
+            }
+            return bdelay(120).then(one);
+          }).catch(function(){ return bdelay(120).then(one); });
+        }
+        return one();
+      };
       } catch (e) {
         // 页面状态异常(导航中/登录页 fetch 已被 SPA 重定义等):静默失败并复位注入标记,
         // 下轮 poll 会重新尝试。不抛错 → 避免 Electron 的
@@ -5151,6 +5185,7 @@ function mergeBastionCapture(prev, fresh) {
     else if (old.dir) union.add(old.dir);
     m.dirs = Array.from(union);
     if (!m.dirPath || !m.dirPath.length) m.dirPath = old.dirPath ? old.dirPath.slice() : [];
+    if (!m.favGroup && old.favGroup) m.favGroup = old.favGroup;
     return m;
   });
 }
@@ -5282,7 +5317,14 @@ function pollBastionAssets(force) {
         changed = true;
       }
       const favTreeJson = stableJson(r.favTree);
-      if (favTreeJson !== stableJson(state.bastionFavTree)) { state.bastionFavTree = r.favTree; changed = true; }
+      if (favTreeJson !== stableJson(state.bastionFavTree)) {
+        state.bastionFavTree = r.favTree;
+        changed = true;
+        // 收藏树变化 → 后台按分组拉设备,映射 favGroup(左侧收藏按分组展示)
+        if (!(r.fetchState && r.fetchState.favRunning)) {
+          try { wv.executeJavaScript('try { window.__bastionFetchFavGroups && window.__bastionFetchFavGroups() } catch(e) { false }').then(() => setTimeout(() => pollBastionAssets(true), 2500)); } catch { /* ignore */ }
+        }
+      }
       if (r.favs && r.favs.length) {
         const favSet = new Set(r.favs);
         // 对比用"排序后的内容",不能只比 size:数量不变但收藏内容变了(如 A→B)也要更新(M7)
@@ -5802,14 +5844,29 @@ function renderBastionInSessionList(container, f) {
       state.bastionDirCollapsed.add(key);
     }
   }
-  // 收藏组(置顶,独立分组,可折叠)
+  // 收藏组(置顶,独立分组,可折叠;内部再按收藏分组 favGroup 展示)
   const favs = all.filter((a) => a.favorite);
   if (favs.length) {
     const collapsed = state.bastionDirCollapsed.has('__fav__');
     container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(els.inputSessionSearch.value); },
       [{ label: '🔗 批量连接', action: () => batchBastionConnect(favs) }]));
-    if (!collapsed) for (const a of favs) container.appendChild(makeBastionAssetItem(a));
+    if (!collapsed) {
+      const gmap = new Map();
+      for (const a of favs) {
+        const g = a.favGroup || '默认收藏'; // 未抓到分组归属时归「默认收藏」
+        if (!gmap.has(g)) gmap.set(g, []);
+        gmap.get(g).push(a);
+      }
+      for (const [g, arr] of gmap) {
+        const gk = '__fav__' + g;
+        const gCollapsed = state.bastionDirCollapsed.has(gk);
+        container.appendChild(makeSectionHead(`📁 ${g}(${arr.length})`, gCollapsed,
+          () => { gCollapsed ? state.bastionDirCollapsed.delete(gk) : state.bastionDirCollapsed.add(gk); renderSessionList(els.inputSessionSearch.value); },
+          [{ label: '🔗 批量连接', action: () => batchBastionConnect(arr) }]));
+        if (!gCollapsed) for (const a of arr) container.appendChild(makeBastionAssetItem(a));
+      }
+    }
   }
   // 按目录分组
   const groupKeys = dirs.filter((g) => g.dir && g.dir !== '__fav__');
