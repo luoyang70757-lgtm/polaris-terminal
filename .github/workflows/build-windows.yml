@@ -1,0 +1,42 @@
+name: Build Windows portable
+
+# 在 GitHub 的 Windows runner 上原生编译 Windows 便携版(兼容 Win10/11)。
+# 触发:push 到 main(改动核心源码时)+ 手动触发(workflow_dispatch)。
+# 产物:release/Polaris 1.0.0.exe → Actions Artifact 可下载。
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'main.js'
+      - 'preload.js'
+      - 'src/**'
+      - 'lib/**'
+      - 'mock/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'build/**'
+  workflow_dispatch: {}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows portable
+        run: npm run dist -- --win
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Polaris-Windows-Portable
+          path: release/*.exe
+          if-no-files-found: error
