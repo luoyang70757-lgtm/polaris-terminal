@@ -74,23 +74,25 @@ async function check(c, name, expr, expect = true) {
     await sleep(400);
 
     const dump = `(function(){ const sc=document.getElementById('session-tree'); return sc?sc.innerText:''; })()`;
+    // 展开所有分组(根/目录/收藏),看完整层级
+    await ev(c, `(function(){ state.bastionDirCollapsed.clear(); state.collapsedTopBastion=false; renderSessionList(''); return true; })()`);
+    await sleep(300);
     const txt = await ev(c, dump);
     const has = (s) => txt.includes(s);
-    // 麒麟 组:设备A(同时属麒麟) + 设备C → 计数 2
+    // 业务根包裹:测试数据 dirPath=['根', ...],根名=根
+    if (has('📁 根(3)')) ok('业务根「根」存在且去重计数=3'); else bad('业务根', txt.slice(0, 300).replace(/\n/g,'|'));
+    // 麒麟 组:设备A(同时属麒麟) + 设备C → 计数 2(根的子目录)
     if (has('📁 麒麟(2)')) ok('麒麟 组计数=2(含跨目录设备A)'); else bad('麒麟 组计数', txt.slice(0, 300).replace(/\n/g,'|'));
     // 麒麟1 组:设备A + 设备B → 计数 2
     if (has('📁 麒麟1(2)')) ok('麒麟1 组计数=2(含跨目录设备A)'); else bad('麒麟1 组计数', txt.slice(0, 300).replace(/\n/g,'|'));
-    // 未分组:设备D
+    // 未分组:设备D(无 dir/dirPath)
     if (has('🗂 未分组(1)')) ok('未分组计数=1'); else bad('未分组计数', txt.slice(0, 300).replace(/\n/g,'|'));
 
-    // 展开所有分组,确认设备A 在 麒麟 和 麒麟1 两组各出现一次(与网页一致)
-    await ev(c, `(function(){ state.bastionDirCollapsed.clear(); renderSessionList(''); return true; })()`);
-    await sleep(300);
-    const txt2 = await ev(c, dump);
-    const firstA = txt2.indexOf('设备A');
-    const secondA = txt2.indexOf('设备A', firstA + 1);
+    // 设备A 在 麒麟 和 麒麟1 两组各出现一次(与网页一致)
+    const firstA = txt.indexOf('设备A');
+    const secondA = txt.indexOf('设备A', firstA + 1);
     if (firstA >= 0 && secondA >= 0) ok('设备A 在麒麟 和 麒麟1 两组各出现一次(与网页一致)');
-    else bad('设备A 重复出现', txt2.slice(0, 400).replace(/\n/g,'|'));
+    else bad('设备A 重复出现', txt.slice(0, 400).replace(/\n/g,'|'));
 
     // 旧数据兼容:只有 dir(单一目录)没有 dirs 的资产仍按单目录分组显示(等重新捕获才补全)
     await ev(c, `(function(){

@@ -5071,6 +5071,19 @@ function injectBastionAssetHook(requireStable) {
         }
         function one() {
           if (idx >= dirs.length) {
+            // 目录补充完成:仍未分配到任何子目录的设备 = 根级设备(直接在业务根下),
+            // 归到业务根,避免落进「未分组」与浏览器不一致。
+            var rootsSeen = [];
+            (function collectRoots(ns){ (ns || []).forEach(function(n){
+              if (n.path && n.path[0] && rootsSeen.indexOf(n.path[0]) === -1) rootsSeen.push(n.path[0]);
+              collectRoots(n.children);
+            }); })(window.__bastionTree || []);
+            var rn = rootsSeen[0] || '';
+            if (rn) {
+              (window.__bastionAssets || []).forEach(function(x){
+                if (!x.dir && !((x.dirs || []).length) && !((x.dirPath || []).length)) { x.dir = rn; x.dirPath = [rn]; }
+              });
+            }
             (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-done', done: done });
             window.__bastionFetchState.dirRunning = false;
             return Promise.resolve(true);
@@ -5878,18 +5891,57 @@ function renderBastionInSessionList(container, f) {
   const ungrouped = dirs.find((g) => !g.dir);
   const dirRoot = new Map(); // 目录名 → 业务根(取该目录任一资产的 dirPath[0])
   const roots = new Map();   // 业务根 → [目录名]
+  const rootLevel = new Map(); // 业务根 → [根级设备](dir === 业务根名,直接在根下,非子目录)
   const rootless = [];       // 无业务根的目录名(平铺)
   for (const g of groupKeys) {
     const sample = (g.assets || []).find((a) => a.dirPath && a.dirPath[0]);
     if (sample) {
       const r = sample.dirPath[0];
+      if (g.dir === r) {
+        // 根级设备(如 dir=中华人寿大连IDC,dirPath=[中华人寿大连IDC]):归到根下单独展示,不进子目录列表
+        if (!rootLevel.has(r)) rootLevel.set(r, []);
+        rootLevel.get(r).push(...g.assets);
+        continue;
+      }
       dirRoot.set(g.dir, r);
       if (!roots.has(r)) roots.set(r, []);
       roots.get(r).push(g.dir);
     } else rootless.push(g.dir);
   }
-  const rootTotal = (r) => (roots.get(r) || []).reduce((s, dn) => s + (map.get(dn) || []).length, 0);
-  const collectRootAssets = (r) => (roots.get(r) || []).reduce((acc, dn) => acc.concat(map.get(dn) || []), []);
+  // 只含根级设备、没有子目录的业务根也要渲染(否则这些设备被漏掉)
+  for (const r of rootLevel.keys()) if (!roots.has(r)) roots.set(r, []);
+  // 根计数必须按设备去重:设备可属多个子目录,直接求和会把重叠设备重复计数(871 → 2066)。
+  // 同时包含根级设备(dir=业务根名,非子目录),总数 = 该业务根下全部主机。
+  const rootTotal = (r) => {
+    const seen = new Set();
+    let n = 0;
+    for (const dn of (roots.get(r) || [])) {
+      for (const a of (map.get(dn) || [])) {
+        const k = a.devId || a.name + a.ip;
+        if (!seen.has(k)) { seen.add(k); n++; }
+      }
+    }
+    for (const a of (rootLevel.get(r) || [])) {
+      const k = a.devId || a.name + a.ip;
+      if (!seen.has(k)) { seen.add(k); n++; }
+    }
+    return n;
+  };
+  const collectRootAssets = (r) => {
+    const seen = new Set();
+    const out = [];
+    for (const dn of (roots.get(r) || [])) {
+      for (const a of (map.get(dn) || [])) {
+        const k = a.devId || a.name + a.ip;
+        if (!seen.has(k)) { seen.add(k); out.push(a); }
+      }
+    }
+    for (const a of (rootLevel.get(r) || [])) {
+      const k = a.devId || a.name + a.ip;
+      if (!seen.has(k)) { seen.add(k); out.push(a); }
+    }
+    return out;
+  };
   // 首次渲染分组视图:所有目录/收藏分组默认折叠(左侧分组收起,展开才看资产)
   if (!state.bastionDirsInit && !kw) {
     state.bastionDirsInit = true;
@@ -5958,6 +6010,18 @@ function renderBastionInSessionList(container, f) {
       container.appendChild(head);
       if (collapsed) continue;
       for (const a of assets) container.appendChild(makeBastionAssetItem(a));
+    }
+    // 根级设备:直接在业务根下的主机(非任何子目录),浏览器里它们在根视图可见
+    if (rootLevel.has(r)) {
+      const rl = rootLevel.get(r);
+      const rlKey = '__rootdev__' + r;
+      const rlCollapsed = state.bastionDirCollapsed.has(rlKey);
+      const rlHead = makeSectionHead(`📁 ${r}·根目录(${rl.length})`, rlCollapsed,
+        () => { rlCollapsed ? state.bastionDirCollapsed.delete(rlKey) : state.bastionDirCollapsed.add(rlKey); renderSessionList(els.inputSessionSearch.value); },
+        [{ label: '🔗 批量连接', action: () => batchBastionConnect(rl) }]);
+      rlHead.style.paddingLeft = (8 + 14) + 'px'; // 与子目录同级缩进
+      container.appendChild(rlHead);
+      if (!rlCollapsed) for (const a of rl) container.appendChild(makeBastionAssetItem(a));
     }
   }
   // 无业务根的目录:平铺
