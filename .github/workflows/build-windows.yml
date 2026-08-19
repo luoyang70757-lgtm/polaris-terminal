@@ -1,8 +1,11 @@
 name: Build Windows portable
 
 # 在 GitHub 的 Windows runner 上原生编译 Windows 便携版(兼容 Win10/11)。
-# 触发:push 到 main(改动核心源码时)+ 手动触发(workflow_dispatch)。
-# 产物:release/Polaris 1.0.0.exe → Actions Artifact 可下载。
+# 触发:
+#   - push 到 main(改动核心源码)→ 只传 Actions Artifact
+#   - 打标签 v* → 编译并发布到 Releases
+#   - 手动触发(workflow_dispatch)→ 编译并发布到 Releases(草稿,确认后发布)
+# 产物:release/Polaris 1.0.0.exe
 on:
   push:
     branches: [ main ]
@@ -15,7 +18,14 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'build/**'
-  workflow_dispatch: {}
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号(用于 Release 标签,留空自动用 Build+运行号)'
+        required: false
+        default: ''
 
 jobs:
   build-windows:
@@ -34,9 +44,21 @@ jobs:
       - name: Build Windows portable
         run: npm run dist -- --win
 
-      - name: Upload portable exe
+      - name: Upload portable exe (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: Polaris-Windows-Portable
           path: release/*.exe
           if-no-files-found: error
+
+      # 标签 v* 或手动触发 → 同时发布到 GitHub Releases
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          files: release/*.exe
+          # 标签触发用标签名;手动触发用 v+版本号 或 vBuild+运行号
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || (github.event.inputs.version != '' && format('v{0}', github.event.inputs.version) || format('vBuild-{0}', github.run_number)) }}
+          name: Polaris ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || (github.event.inputs.version != '' && github.event.inputs.version || format('Build #{0}', github.run_number)) }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: false
