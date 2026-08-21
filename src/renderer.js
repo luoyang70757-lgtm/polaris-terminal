@@ -1401,7 +1401,10 @@ async function restoreBastionAssets() {
         const key = a.devId || (a.name + a.ip);
         if (seen.has(key)) continue;
         seen.add(key);
-        all.push({ ...a, favorite: favs.has(a.devId) || !!a.favorite });
+        // 恢复时清洗历史脏 favGroup("undefinedxxx" 是早期映射 bug 产物,SQLite 里可能还有),
+        // 否则重启后首次渲染收藏区会带垃圾分组名;干净的分组正常保留
+        const fg = (a.favGroup && a.favGroup.indexOf('undefined') !== 0) ? a.favGroup : undefined;
+        all.push({ ...a, favorite: favs.has(a.devId) || !!a.favorite, favGroup: fg });
       }
       if (!state.bastionUrl) state.bastionUrl = bastionOrigin(u) || u;
     }
@@ -5225,7 +5228,7 @@ function mergeBastionCapture(prev, fresh) {
     else if (old.dir) union.add(old.dir);
     m.dirs = Array.from(union);
     if (!m.dirPath || !m.dirPath.length) m.dirPath = old.dirPath ? old.dirPath.slice() : [];
-    if (!m.favGroup && old.favGroup) m.favGroup = old.favGroup;
+    if (!m.favGroup && old.favGroup && old.favGroup.indexOf('undefined') !== 0) m.favGroup = old.favGroup;
     return m;
   });
 }
@@ -5959,7 +5962,10 @@ function renderBastionInSessionList(container, f) {
     if (!collapsed) {
       const gmap = new Map();
       for (const a of favs) {
-        const g = a.favGroup || '默认收藏'; // 未抓到分组归属时归「默认收藏」
+        const raw = a.favGroup;
+        // 历史脏数据("undefinedxxx" 是早期映射 bug 产物)视为无分组,归「默认收藏」,
+        // 避免收藏区显示 "undefined资金管理系统" 这类垃圾分组名(与 merge 守卫一致)
+        const g = (raw && raw.indexOf('undefined') !== 0) ? raw : '默认收藏';
         if (!gmap.has(g)) gmap.set(g, []);
         gmap.get(g).push(a);
       }
@@ -8871,6 +8877,10 @@ function bastionFocusCheck() {
   // 触发 window blur → 菜单刚弹出就被关闭("一闪而过",日志 close:blur 刷屏)。
   if (els.ctxMenu && !els.ctxMenu.classList.contains('hidden')) return;
   if (document.activeElement === wv) return; // 键盘焦点已在 webview:无需轮询
+  // 终端输入框正持有焦点 → 不轮询不抢焦点:用户正在终端打字/刚连上,任何抢焦点都会造成
+  // 窗口假失焦、按键被吞(日志表现:连接后无按键、被迫重连)。用户点进 H3C 页面再接管。
+  const hostAe = document.activeElement;
+  if (hostAe && hostAe.classList && hostAe.classList.contains('xterm-helper-textarea')) return;
   try {
     wv.executeJavaScript('window.__bastionFocusTs || 0').then((ts) => {
       // 镜像 guest 交互时间到宿主:供 pollBastionAssets 判断"用户正在操作 H3C 页面"
@@ -8892,7 +8902,10 @@ function bastionFocusCheck() {
       // 用户最近在宿主(主界面)点过(任意位置)→ 不抢焦点:焦点跟用户走,
       // 否则打开网页 SFTP 后 webview 一直抢焦点,点主界面无效,退不回来。
       const hostClickedLater = (window.__hostAnyClickTs || 0) >= (ts || 0);
-      if (recent && !hostClickedLater && ts > (window.__hostEditableTs || 0) && document.activeElement !== wv) wv.focus();
+      // 终端输入框正持有焦点 → 不抢(与开头早退一致,防 async .then 期间焦点刚落到终端):
+      // 否则用户刚连上/正在打字,这里 wv.focus() 顶走焦点 → 窗口假失焦,按键全被吞。
+      const termFocused = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('xterm-helper-textarea');
+      if (recent && !hostClickedLater && !termFocused && ts > (window.__hostEditableTs || 0) && document.activeElement !== wv) wv.focus();
     }).catch(() => {});
   } catch { /* 导航中 executeJavaScript 可能短暂不可用,忽略 */ }
 }
