@@ -2498,6 +2498,26 @@ function setupImeGuard(term) {
   // getter(返回 IEvent,不是可调用函数),直接 term.onFocus(fn) 会 TypeError 崩掉,必须用
   // textarea 的 DOM focus 事件(与上面 blur 一致)。
   ta.addEventListener('focus', resetStuck);
+  // macOS/Windows 输入法"假组合"守卫:key='Process'/keyCode 229 连发,但本终端并没有真正在组合
+  // (composing=false,即 compositionstart 从未触发)→ 是输入法残留的死键状态拦截了字符键
+  // (日志:KEY 'Process' 刷屏,命令打不进去,只剩 Enter 能发)。分两档:
+  //   1) 每次死键都派发空 compositionend,让 xterm 的 _isComposing 复位;
+  //   2) 连续 ≥3 个死键仍没恢复(真卡死)→ 强制 blur+focus 重建输入法会话
+  //      (Chromium 向系统申请全新 IME session,OS 层的拦截才真正解除)。
+  // 有真实组合(compositionstart 已触发)时一律不干预,打拼音不受影响。
+  let processBurst = 0;
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Process' || e.keyCode === 229) {
+      if (composing) { processBurst = 0; return; } // 真实组合中,让 IME 正常走
+      try { ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); } catch { /* ignore */ }
+      if (++processBurst >= 3) {
+        processBurst = 0;
+        try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
+      }
+    } else {
+      processBurst = 0; // 有真实按键/正常键进来,复位计数
+    }
+  });
   return resetStuck;
 }
 
@@ -7220,6 +7240,7 @@ const MAX_RECONNECT = 5;
 function scheduleReconnect(t) {
   if (state.settings.autoReconnect === false) return; // 设置里关闭了自动重连
   if (t.userClosed || !state.tabs.has(t.sessionId)) return;
+  clearTimeout(t.reconnectClearTimer); // 连接没能稳定(瞬连瞬断),挂起的"清零重连计数"作废
   if (t.reconnectTimer) return; // 已有定时器,不重复安排
   if (t.reconnectAttempts >= MAX_RECONNECT) {
     t.term.write(`\r\n\x1b[31m[自动重连 ${MAX_RECONNECT} 次仍失败,已停止;可关闭标签后重新连接]\x1b[0m\r\n`);
@@ -8308,7 +8329,15 @@ async function sftpUpload() {
   sftpTransferFinish(res.ok ? new Set((res.failed || []).map((f) => f.rp)) : new Set(), res.error === '已取消'); // 行留在历史里
   sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
   if (!res.ok) {
-    if (res.error !== '已取消') { addLog(`⬆ 上传失败: ${res.error}`, true); alert(`上传失败: ${res.error}`); }
+    if (res.error !== '已取消') {
+      addLog(`⬆ 上传失败: ${res.error}`, true);
+      alert(`上传失败: ${res.error}`);
+      // alert 是原生模态框,关闭后焦点/输入法状态可能被打乱(日志:上传失败后终端空格全吞、
+      // 死键刷屏、只剩回车能发)。强制把焦点和 IME 状态还给终端,否则上传失败后终端没法打字。
+      sftpRefocusTerminal();
+      const tt = state.tabs.get(state.activeSessionId);
+      if (tt && tt.__imeReset) try { tt.__imeReset(); } catch { /* ignore */ }
+    }
     return;
   }
   const done = res.isDir ? `文件夹 ${res.remotePath}(${res.count} 个文件)` : res.remotePath;
@@ -9785,7 +9814,11 @@ window.api.onSshStatus((sessionId, status) => {
   if (status.status === 'connected') {
     setTabStatus(sessionId, 'connected');
     t.manualDisconnect = false; // 已重新连接上,清掉手动断开标记
-    t.reconnectAttempts = 0; // 连接成功,清零重连计数
+    // 连接成功 → 延迟 15s 清零重连计数:只有连接稳定才证明真的连上了。
+    // 若"握手成功→立刻被服务端关闭"(瞬连瞬断),计数不归零 → MAX_RECONNECT 正常触发,
+    // 否则每轮 connected 都清零,自动重连死循环(日志:每3秒连一次永不停)。
+    clearTimeout(t.reconnectClearTimer);
+    t.reconnectClearTimer = setTimeout(() => { t.reconnectAttempts = 0; }, 15000);
     t.autoPwBuf = ''; t.autoPwSent = false; // 重置自动填充密码状态,迎接新会话的提示
     if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
     if (dot) dot.title = '已连接';
