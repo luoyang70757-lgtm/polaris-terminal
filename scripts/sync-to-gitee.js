@@ -51,20 +51,35 @@ async function createRelease() {
   return r.json();
 }
 
-const SPLIT_LIMIT = 90 * 1024 * 1024; // gitee 单附件上限 100MB,留余量用 90MB 切段
+const SPLIT_LIMIT = 10 * 1024 * 1024; // 分块上限:gitee 单附件 100MB 上限 + GitHub 海外 runner 上传
+// 到 gitee(国内)慢,90MB 大块曾 5 分钟被掐断(fetch failed)。10MB 小块每个请求短、更易在
+// gitee 超时/断连前完成;代价是文件段数多,但拼接命令已给出。
 const SPLIT_DIR = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gitee-split-'));
 
+// 单附件上传:60s 超时兜底(慢连接不无限挂)+ 失败重试 3 次(背退 2/4s),对抗海外→国内网络抖动。
 async function uploadOne(releaseId, filePath, name) {
-  const fd = new FormData();
-  fd.append('access_token', TOKEN);
-  fd.append('file', new Blob([fs.readFileSync(filePath)]), name);
-  const r = await fetch(`${API}/releases/${releaseId}/attach_files`, { method: 'POST', body: fd });
-  if (r.ok) { console.log(`  ✓ ${name}`); return true; }
-  console.log(`  ✗ ${name}: HTTP ${r.status} ${(await r.text()).slice(0, 150)}`);
+  const body = new Blob([fs.readFileSync(filePath)]);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 60000);
+    try {
+      const fd = new FormData();
+      fd.append('access_token', TOKEN);
+      fd.append('file', body, name);
+      const r = await fetch(`${API}/releases/${releaseId}/attach_files`, { method: 'POST', body: fd, signal: ac.signal });
+      clearTimeout(timer);
+      if (r.ok) { console.log(`  ✓ ${name}`); return true; }
+      console.log(`  ✗ ${name}(第${attempt}次): HTTP ${r.status} ${(await r.text()).slice(0, 150)}`);
+    } catch (e) {
+      clearTimeout(timer);
+      console.log(`  ✗ ${name}(第${attempt}次): ${e.name === 'AbortError' ? '超时' : e.message}`);
+    }
+    await new Promise((r) => setTimeout(r, attempt * 2000)); // 2s/4s 背退
+  }
   return false;
 }
 
-// 超限文件切成 ≤90MB 多段(纯 Node,不依赖系统 split),返回 [临时文件路径...]
+// 超限文件切成 ≤SPLIT_LIMIT 多段(纯 Node,不依赖系统 split),返回 [临时文件路径...]
 function splitFile(filePath) {
   const size = fs.statSync(filePath).size;
   const chunk = SPLIT_LIMIT;
@@ -95,25 +110,26 @@ async function uploadAssets(releaseId, dir) {
   if (!dir || !fs.existsSync(dir)) { console.log('  (无附件目录,跳过)'); return 0; }
   const files = fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile());
   if (!files.length) { console.log('  (附件目录为空)'); return 0; }
-  let n = 0;
+  let n = 0, failed = 0;
   const noteParts = [];
   for (const f of files) {
     const p = path.join(dir, f);
     const size = fs.statSync(p).size;
     if (size <= SPLIT_LIMIT) {
-      if (await uploadOne(releaseId, p, f)) n++;
+      if (await uploadOne(releaseId, p, f)) n++; else failed++;
     } else {
       const parts = splitFile(p);
       for (const [i, part] of parts.entries()) {
         const partName = `${f}.part${String(i + 1).padStart(2, '0')}`;
-        if (await uploadOne(releaseId, part, partName)) { n++; noteParts.push(partName); }
+        if (await uploadOne(releaseId, part, partName)) { n++; noteParts.push(partName); } else failed++;
       }
     }
   }
   if (noteParts.length) {
-    console.log(`\n⚠️ ${noteParts[0].replace(/\.part\d+$/, '')} 超过 gitee 单附件 100MB 上限,已切成多段。`);
+    console.log(`\n⚠️ ${noteParts[0].replace(/\.part\d+$/, '')} 已切成多段上传(单附件限100MB + 海外→国内网络稳)。`);
     console.log('   下载全部 part 后拼接再解压:\n   cat ' + noteParts.join(' ') + ' > ' + noteParts[0].replace(/\.part\d+$/, ''));
   }
+  if (failed) throw new Error(`${failed} 个附件上传失败(各重试3次后仍失败),请在网络好的环境重跑或本机同步`);
   return n;
 }
 
