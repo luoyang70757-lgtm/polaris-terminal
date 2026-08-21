@@ -111,7 +111,7 @@ async function uploadAssets(releaseId, dir) {
   const files = fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile());
   if (!files.length) { console.log('  (附件目录为空)'); return 0; }
   let n = 0, failed = 0;
-  const noteParts = [];
+  const splitNotes = new Map(); // 原文件名 → [part 名](每个被切分的文件一条独立拼接命令,不能混)
   for (const f of files) {
     const p = path.join(dir, f);
     const size = fs.statSync(p).size;
@@ -119,15 +119,19 @@ async function uploadAssets(releaseId, dir) {
       if (await uploadOne(releaseId, p, f)) n++; else failed++;
     } else {
       const parts = splitFile(p);
+      const pnames = [];
       for (const [i, part] of parts.entries()) {
         const partName = `${f}.part${String(i + 1).padStart(2, '0')}`;
-        if (await uploadOne(releaseId, part, partName)) { n++; noteParts.push(partName); } else failed++;
+        if (await uploadOne(releaseId, part, partName)) { n++; pnames.push(partName); } else failed++;
       }
+      if (pnames.length) splitNotes.set(f, pnames);
     }
   }
-  if (noteParts.length) {
-    console.log(`\n⚠️ ${noteParts[0].replace(/\.part\d+$/, '')} 已切成多段上传(单附件限100MB + 海外→国内网络稳)。`);
-    console.log('   下载全部 part 后拼接再解压:\n   cat ' + noteParts.join(' ') + ' > ' + noteParts[0].replace(/\.part\d+$/, ''));
+  if (splitNotes.size) {
+    console.log('\n⚠️ 以下文件切成多段上传(单附件限100MB + 海外→国内网络稳),下载全部 part 后拼接再解压:');
+    for (const [f, pnames] of splitNotes) {
+      console.log(`   cat ${pnames.join(' ')} > ${f}`);
+    }
   }
   if (failed) throw new Error(`${failed} 个附件上传失败(各重试3次后仍失败),请在网络好的环境重跑或本机同步`);
   return n;
