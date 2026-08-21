@@ -101,3 +101,28 @@ jobs:
           name: Polaris ${{ steps.rel.outputs.name }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: false
+
+  # 发布完成后,把 GitHub 产物同步到 gitee(码云镜像发布)。
+  # gitee 不构建(mac 无构建机 / Windows 需 wine),只接收 GitHub 已编译的产物。
+  sync-gitee:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')   # 只有 tag 发布才同步
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist-assets
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D dist-assets
+          ls -la dist-assets
+      - name: Sync to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: major1937
+          GITEE_REPO: polaris-terminal
+        run: node scripts/sync-to-gitee.js --tag "$GITHUB_REF_NAME" --assets-dir dist-assets
