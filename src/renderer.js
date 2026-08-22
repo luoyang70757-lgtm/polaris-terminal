@@ -26,98 +26,136 @@ const SearchAddonClass =
 // 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
 const __bootT0 = performance.now();
 
-// ---- 主题预设(参考 Netcatty / Chaterm 的个性化)----
-// term = 终端配色;css = 应用外壳的 CSS 变量覆盖(--term-bg 是终端区域底色)
-// css 省略时由 deriveUiTokens 从 term 配色按 appearance 自动派生,预设只写配色即可
+// ---- 主题预设(参考 Netcatty / Chaterm / Termius 的个性化)----
+// term = 终端配色;ansi = 该主题的 ANSI 16 色板(官方色板优先,未设置兜底 DEFAULT_ANSI)
+// UI 变量统一由 deriveUiTokens 从 term 配色按 appearance 派生(单一事实来源),不再手写 css
 const THEMES = {
   dark: {
     name: '深空(默认)', appearance: 'dark',
     term: { background: '#070c18', foreground: '#c7dcff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
-    css: { '--bg': '#070c18', '--bg-panel': '#0d1530', '--bg-panel-2': '#131d3d', '--bg-hover': '#1b2a52', '--border': '#1d3a66', '--text': '#c7dcff', '--text-dim': '#94a9da', '--term-bg': '#070c18', '--input-bg': '#0a1128' },
+    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
   light: {
     name: '浅色', appearance: 'light',
     term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
-    css: { '--bg': '#f5f6f8', '--bg-panel': '#ffffff', '--bg-panel-2': '#eef0f3', '--bg-hover': '#e2e6ec', '--border': '#d4d7dc', '--text': '#1f2430', '--text-dim': '#5b6472', '--term-bg': '#ffffff', '--input-bg': '#ffffff' },
+    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
   green: {
     name: '经典绿', appearance: 'dark',
     term: { background: '#001b00', foreground: '#33ff33', cursor: '#33ff33', selectionBackground: '#0e6b0e', selectionForeground: '#ffffff' },
-    css: { '--bg': '#001100', '--bg-panel': '#002200', '--bg-panel-2': '#003300', '--bg-hover': '#004400', '--border': '#005500', '--text': '#33ff33', '--text-dim': '#1d7a1d', '--term-bg': '#001b00', '--input-bg': '#001a00' },
+    ansi: ['#005500', '#ff4455', '#00cc44', '#cccc00', '#00aa88', '#cc44cc', '#00aaaa', '#00aa00', '#007700', '#ff6677', '#22ff66', '#ffee22', '#22ddbb', '#ff66ff', '#33dddd', '#ffffff'],
   },
   solarizedDark: {
     name: 'Solarized 深', appearance: 'dark',
     term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
-    css: { '--bg': '#002b36', '--bg-panel': '#073642', '--bg-panel-2': '#0a3d4a', '--bg-hover': '#0e4a58', '--border': '#0e4a58', '--text': '#839496', '--text-dim': '#586e75', '--term-bg': '#002b36', '--input-bg': '#00212b' },
+    ansi: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5', '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
   },
   solarizedLight: {
     name: 'Solarized 浅', appearance: 'light',
     term: { background: '#fdf6e3', foreground: '#657b83', cursor: '#657b83', selectionBackground: '#d9d2b5', selectionForeground: '#073642' },
-    css: { '--bg': '#fdf6e3', '--bg-panel': '#eee8d5', '--bg-panel-2': '#e6e0c9', '--bg-hover': '#e3dcc9', '--border': '#d6cfb8', '--text': '#586e75', '--text-dim': '#93a1a1', '--term-bg': '#fdf6e3', '--input-bg': '#fdf6e3' },
+    ansi: ['#eee8d5', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#fdf6e3', '#586e75', '#cb4b16', '#073642', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#002b36'],
   },
   nord: {
     name: 'Nord', appearance: 'dark',
     term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#5e81ac', selectionForeground: '#ffffff' },
-    css: { '--bg': '#2e3440', '--bg-panel': '#3b4252', '--bg-panel-2': '#434c5e', '--bg-hover': '#4c566a', '--border': '#4c566a', '--text': '#d8dee9', '--text-dim': '#81a1c1', '--term-bg': '#2e3440', '--input-bg': '#2e3440' },
+    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#4c566a', '#d08770', '#8fbcbb', '#eceff4', '#5e81ac', '#d8dee9', '#434c5e', '#eceff4'],
   },
   dracula: {
     name: 'Dracula', appearance: 'dark',
     term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
-    css: { '--bg': '#282a36', '--bg-panel': '#343746', '--bg-panel-2': '#3d4050', '--bg-hover': '#3d4050', '--border': '#44475a', '--text': '#f8f8f2', '--text-dim': '#bd93f9', '--term-bg': '#282a36', '--input-bg': '#1e2029' },
+    ansi: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff'],
   },
   onedark: {
     name: 'One Dark', appearance: 'dark',
     term: { background: '#282c34', foreground: '#abb2bf', cursor: '#528bff', selectionBackground: '#5c78d6', selectionForeground: '#ffffff' },
-    css: { '--bg': '#282c34', '--bg-panel': '#2c313a', '--bg-panel-2': '#353b45', '--bg-hover': '#353b45', '--border': '#3e4451', '--text': '#abb2bf', '--text-dim': '#5c6370', '--term-bg': '#282c34', '--input-bg': '#21252b' },
+    ansi: ['#21252b', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#abb2bf', '#5c6370', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
   },
-  // ---- 以下新增预设只写配色,UI 变量走 deriveUiTokens 派生 ----
+  // ---- 以下预设只写配色 + 各主题 ANSI 色板,UI 变量走 deriveUiTokens 派生 ----
   termiusDark: {
     name: 'Graphite 深', appearance: 'dark',
     term: { background: '#222426', foreground: '#c9c9c9', cursor: '#c9c9c9', selectionBackground: '#3e4142', selectionForeground: '#ffffff' },
+    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
   termiusLight: {
     name: 'Mist 浅', appearance: 'light',
     term: { background: '#f5f5f5', foreground: '#222426', cursor: '#222426', selectionBackground: '#d9dcdE', selectionForeground: '#222426' },
+    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
   flexokiDark: {
     name: 'Ember 深', appearance: 'dark',
     term: { background: '#100f0f', foreground: '#c6c3b5', cursor: '#c6c3b5', selectionBackground: '#282726', selectionForeground: '#ffffff' },
+    ansi: ['#100f0f', '#af3029', '#66800b', '#ad8301', '#205ea6', '#a02f6f', '#24837b', '#cecdc3', '#575653', '#d14d41', '#879a39', '#d0a215', '#4385be', '#ce5d97', '#3aa99f', '#e6e4d9'],
   },
   flexokiLight: {
     name: 'Canvas 浅', appearance: 'light',
     term: { background: '#fffcf0', foreground: '#100f0f', cursor: '#100f0f', selectionBackground: '#e6e4d9', selectionForeground: '#100f0f' },
+    ansi: ['#6f6e69', '#af3029', '#66800b', '#ad8301', '#205ea6', '#a02f6f', '#24837b', '#c8c5bf', '#6f6e69', '#d14d41', '#879a39', '#d0a215', '#4385be', '#ce5d97', '#3aa99f', '#1c1b1a'],
   },
   kanagawaWave: {
     name: 'Tide 靛', appearance: 'dark',
     term: { background: '#1f1f28', foreground: '#dcd7ba', cursor: '#dcd7ba', selectionBackground: '#363646', selectionForeground: '#ffffff' },
+    ansi: ['#090618', '#c34043', '#76946a', '#c0a36e', '#7e9cd8', '#957fb8', '#6a9589', '#c8c093', '#727169', '#e82424', '#98bb6c', '#e6c384', '#7fb4ca', '#938aa9', '#7aa89f', '#dcd7ba'],
   },
   kanagawaDragon: {
     name: 'Forge 铜', appearance: 'dark',
     term: { background: '#181616', foreground: '#c5c9c5', cursor: '#c5c9c5', selectionBackground: '#2d2a2e', selectionForeground: '#ffffff' },
+    ansi: ['#0d0c0c', '#c4746e', '#8a9a7b', '#c4b28a', '#8ba4b0', '#a292a3', '#8ea4a2', '#c8c093', '#a6a69c', '#e46876', '#98bb6c', '#e6c384', '#7fb4ca', '#938aa9', '#7aa89f', '#dcd7ba'],
   },
   kanagawaLotus: {
     name: 'Dawn 花', appearance: 'light',
     term: { background: '#f2ecbc', foreground: '#545464', cursor: '#545464', selectionBackground: '#b9b577', selectionForeground: '#ffffff' },
+    ansi: ['#f2ecbc', '#c84053', '#6d894e', '#77713f', '#597b8f', '#8a5a83', '#5b8d8a', '#545464', '#b8b4a0', '#d7474f', '#a9a050', '#8f8947', '#708d9c', '#985f8f', '#6a8d88', '#545464'],
   },
   hackerBlue: {
     name: 'Pulse 蓝', appearance: 'dark',
     term: { background: '#001020', foreground: '#33aaff', cursor: '#33aaff', selectionBackground: '#003a6e', selectionForeground: '#ffffff' },
+    ansi: ['#00224a', '#4488ff', '#22ccaa', '#ffcc44', '#5599ff', '#cc66ff', '#44ddff', '#88aacc', '#00336e', '#66aaff', '#44eebb', '#ffdd66', '#77bbff', '#dd88ff', '#66eeff', '#ffffff'],
   },
   hackerGreen: {
     name: 'Pulse 绿', appearance: 'dark',
     term: { background: '#001300', foreground: '#00ff66', cursor: '#00ff66', selectionBackground: '#006e2a', selectionForeground: '#ffffff' },
+    ansi: ['#003300', '#33ff66', '#00ff88', '#dddd00', '#44ffcc', '#ff55ff', '#00ddcc', '#88cc88', '#004400', '#66ff88', '#33ffaa', '#ffee55', '#77ffdd', '#ff88ff', '#55ffdd', '#ffffff'],
   },
   catppuccinMocha: {
     name: 'Truffle 摩卡', appearance: 'dark',
     term: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#45475a', selectionForeground: '#ffffff' },
+    ansi: ['#45475a', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#bac2de', '#585b70', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#a6adc8'],
   },
   catppuccinLatte: {
     name: 'Cream 拿铁', appearance: 'light',
     term: { background: '#eff1f5', foreground: '#4c4f69', cursor: '#dc8a78', selectionBackground: '#ccd0da', selectionForeground: '#4c4f69' },
+    ansi: ['#5c5f77', '#d20f39', '#40a02b', '#df8e1d', '#1e66f5', '#ea76cb', '#179299', '#acb0be', '#6c6f85', '#d20f39', '#40a02b', '#df8e1d', '#1e66f5', '#ea76cb', '#179299', '#8c8fa1'],
   },
   gruvboxDark: {
     name: 'Grove 苔', appearance: 'dark',
     term: { background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2', selectionBackground: '#3c3836', selectionForeground: '#ffffff' },
+    ansi: ['#282828', '#cc241d', '#98971a', '#d79921', '#458588', '#b16286', '#689d6a', '#a89984', '#928374', '#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#ebdbb2'],
+  },
+  // ---- T4:Termius 热门主题(官方配色 + 各主题色板,只写配色,UI 走派生)----
+  rosePine: {
+    name: '松雾 Rosé Pine', appearance: 'dark',
+    term: { background: '#191724', foreground: '#e0def4', cursor: '#f6c177', selectionBackground: '#2a2837', selectionForeground: '#ffffff' },
+    ansi: ['#26233a', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4', '#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4'],
+  },
+  nightOwl: {
+    name: '夜枭 Night Owl', appearance: 'dark',
+    term: { background: '#011627', foreground: '#d6deeb', cursor: '#80a4c2', selectionBackground: '#1d3b53', selectionForeground: '#ffffff' },
+    ansi: ['#011627', '#ef5350', '#22da6e', '#addb67', '#82aaff', '#c792ea', '#21c7a8', '#ffffff', '#575f73', '#ef5350', '#22da6e', '#addb67', '#82aaff', '#c792ea', '#21c7a8', '#ffffff'],
+  },
+  everforestDark: {
+    name: '森野深 Everforest', appearance: 'dark',
+    term: { background: '#2d353b', foreground: '#d3c6aa', cursor: '#d3c6aa', selectionBackground: '#475258', selectionForeground: '#ffffff' },
+    ansi: ['#4b565c', '#e67e80', '#a7c080', '#dbbc7f', '#7fbbb3', '#d699b6', '#83c092', '#d3c6aa', '#5c6a72', '#e67e80', '#a7c080', '#dbbc7f', '#7fbbb3', '#d699b6', '#83c092', '#d3c6aa'],
+  },
+  everforestLight: {
+    name: '森野浅 Everforest', appearance: 'light',
+    term: { background: '#fdf6e3', foreground: '#5c6a72', cursor: '#5c6a72', selectionBackground: '#d8caac', selectionForeground: '#5c6a72' },
+    ansi: ['#5c6a72', '#f85552', '#8da101', '#dfa000', '#3a94c5', '#df69ba', '#35a77c', '#dfdcc9', '#9da9a0', '#f85552', '#8da101', '#dfa000', '#3a94c5', '#df69ba', '#35a77c', '#dfdcc9'],
+  },
+  aura: {
+    name: '霞光 Aura', appearance: 'dark',
+    term: { background: '#21202e', foreground: '#edecee', cursor: '#a277ff', selectionBackground: '#363447', selectionForeground: '#ffffff' },
+    ansi: ['#15141b', '#ff6767', '#61ffca', '#ffca85', '#a277ff', '#a277ff', '#61ffca', '#edecee', '#4d4d66', '#ff6767', '#61ffca', '#ffca85', '#a277ff', '#ff6767', '#61ffca', '#edecee'],
   },
 };
 
@@ -340,6 +378,8 @@ const els = {
   setFontSize: $('set-font-size'),
   setUiFontSize: $('set-ui-font-size'),
   setFontFamily: $('set-font-family'),
+  setFontFamilyCustom: $('set-font-family-custom'),
+  setFontFamilyCustomWrap: $('set-font-family-custom-wrap'),
   setAutoReconnect: $('set-autoreconnect'),
   setVerify: $('set-verify'),
   setAutoTrust: $('set-autotrust'),
@@ -691,7 +731,7 @@ function applyTheme() {
   const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
   for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
   root.setProperty('--ui-font', (state.settings.uiFontSize || 13) + 'px'); // 界面字体大小(工具栏/列表等)
-  const ansi = state.settings.customAnsi || DEFAULT_ANSI; // ANSI 16 色(可自定义)
+  const ansi = state.settings.customAnsi || th.ansi || DEFAULT_ANSI; // ANSI 16 色:用户自定义优先,否则用主题自带色板,兜底默认
   for (const t of state.tabs.values()) {
     try {
       t.term.options.theme = { ...th.term, ansi };
@@ -729,7 +769,7 @@ function openSettingsModal() {
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
   els.setUiFontSize.value = state.settings.uiFontSize || 13;
-  els.setFontFamily.value = state.settings.fontFamily || '';
+  syncFontFamilyControls();
   els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
   els.setVerify.checked = state.settings.verifyHostKey !== false;
   els.setAutoTrust.checked = state.settings.autoTrustHostKey === true;
@@ -757,7 +797,9 @@ const ANSI_NAMES = ['黑', '红', '绿', '黄', '蓝', '紫', '青', '白', '亮
 function renderAnsiEditor() {
   const box = els.ansiEditor;
   box.innerHTML = '';
-  const colors = state.settings.customAnsi || DEFAULT_ANSI;
+  // 显示当前生效色板(用户自定义优先,否则当前主题自带色板,兜底默认);改动即写入 customAnsi 覆盖主题色
+  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
+  const colors = state.settings.customAnsi || th.ansi || DEFAULT_ANSI;
   colors.forEach((hex, i) => {
     const row = document.createElement('label');
     row.className = 'ansi-row';
@@ -890,6 +932,20 @@ function applyFontSettings() {
       t.term.options.fontFamily = state.settings.fontFamily || '"SF Mono", Menlo, Consolas, "Courier New", monospace';
       t.term.refresh(0, t.term.rows - 1);
     } catch { /* ignore */ }
+  }
+}
+
+// 同步字体下拉与自定义输入:当前 fontFamily 不在预设选项里 → 切到「自定义…」并回填输入框
+function syncFontFamilyControls() {
+  const cur = state.settings.fontFamily || '';
+  const opts = [...els.setFontFamily.options].map((o) => o.value);
+  if (opts.includes(cur) && cur !== '__custom__') {
+    els.setFontFamily.value = cur;
+    els.setFontFamilyCustomWrap.style.display = 'none';
+  } else {
+    els.setFontFamily.value = '__custom__';
+    els.setFontFamilyCustom.value = cur;
+    els.setFontFamilyCustomWrap.style.display = '';
   }
 }
 
@@ -9130,7 +9186,16 @@ els.setUiFontSize.addEventListener('change', () => {
   applyTheme(); // 应用新界面字号(--ui-font)
 });
 els.setFontFamily.addEventListener('change', () => {
-  state.settings.fontFamily = els.setFontFamily.value;
+  if (els.setFontFamily.value !== '__custom__') {
+    state.settings.fontFamily = els.setFontFamily.value;
+    saveSettings();
+    applyFontSettings();
+  }
+  syncFontFamilyControls(); // 同步下拉与自定义输入框(选「自定义…」→ 显示并回填;选预设 → 隐藏)
+});
+els.setFontFamilyCustom.addEventListener('change', () => {
+  const v = els.setFontFamilyCustom.value.trim();
+  state.settings.fontFamily = v || '"SF Mono", Menlo, Consolas, "Courier New", monospace';
   saveSettings();
   applyFontSettings();
 });

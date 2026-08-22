@@ -558,7 +558,18 @@
           <option value='"Courier New", Menlo, Consolas, monospace'>Courier New</option>
           <option value='"JetBrains Mono", Menlo, Consolas, monospace'>JetBrains Mono</option>
           <option value='"Fira Code", Menlo, Consolas, monospace'>Fira Code</option>
+          <option value='"Cascadia Code", Consolas, monospace'>Cascadia Code</option>
+          <option value='Meslo, Menlo, Consolas, monospace'>Meslo</option>
+          <option value='"Source Code Pro", Menlo, Consolas, monospace'>Source Code Pro</option>
+          <option value='"Ubuntu Mono", Menlo, Consolas, monospace'>Ubuntu Mono</option>
+          <option value='"DejaVu Sans Mono", Menlo, Consolas, monospace'>DejaVu Sans Mono</option>
+          <option value='"CaskaydiaCove Nerd Font", Menlo, Consolas, monospace'>CaskaydiaCove Nerd Font</option>
+          <option value='"JetBrainsMono Nerd Font", Menlo, Consolas, monospace'>JetBrainsMono Nerd Font</option>
+          <option value='__custom__'>自定义…(直接输入 font-family)</option>
         </select>
+      </label>
+      <label class="field" id="set-font-family-custom-wrap" style="display:none"><span>自定义字体名</span>
+        <input id="set-font-family-custom" class="input" type="text" placeholder='如 "MesloLGS NF", Menlo, Consolas, monospace(逗号分隔回退链;需系统已安装该字体)' />
       </label>
       <div class="field"><span>ANSI 颜色(终端彩色显示,可自定义 16 色)</span>
         <details class="ansi-details">
@@ -566,6 +577,7 @@
           <div id="ansi-editor" class="ansi-editor"></div>
           <button id="ansi-reset" class="btn-mini" type="button" title="恢复默认色板">↺ 重置默认色板</button>
         </details>
+        <div class="dim small" style="margin-top:2px">自定义色板会覆盖当前主题自带的 16 色;点「↺ 重置」可恢复主题色板</div>
       </div>
       <div class="settings-sec">连接</div>
       <label class="field field-check"><span>断线自动重连</span>

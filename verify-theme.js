@@ -46,8 +46,8 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     // ① 下拉结构
     await check(c, '下拉含「跟随系统(auto)」选项', `(function(){var s=document.getElementById('set-theme');return !!s.querySelector('option[value="auto"]');})()`);
     await check(c, '下拉分 深色/浅色 两个 optgroup', `document.getElementById('set-theme').querySelectorAll('optgroup').length===2`);
-    await check(c, '选项总数 = auto + 20 预设', `document.getElementById('set-theme').options.length===21`);
-    await check(c, '12 个新预设已注册', `['termiusDark','termiusLight','flexokiDark','flexokiLight','kanagawaWave','kanagawaDragon','kanagawaLotus','hackerBlue','hackerGreen','catppuccinMocha','catppuccinLatte','gruvboxDark'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
+    await check(c, '选项总数 = auto + 25 预设', `document.getElementById('set-theme').options.length===26`);
+    await check(c, '新增预设已注册(12 + T4 新 5 套)', `['termiusDark','termiusLight','flexokiDark','flexokiLight','kanagawaWave','kanagawaDragon','kanagawaLotus','hackerBlue','hackerGreen','catppuccinMocha','catppuccinLatte','gruvboxDark','rosePine','nightOwl','everforestDark','everforestLight','aura'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
 
     // ② 新预设纯派生
     await ev(c, applyTheme('catppuccinMocha')); await sleep(120);
@@ -61,17 +61,17 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     const borderDir = await ev(c, `(function(){var d=function(x){x=x.replace('#','');return [0,2,4].map(function(i){return parseInt(x.slice(i,i+2),16)});};var bg=d(document.documentElement.style.getPropertyValue('--bg')),bd=d(document.documentElement.style.getPropertyValue('--border'));return bd[0]+bd[1]+bd[2] < bg[0]+bg[1]+bg[2];})()`);
     if (borderDir) ok('catppuccinLatte → --border 比 bg 深(浅色方向)'); else bad('catppuccinLatte → --border 比 bg 深(浅色方向)');
 
-    // ④ 旧预设 css 覆盖优先 → 零回归
+    // ④ 旧预设统一走派生(删手写 css)→ --bg 取 term.bg,零回归
     await ev(c, applyTheme('dark')); await sleep(120);
-    await check(c, 'dark → --bg = #070c18(手写覆盖)', `${cssVar('--bg')}==='#070c18'`);
-    await check(c, 'light → --bg = #f5f6f8(手写覆盖)', `(function(){var s=document.getElementById('set-theme');s.value='light';s.dispatchEvent(new Event('change'));return document.documentElement.style.getPropertyValue('--bg').trim()==='#f5f6f8';})()`);
+    await check(c, 'dark → --bg = #070c18(派生)', `${cssVar('--bg')}==='#070c18'`);
+    await check(c, 'light → --bg = #ffffff(派生,原手写 #f5f6f8 已删)', `(function(){var s=document.getElementById('set-theme');s.value='light';s.dispatchEvent(new Event('change'));return document.documentElement.style.getPropertyValue('--bg').trim()==='#ffffff';})()`);
 
     // ⑤ auto 跟随系统(Emulation 模拟明暗切换)
     await ev(c, applyTheme('auto')); await sleep(120);
     await emulatedMedia(c, 'dark'); await sleep(200);
     await check(c, 'auto + 系统深色 → 深空(dark) --bg=#070c18', `${cssVar('--bg')}==='#070c18'`);
     await emulatedMedia(c, 'light'); await sleep(200);
-    await check(c, 'auto + 系统浅色 → 浅色 --bg=#f5f6f8', `${cssVar('--bg')}==='#f5f6f8'`);
+    await check(c, 'auto + 系统浅色 → 浅色 --bg=#ffffff(派生)', `${cssVar('--bg')}==='#ffffff'`);
     await emulatedMedia(c, 'dark'); await sleep(150); // 复原
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
