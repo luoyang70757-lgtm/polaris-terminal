@@ -52,5 +52,9 @@ mock/sftp-root/
 # ---- 堡垒机诊断导出(含资产数据,不入库)----
 Polaris-bastion-diag-*.json
 
+# ---- 调试日志导出(含会话内容,不入库)----
+long_text_*.txt
+polaris-logs-*.zip
+
 # ---- 虚拟机/资产清单导出(含内网 IP/人员信息,不入库)----
 /虚拟机_*.csv

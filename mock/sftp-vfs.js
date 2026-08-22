@@ -17,8 +17,9 @@ const path = require('path');
 const { utils } = require('ssh2');
 const { STATUS_CODE } = utils.sftp;
 
-// 假服务器的"磁盘根目录":SFTP 的 / 对应这个文件夹
-const SEED_DIR = path.join(__dirname, 'sftp-root');
+// 假服务器的"磁盘根目录":SFTP 的 / 对应这个文件夹。
+// 测试(verify-sftp-stress)可设 MOCK_SFTP_ROOT 指向临时目录,用后自清理,不污染演示磁盘。
+const SEED_DIR = process.env.MOCK_SFTP_ROOT || path.join(__dirname, 'sftp-root');
 
 // ---------- 磁盘 ↔ 内存树 ----------
 // 每个节点都带 _disk(它在磁盘上的绝对路径),写操作直接落盘。

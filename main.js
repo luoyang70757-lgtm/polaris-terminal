@@ -1806,7 +1806,14 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       try { sshDecoders.set(sessionId, iconv.getDecoder(enc)); } catch { /* 不支持的编码 */ }
     }
     closedBroadcast.delete(sessionId); // 重连:清掉上次断开的 closed 标记,新连接可再次广播
-    sshSessions.set(sessionId, { conn, stream, encoding: enc, sessionUser: String(finalOpts.username || '').split('@').pop() });
+    // hostId:跨重启续传的稳定主机身份(sessionId 每次启动从 sess-1 重计,不能单独做键)。
+    // JMS 堡垒机用复合用户名(用户@协议@账号@资产IP),天然区分同网关下不同资产。
+    const uname = String(finalOpts.username || '');
+    sshSessions.set(sessionId, {
+      conn, stream, encoding: enc,
+      sessionUser: uname.split('@').pop(),
+      hostId: `${uname ? uname + '@' : ''}${finalOpts.host || ''}:${finalOpts.port || 22}`,
+    });
     // 会话日志:设置里开着(默认开)就为这次连接建日志文件
     if (finalOpts.sessionLog !== false) {
       startSessionLog(sessionId, {
@@ -2018,22 +2025,29 @@ function joinRemote(dir, name) {
   return `${dir.replace(/\/$/, '')}/${name}`;
 }
 
-// ---- 断点续传(会话内,内存记录)----
-// 只续传"本次会话里我们自己中断过"的传输:失败时记真实已写字节(+本地 mtime),重试同一路径时
+// ---- 断点续传(磁盘持久化)----
+// 只续传"我们自己中断过"的传输:失败时记真实已写字节(+本地 mtime),重试同一路径时
 // 由 ssh-client 的 resolve*Offset 纯函数判定偏移。绝不按 size 猜同名既有文件(那会拼脏文件)。
-// ponytail: 内存表,app 重启后中断点重置(退化为全量重传),不产生错误数据;需要跨重启续传再做磁盘化。
-// 键带 sessionId 前缀:多主机并发传同名同路径文件时互不覆盖,续传表严格按连接隔离。
-const sftpPartials = new Map(); // 键 = `${sessionId}:${remotePath}` / `${sessionId}:${localPath}` → {bytes, mtimeMs} / {bytes}
-const ptKey = (sessionId, p) => `${sessionId}:${p}`;
+// 记录落在 lib/sftp-partials.js 管理的 sftp-partials.json(每次变更同步落盘),app 重启/
+// 崩溃后中断点仍在 —— 跨会话续传不再退化为全量重传。
+// 键用稳定主机身份 hostId:kind:path(hostId 由 ssh:connect 存进 sshSessions):
+//   sessionId 每次启动从 sess-1 重计,不能单独做键(否则会把 A 主机的断点续传到 B 主机);
+//   kind=u(上传远端路径)/d(下载本地路径)区分同一路径的两种记录。
+const sftpPartials = require('./lib/sftp-partials');
+const ptKey = (sessionId, kind, p) => {
+  const s = sshSessions.get(sessionId);
+  const hostId = (s && s.hostId) || sessionId; // 取不到 hostId 时回退 sessionId(至少会话内隔离)
+  return `${hostId}:${kind}:${p}`;
+};
 
 // 查上传续传偏移:返回 >0 表示应从该偏移续传;状态已失效则清记录并返回 0
 async function resolveUploadResume(sessionId, sftp, remotePath, localPath) {
-  const key = ptKey(sessionId, remotePath);
+  const key = ptKey(sessionId, 'u', remotePath);
   const p = sftpPartials.get(key);
   if (!p) return 0;
   const cur = await sshClient.statSize(sftp, remotePath); // 远端真实已写字节(以实际落盘为准)
   const off = sshClient.resolveUploadOffset(p, fs.statSync(localPath).mtimeMs, cur);
-  if (off === 0) sftpPartials.delete(key);
+  if (off === 0) sftpPartials.remove(key);
   return off;
 }
 
@@ -2041,24 +2055,24 @@ async function resolveUploadResume(sessionId, sftp, remotePath, localPath) {
 async function recordUploadPartial(sessionId, sftp, remotePath, localPath) {
   try {
     const cur = await sshClient.statSize(sftp, remotePath);
-    if (cur > 0) sftpPartials.set(ptKey(sessionId, remotePath), { bytes: cur, mtimeMs: fs.statSync(localPath).mtimeMs });
+    if (cur > 0) sftpPartials.set(ptKey(sessionId, 'u', remotePath), { bytes: cur, mtimeMs: fs.statSync(localPath).mtimeMs });
   } catch { /* 记不下来就放弃续传,不影响主流程 */ }
 }
 
 // 查下载续传偏移:本地残留必须恰好等于中断点(说明那份残留是我们传的)
 function resolveDownloadResume(sessionId, localPath) {
-  const key = ptKey(sessionId, localPath);
+  const key = ptKey(sessionId, 'd', localPath);
   const p = sftpPartials.get(key);
   if (!p) return 0;
   const localSize = fs.existsSync(localPath) ? fs.statSync(localPath).size : 0;
   const off = sshClient.resolveDownloadOffset(p, localSize);
-  if (off === 0) sftpPartials.delete(key);
+  if (off === 0) sftpPartials.remove(key);
   return off;
 }
 
 // 下载失败时记下本地中断点(真实落盘大小)
 function recordDownloadPartial(sessionId, localPath) {
-  try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
+  try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, 'd', localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
 }
 
 // 探测 SFTP 默认家目录:
@@ -2245,7 +2259,7 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
     }
     const remotePath = joinRemote(remoteDir, path.basename(localPath));
     const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
-    if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, remotePath)); // 这次从偏移续传,旧的记录作废
+    if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
     try {
       await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
       return { ok: true, remotePath, resumedFrom: resumeFrom };
@@ -2282,7 +2296,7 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
       return { ok: false, error: hint };
     }
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
-    if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, localPath)); // 这次从偏移续传,旧的记录作废
+    if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', localPath)); // 这次从偏移续传,旧的记录作废
     const prog = (p) => emitSftpProgress({ op: 'download', ...p });
     try {
       await sshClient.downloadFile(sftp, remotePath, localPath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
@@ -2340,7 +2354,7 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
     // 并发下载:一次多个文件同时传;done 各 worker 增量累加(单线程无竞争),filesDone 取已完成的文件数
     const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
       const resumeFrom = resolveDownloadResume(sessionId, p.lp);
-      if (resumeFrom > 0) sftpPartials.delete(ptKey(sessionId, p.lp));
+      if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', p.lp));
       let fDone = resumeFrom; // 续传时首块增量只算新写的部分,避免把续传字节重复计入累计
       try {
         fs.mkdirSync(path.dirname(p.lp), { recursive: true });
@@ -2707,6 +2721,7 @@ app.whenReady().then(() => {
   } catch (e) { console.warn('[MAIN] 响应头 charset 拦截失败(不影响使用):', e.message); }
   buildMenu();
   migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
+  sftpPartials.prune(); // 加载续传记录 + 裁剪过期中断点(7 天前的丢弃,防磁盘表无限增长)
   if (DEV_MODE) {
     try {
       require('./mock/mock-server').start();
@@ -2727,6 +2742,7 @@ app.on('before-quit', () => {
   finalizeAllRecordings(); // 退出前把没停的录制都收尾(否则文件成孤儿)
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
   persistDb();             // 再确保数据库落盘
+  sftpPartials.save();     // 续传记录兜底落盘(正常路径每次变更已同步写盘,这里无害防漏)
   // 退出前清除堡垒机浏览器的登录态/记录(cookie)——用户要求:关闭 app 后清除浏览器记录。
   // 异步执行,不阻塞退出;成功与否都放行。
   try {
