@@ -241,8 +241,6 @@ const els = {
   // 连接/中断二合一 + 锁定
   btnConnect: $('btn-connect'),
   btnLock: $('btn-lock'),
-  // 堡垒机浏览器入口
-  btnBastionBrowser: $('btn-bastion-browser'),
   // 端口探测
   btnPortProbe: $('btn-port-probe'),
   probeModal: $('probe-modal'),
@@ -297,7 +295,6 @@ const els = {
   bastionCurrent: $('bastion-current'),
   bastionEmpty: $('bastion-empty'),
   bastionClose: $('bastion-close'),
-  bastionLoad: $('bastion-load'),
   bastionLoading: $('bastion-loading'),
   bastionZoomIn: $('bastion-zoom-in'),
   bastionZoomOut: $('bastion-zoom-out'),
@@ -3577,7 +3574,10 @@ async function archiveAndView() {
 // 开关命令记录面板
 function toggleCmdPanel() {
   els.cmdPanel.classList.toggle('hidden');
-  if (!els.cmdPanel.classList.contains('hidden')) renderCmdPanel();
+  if (!els.cmdPanel.classList.contains('hidden')) {
+    els.batchPanel.classList.add('hidden'); // 命令记录与批量执行互斥:共用右侧面板位,开一个收另一个,防终端被挤没
+    renderCmdPanel();
+  }
   syncPanelButtons();
   refitAll(); // 面板打开/收起后终端区宽度变了,重新适配 xterm,避免输出越过竖直分割线
 }
@@ -3588,6 +3588,7 @@ function toggleCmdPanel() {
 function toggleBatchPanel() {
   els.batchPanel.classList.toggle('hidden');
   if (!els.batchPanel.classList.contains('hidden')) {
+    els.cmdPanel.classList.add('hidden'); // 与命令记录互斥:共用右侧面板位,开一个收另一个,防终端被挤没
     renderBatchHosts(); // 打开时刷新主机勾选列表
     els.batchCmd.focus();
   }
@@ -4481,6 +4482,15 @@ function applyBastionDefaultWidth() {
   const saved = Number(state.settings.bastionWidth) || 0;
   if (saved >= 300) els.bastionPanel.style.width = `${saved}px`;
   else els.bastionPanel.style.width = `${Math.max(420, Math.round(window.innerWidth * 0.5))}px`;
+}
+// 会话列表宽度 / SFTP 面板高度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
+function applySessionPanelWidth() {
+  const saved = Number(state.settings.sessionPanelWidth) || 0;
+  if (saved >= 160) els.sessionPanel.style.width = `${saved}px`;
+}
+function applySftpPanelHeight() {
+  const saved = Number(state.settings.sftpPanelHeight) || 0;
+  if (saved >= 120) els.sftpPanel.style.height = `${saved}px`;
 }
 function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
@@ -8254,7 +8264,6 @@ async function downloadSftpEntry(remotePath, isDir) {
       return;
     }
     setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
-    addLog(`⬇ 下载 ${remotePath} → ${res.localPath} ✅`);
     return;
   }
   // 目录:复用"多条目下载"流程(只传它一个)
@@ -8267,8 +8276,7 @@ async function downloadSftpEntry(remotePath, isDir) {
   }
   const r = res.results[0];
   setStatus(r.ok ? `已下载 → ${r.localPath}` : `下载失败: ${r.error}`, r.ok ? 'var(--green)' : 'var(--orange)');
-  if (r.ok) addLog(`⬇ 下载 ${remotePath} → ${r.localPath} ✅`);
-  else addLog(`⬇ 下载失败 ${remotePath}: ${r.error}`, true);
+  if (!r.ok) addLog(`⬇ 下载失败 ${remotePath}: ${r.error}`, true);
 }
 
 // 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
@@ -8340,12 +8348,9 @@ async function sftpUpload() {
     }
     return;
   }
-  const done = res.isDir ? `文件夹 ${res.remotePath}(${res.count} 个文件)` : res.remotePath;
   // 明确告诉用户传到了哪个目录(路径栏当前目录),并记住名字用于列表高亮定位
   setStatus(`上传成功 → ${res.remotePath}(当前目录 ${state.sftp.path})`, 'var(--green)');
   state.sftpUploadFlash.add(String(res.remotePath || '').replace(/\/+$/, '').split('/').pop() || res.remotePath); // 无 Node path 模块,手写 basename
-  if (res.resumedFrom > 0) addLog(`⬆ ${res.remotePath} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
-  addLog(`⬆ 上传 ${done} ✅`);
   if (res.failed && res.failed.length) {
     for (const f of res.failed) addLog(`⬆ 上传失败 ${f.rp}: ${f.error}`, true);
     alert(`有 ${res.failed.length} 个文件上传失败:\n${res.failed.map((f) => f.rp).join('\n')}`);
@@ -8381,8 +8386,6 @@ async function sftpDownload() {
       return;
     }
     setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
-    if (res.resumedFrom > 0) addLog(`⬇ ${remote} 已从 ${formatSize(res.resumedFrom)} 断点续传`);
-    addLog(`⬇ 下载 ${remote} → ${res.localPath} ✅`);
     // 单文件走保存对话框,没有 sftp:progress 事件 → 没记录行;补一条"已完成"记录,
     // 这样保存路径能一直看见,还能点 📂 打开所在文件夹
     let row = sftpTransfer.rows.get(remote);
@@ -8412,7 +8415,6 @@ async function sftpDownload() {
   const ok = res.results.filter((r) => r.ok).length;
   const fail = res.results.filter((r) => !r.ok);
   setStatus(`已下载 ${ok} 个文件 → ${res.dir}`, 'var(--green)');
-  if (ok) addLog(`⬇ 下载 ${ok} 个文件 → ${res.dir} ✅`);
   // 把每个文件的本地保存路径盖到对应传输记录行上(行上有 📂 打开所在文件夹)
   res.results.filter((r) => r.ok).forEach((r) => {
     const row = sftpTransfer.rows.get(r.remotePath);
@@ -8516,17 +8518,19 @@ function applyPanelCollapsed() {
   els.dividerV.classList.toggle('hidden', hidden);
 }
 
-// 左右分隔条:调会话列表宽度(范围 160~500px)
+// 左右分隔条:调会话列表宽度(范围 160~500px),宽度持久化
 makeResizer(els.dividerV, 'x',
   () => els.sessionPanel.offsetWidth,
   (w) => { els.sessionPanel.style.width = `${w}px`; },
-  160, 500);
+  160, 500, false,
+  () => { state.settings.sessionPanelWidth = els.sessionPanel.offsetWidth; saveSettings(); });
 
-// 上下分隔条:调 SFTP 面板高度(范围 120~450px)
+// 上下分隔条:调 SFTP 面板高度(范围 120~450px),高度持久化
 makeResizer(els.dividerH, 'y',
   () => els.sftpPanel.offsetHeight,
   (h) => { els.sftpPanel.style.height = `${h}px`; },
-  120, 450);
+  120, 450, false,
+  () => { state.settings.sftpPanelHeight = els.sftpPanel.offsetHeight; saveSettings(); });
 
 // 堡垒机 webview 的 guest view 会盖住相邻分隔条,并吞掉进入其矩形内的鼠标事件(宿主 CSS 无法干预):
 // 拖拽期间临时 visibility:hidden(不重载画面),松开恢复 —— 否则横分隔条收不到 mousedown、拖动进入 webview 区域时 mousemove 断流。
@@ -8536,6 +8540,8 @@ const wvShowAfterDrag = () => { els.bastionWebview.style.visibility = ''; };
 // 堡垒机面板分隔条:拖动左右调面板宽度(范围 300~1200px),宽度持久化
 // reverse=true:面板在分隔条右侧 → 往左拖 = 面板变宽(符合直觉)
 applyBastionDefaultWidth();
+applySessionPanelWidth(); // 会话列表宽度 / SFTP 面板高度持久化恢复
+applySftpPanelHeight();
 makeResizer(els.dividerBastion, 'x',
   () => els.bastionPanel.offsetWidth,
   (w) => { els.bastionPanel.style.width = `${w}px`; },
@@ -8790,8 +8796,6 @@ els.fTestConn.addEventListener('click', async () => {
     res.textContent = '⚠ 测试失败: ' + ((e && e.message) || e); res.className = 'tcr tcr-bad';
   }
 });
-// 堡垒机浏览器入口:点击打开右侧浏览器(带标签页)
-els.btnBastionBrowser.addEventListener('click', (e) => { e.stopPropagation(); openBastionPanel(); });
 // 端口探测
 els.btnPortProbe.addEventListener('click', (e) => { e.stopPropagation(); openProbeModal(); });
 els.probeClose.addEventListener('click', closeProbeModal);
@@ -8852,7 +8856,6 @@ els.bastionClear.addEventListener('click', async () => {
     setStatus('清除失败: ' + (e && e.message), 'var(--red)');
   }
 });
-els.bastionLoad.addEventListener('click', bastionLoadSelected);
 els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
