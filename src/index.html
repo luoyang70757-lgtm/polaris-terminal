@@ -17,28 +17,28 @@
   <div id="main-view" class="view">
     <div class="toolbar">
       <span class="app-logo">Polaris</span>
-      <button id="btn-toggle-panel" class="btn-mini" title="折叠/展开会话列表">☰</button>
+      <button id="btn-toggle-panel" class="btn-mini" title="折叠/展开会话列表 (⌘⇧P)">☰</button>
       <span id="toolbar-status" class="toolbar-item status"></span>
       <span class="spacer"></span>
-      <button id="btn-connect" class="btn-mini" title="连接选中会话">🔌 连接</button>
-      <button id="btn-broadcast" class="btn-mini" title="广播模式:把输入同步到所有已连接会话">📡 广播</button>
-      <button id="btn-view" class="btn-mini" title="视图:垂直/横向分屏">▦ 视图</button>
+      <button id="btn-connect" class="btn-mini" title="连接选中会话 (⌘Enter)">连接</button>
+      <button id="btn-broadcast" class="btn-mini" title="广播模式:把输入同步到所有已连接会话">广播</button>
+      <button id="btn-view" class="btn-mini" title="视图:垂直/横向分屏">视图</button>
       <span class="toolbar-sep"></span>
-      <button id="btn-sftp-toggle" class="btn-mini" title="SFTP 文件面板">📁 SFTP</button>
-      <button id="btn-tunnel" class="btn-mini" title="SSH 隧道/端口转发(跳板/内网数据库)">🔗 隧道</button>
+      <button id="btn-sftp-toggle" class="btn-mini" title="SFTP 文件面板 (⌘⇧S)">SFTP</button>
+      <button id="btn-tunnel" class="btn-mini" title="SSH 隧道/端口转发(跳板/内网数据库) (⌘⇧T)">隧道</button>
       <span class="toolbar-sep"></span>
-      <button id="btn-batch" class="btn-mini" title="批量执行:一条命令发到多台主机,结果统一看">⚡ 批量</button>
-      <button id="btn-quick" class="btn-mini" title="快速命令:常用命令收藏,一键发送">🚀 快捷</button>
-      <button id="btn-cmd" class="btn-mini" title="命令记录:查看/重发/导出每台主机执行过的命令">⌘ 命令记录</button>
-      <button id="btn-recommend" class="btn-mini" title="智能命令推荐:本主机历史高频命令 + 常用运维命令,点击即发送">✨ 推荐</button>
+      <button id="btn-batch" class="btn-mini" title="批量执行:一条命令发到多台主机,结果统一看 (⌘⇧B)">批量</button>
+      <button id="btn-quick" class="btn-mini" title="快速命令:常用命令收藏,一键发送">快捷</button>
+      <button id="btn-cmd" class="btn-mini" title="命令记录:查看/重发/导出每台主机执行过的命令 (⌘⇧M)">命令记录</button>
+      <button id="btn-recommend" class="btn-mini" title="智能命令推荐:本主机历史高频命令 + 常用运维命令,点击即发送">推荐</button>
       <span class="toolbar-sep"></span>
-      <button id="btn-rec" class="btn-mini" title="录制与回放">⏺ 录制</button>
-      <button id="btn-filter" class="btn-mini" title="输出过滤:创建/清除过滤条件(含关键词的行常亮、其余变暗)">🔍 过滤</button>
-      <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持)">🔒 锁定</button>
-      <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI)">⚙ 设置</button>
-      <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题">🧾 调试</button>
+      <button id="btn-rec" class="btn-mini" title="录制与回放">录制</button>
+      <button id="btn-filter" class="btn-mini" title="输出过滤:创建/清除过滤条件(含关键词的行常亮、其余变暗) (⌘⇧F)">过滤</button>
+      <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持) (⌘L)">锁定</button>
+      <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI) (⌘,)">设置</button>
+      <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题 (⌘⇧D)">调试</button>
       <span class="spacer"></span>
-      <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手">
+      <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手 (⌘⇧A)">
         <span class="ai-logo"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg></span>
         AI
       </button>
@@ -367,6 +367,15 @@
           </button>
         </div>
       </section>
+    </div>
+  </div>
+
+  <!-- ============ ⌘K 命令面板(输入即达:命令 / 会话) ============ -->
+  <div id="palette" class="palette hidden">
+    <div class="palette-box">
+      <input id="palette-input" class="palette-input" placeholder="输入命令或搜索会话… (⌘K)" spellcheck="false" autocomplete="off" />
+      <div id="palette-results" class="palette-results"></div>
+      <div class="palette-hint dim small">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
     </div>
   </div>
 

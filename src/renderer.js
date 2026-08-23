@@ -587,6 +587,9 @@ const els = {
   batchDelete: $('batch-delete'),
   batchClear: $('batch-clear'),
   btnSelectAllFiltered: $('btn-select-all-filtered'),
+  palette: $('palette'),
+  paletteInput: $('palette-input'),
+  paletteResults: $('palette-results'),
 };
 
 // ---------- 应用状态 ----------
@@ -2206,14 +2209,14 @@ function updateConnectBtn() {
   const st = t ? t.status : null;
   els.btnConnect.classList.toggle('active', !!t);
   if (st === 'connecting') {
-    els.btnConnect.textContent = '🔌 连接中…';
+    els.btnConnect.textContent = '连接中…';
     els.btnConnect.title = '正在连接…';
   } else if (st === 'connected') {
-    els.btnConnect.textContent = '🔌 断开';
-    els.btnConnect.title = '断开当前终端(标签保留,可重新连接)';
+    els.btnConnect.textContent = '断开';
+    els.btnConnect.title = '断开当前终端(标签保留,可重新连接) (⌘Enter)';
   } else {
-    els.btnConnect.textContent = '🔌 连接';
-    els.btnConnect.title = t && t.session ? '重新连接当前终端' : '连接选中会话';
+    els.btnConnect.textContent = '连接';
+    els.btnConnect.title = (t && t.session ? '重新连接当前终端' : '连接选中会话') + ' (⌘Enter)';
   }
 }
 
@@ -2452,6 +2455,34 @@ function termElInfo(el) {
   const cls = typeof el.className === 'string' ? el.className.trim() : '';
   return tag + id + (cls ? '.' + cls.split(/\s+/).join('.') : '');
 }
+
+// ---------- 全局快捷键:⌘K 命令面板 + 高频面板开关 ----------
+// 必须注册在下方 window keydown(2459)之前:该 handler 在 BODY 焦点会把按键转发给终端,
+// 新快捷键命中组合时要 stopImmediatePropagation 阻断它,否则 ⌘K 等会被当普通键转发。
+// mac 用 Cmd,其他平台用 Ctrl(与 xterm 的 isMac 判断一致)。
+const PLATFORM_IS_MAC = navigator.platform.toUpperCase().includes('MAC');
+window.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
+  const mod = PLATFORM_IS_MAC ? e.metaKey : e.ctrlKey;
+  if (!mod) return;
+  const k = e.key ? e.key.toLowerCase() : '';
+  if (k === 'k' && !e.shiftKey && !e.altKey) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (els.palette.classList.contains('hidden')) openPalette(); else closePalette(); // ⌘K 开/关命令面板
+    return;
+  }
+  if (!e.shiftKey || e.altKey) return; // 以下均为 Cmd/Ctrl+Shift+字母
+  const runShortcut = (fn) => { closePalette(); fn(); }; // 命令面板开着时按快捷键 = 关面板并执行
+  switch (k) {
+    case 's': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleSftpPanel); break;
+    case 'b': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleBatchPanel); break;
+    case 'm': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleCmdPanel); break;
+    case 'a': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleAiPanel); break;
+    case 't': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(openTunnelModal); break;
+    case 'd': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleDebugPanel); break;
+    case 'f': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(openFilterModal); break;
+  }
+}, true);
 
 // 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)。
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
@@ -6514,7 +6545,7 @@ function updateRecordBtn() {
   const on = !!(t && state.recording.has(t.sessionId));
   els.btnRec.classList.toggle('recording', on);
   els.btnRec.classList.toggle('active', on);
-  els.btnRec.textContent = on ? '⏺ 录制中' : '⏺ 录制';
+  els.btnRec.textContent = on ? '录制中' : '录制';
   els.btnRec.title = on ? '正在录制当前会话,点开后选「停止录制」' : '录制 / 回放(点开后选「开始录制」或「回放列表」)';
   // 下拉菜单第一项:跟随录制状态(未录=开始,录中=停止)
   const toggleItem = els.recMenu.querySelector('[data-rec-act="toggle"]');
@@ -7548,7 +7579,7 @@ function packToolbar() {
   const tb = document.querySelector('.toolbar');
   if (!tb) return;
   const items = tb.children.length;
-  const MAXG = 8, MING = 4; // 间距上限降到 8px:工具栏更紧凑
+  const MAXG = 4, MING = 2; // 间距上限 4px/下限 2px:工具栏按钮尽量靠近
   const prevWrap = tb.style.flexWrap, prevGap = tb.style.gap;
   const prevFlex = [];
   try {
@@ -7703,7 +7734,7 @@ function updateSplitButtons() {
   const onV = state.splitMode === 'v';
   const onH = state.splitMode === 'h';
   els.btnView.classList.toggle('active', !!state.splitMode);
-  els.btnView.textContent = onV ? '⫿ 垂直分屏' : onH ? '⬒ 横向分屏' : '▦ 视图';
+  els.btnView.textContent = onV ? '垂直分屏' : onH ? '横向分屏' : '视图';
   els.btnView.title = onV ? '垂直分屏中(再点可取消)' : onH ? '横向分屏中(再点可取消)' : '视图:垂直/横向分屏';
   const vItem = els.viewMenu.querySelector('[data-split="v"]');
   const hItem = els.viewMenu.querySelector('[data-split="h"]');
@@ -9985,6 +10016,109 @@ els.kbdFields.addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); kbdSubmit(false); }
 });
+
+// =====================================================================
+// ⌘K 命令面板:输入即达(动作 / 会话),VS Code / Linear 风格
+// =====================================================================
+const COMMANDS = [
+  { name: '新建会话', hint: '⌘N', run: () => openSessionModal(null) },
+  { name: '快捷连接', hint: '', run: () => toggleQuickConnect() },
+  { name: '新建分组', hint: '', run: () => newGroup() },
+  { name: '连接/断开选中会话', hint: '⌘Enter', run: () => toggleConnectDisconnect() },
+  { name: '广播模式', hint: '', run: () => toggleBroadcast() },
+  { name: '分屏-垂直', hint: '', run: () => splitActivePane('v') },
+  { name: '分屏-横向', hint: '', run: () => splitActivePane('h') },
+  { name: 'SFTP 面板', hint: '⌘⇧S', run: () => toggleSftpPanel() },
+  { name: 'SSH 隧道', hint: '⌘⇧T', run: () => openTunnelModal() },
+  { name: '批量执行', hint: '⌘⇧B', run: () => toggleBatchPanel() },
+  { name: '快速命令', hint: '', run: () => openQuickModal() },
+  { name: '命令记录', hint: '⌘⇧M', run: () => toggleCmdPanel() },
+  { name: '命令推荐', hint: '', run: () => toggleRecommendMenu() },
+  { name: '录制/回放', hint: '', run: () => toggleRecMenu() },
+  { name: '输出过滤', hint: '⌘⇧F', run: () => openFilterModal() },
+  { name: '锁定', hint: '⌘L', run: () => requestLock() },
+  { name: '设置', hint: '⌘,', run: () => openSettingsModal() },
+  { name: '调试面板', hint: '⌘⇧D', run: () => toggleDebugPanel() },
+  { name: 'AI 助手', hint: '⌘⇧A', run: () => toggleAiPanel() },
+  { name: '端口探测', hint: '', run: () => openProbeModal() },
+  { name: '导入主机', hint: '', run: () => openImportModal() },
+  { name: '导出会话', hint: '', run: () => exportSessions() },
+  { name: '堡垒机面板', hint: '', run: () => openBastionPanel() },
+  { name: 'JumpServer 资产', hint: '', run: () => openJmsModal() },
+  { name: '折叠会话列表', hint: '⌘⇧P', run: () => toggleSessionPanel() },
+  { name: '视图-网格', hint: '', run: () => setSessionView('grid') },
+  { name: '视图-列表', hint: '', run: () => setSessionView('list') },
+  { name: '视图-树形', hint: '', run: () => setSessionView('tree') },
+  { name: '清空命令记录', hint: '', run: () => clearCmdHistory() },
+  { name: '打开会话日志目录', hint: '', run: () => window.api.logOpenDir() },
+];
+let paletteItems = []; // [{ el, run }]
+function openPalette() {
+  els.paletteInput.value = '';
+  renderPalette('');
+  els.palette.classList.remove('hidden');
+  els.paletteInput.focus();
+}
+function closePalette() {
+  els.palette.classList.add('hidden');
+  // 焦点还给当前活跃终端
+  const t = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
+  if (t && t.term) { try { t.term.focus(); } catch { /* ignore */ } }
+}
+function renderPalette(q) {
+  const box = els.paletteResults;
+  box.innerHTML = '';
+  paletteItems = [];
+  const text = (q || '').trim().toLowerCase();
+  // 动作:名字/快捷键提示 子串匹配
+  const cmds = COMMANDS.filter((c) => !text || c.name.toLowerCase().includes(text) || (c.hint || '').toLowerCase().includes(text));
+  // 会话:空格分词,名字/主机/用户名/分组 全匹配(不耦合搜索框 scope)
+  const words = text.split(/\s+/).filter(Boolean);
+  const sessions = (state.sessions || []).filter((s) => {
+    const hay = `${s.name || ''} ${s.host || ''} ${s.username || ''} ${s.group_name || ''}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  }).slice(0, 20);
+  if (!cmds.length && !sessions.length) {
+    box.innerHTML = '<div class="palette-empty">没有匹配的命令或会话</div>';
+    return;
+  }
+  const add = (el, run) => { el.addEventListener('click', () => run()); paletteItems.push({ el, run }); box.appendChild(el); };
+  for (const c of cmds) {
+    const el = document.createElement('div');
+    el.className = 'palette-item';
+    el.innerHTML = `<span class="pi-name">${escHtml(c.name)}</span>${c.hint ? `<span class="pi-hint">${c.hint}</span>` : ''}`;
+    add(el, c.run);
+  }
+  for (const s of sessions) {
+    const open = !!findTabBySessionId(s.id);
+    const el = document.createElement('div');
+    el.className = 'palette-item';
+    el.innerHTML = `<span class="pi-name">${escHtml(s.name)} · ${escHtml(s.host)}${s.username ? ' · ' + escHtml(s.username) : ''}${s.group_name ? ' · ' + escHtml(s.group_name) : ''}</span>${open ? '<span class="pi-connected">已连接</span>' : ''}`;
+    add(el, () => { if (open) activateTab(findTabBySessionId(s.id)); else connectToServer(s); });
+  }
+  if (paletteItems.length) paletteItems[0].el.classList.add('selected');
+}
+function paletteMove(dir) {
+  if (!paletteItems.length) return;
+  const idx = paletteItems.findIndex((p) => p.el.classList.contains('selected'));
+  const next = (idx + dir + paletteItems.length) % paletteItems.length;
+  if (idx >= 0) paletteItems[idx].el.classList.remove('selected');
+  paletteItems[next].el.classList.add('selected');
+  paletteItems[next].el.scrollIntoView({ block: 'nearest' });
+}
+function paletteRun() {
+  const sel = paletteItems.find((p) => p.el.classList.contains('selected'));
+  if (sel) { closePalette(); sel.run(); }
+}
+els.paletteInput.addEventListener('input', () => renderPalette(els.paletteInput.value));
+els.paletteInput.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); paletteMove(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); paletteMove(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); paletteRun(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+});
+els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
 
 // =====================================================================
 // 启动:加载设置 + 会话列表
