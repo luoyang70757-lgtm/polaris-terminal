@@ -68,11 +68,11 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
 
     // ⑤ auto 跟随系统(Emulation 模拟明暗切换)
     await ev(c, applyTheme('auto')); await sleep(120);
-    await emulatedMedia(c, 'dark'); await sleep(200);
+    await emulatedMedia(c, 'dark'); await sleep(500);
     await check(c, 'auto + 系统深色 → 深空(dark) --bg=#070c18', `${cssVar('--bg')}==='#070c18'`);
-    await emulatedMedia(c, 'light'); await sleep(200);
+    await emulatedMedia(c, 'light'); await sleep(500);
     await check(c, 'auto + 系统浅色 → 浅色 --bg=#ffffff(派生)', `${cssVar('--bg')}==='#ffffff'`);
-    await emulatedMedia(c, 'dark'); await sleep(150); // 复原
+    await emulatedMedia(c, 'dark'); await sleep(300); // 复原
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) { console.error('\n测试异常:', e && e.message); failed++; console.log(`\n结果: ${passed} 通过, ${failed} 失败`); }

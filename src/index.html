@@ -622,7 +622,117 @@
         <span class="pwd-note">修改后数据库用新密码重新加密,忘记密码数据不可恢复</span>
       </div>
       <div class="modal-actions">
+        <button id="btn-help" class="btn-mini" title="使用说明 / 快捷键手册">📖 使用说明</button>
+        <span class="spacer"></span>
         <button id="set-close" class="btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 使用说明 / 快捷键手册 ============ -->
+  <div id="help-modal" class="modal hidden">
+    <div class="modal-card help-card">
+      <h3>📖 使用说明<button id="help-close-x" class="modal-x" title="关闭">✕</button></h3>
+      <div class="help-body">
+
+        <section>
+          <h4>🚀 快速开始</h4>
+          <ol>
+            <li>点会话列表右上角 <b>➕</b>（或 <b>⌘N</b>）新建会话，填主机地址 / 用户名 / 密码</li>
+            <li>双击会话（或选中后点工具栏「连接」/<b>⌘Enter</b>）建立 SSH 连接</li>
+            <li>直接敲命令；需要传文件时按 <b>⌘⇧S</b> 打开下方 SFTP 面板</li>
+            <li>按 <b>⌘K</b> 打开命令面板——输入任何功能名或会话名即可直达</li>
+          </ol>
+        </section>
+
+        <section>
+          <h4>⌨️ 键盘快捷键</h4>
+          <table class="help-kbd">
+            <tr><td>⌘K</td><td>命令面板（输入即达：功能/会话）</td></tr>
+            <tr><td>⌘N / ⌘Enter</td><td>新建会话 / 连接·断开选中会话</td></tr>
+            <tr><td>⌘, / ⌘L / ⌘⇧P</td><td>设置 / 锁定 / 折叠会话列表</td></tr>
+            <tr><td>⌘⇧S / ⌘⇧B / ⌘⇧M</td><td>SFTP 面板 / 批量执行 / 命令记录</td></tr>
+            <tr><td>⌘⇧A / ⌘⇧T / ⌘⇧D / ⌘⇧F</td><td>AI 面板 / 隧道 / 调试面板 / 输出过滤</td></tr>
+            <tr><td>⌘F</td><td>终端内搜索（空格分隔多词）</td></tr>
+            <tr><td>⌘⇧C / ⌘⇧V</td><td>终端复制 / 粘贴（选中即复制）</td></tr>
+            <tr><td>⌘Enter · ⌘⌥方向键 · ⌘1-9</td><td>分屏放大 / 切换面板 / 直达第 N 面板</td></tr>
+          </table>
+          <p class="dim small">Windows/Linux 下用 Ctrl 代替 ⌘。</p>
+        </section>
+
+        <section>
+          <h4>🗂 会话管理</h4>
+          <ul>
+            <li>三种视图：网格 / 列表 / 树形（左上切换）；支持分组、按名称/IP 搜索（空格多词）</li>
+            <li>批量连接：搜索框右侧「全选」→ 底部批量条「连接」</li>
+            <li>导入/导出：设置区可导入 <b>Xshell(.xsh)/iTerm2(JSON)</b> 会话，导出为 <b>加密备份</b>（另设导出密码）</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>🖥 终端操作</h4>
+          <ul>
+            <li>标签页多会话、分屏（垂直/横向，工具栏「视图」）</li>
+            <li>广播模式（📡）：输入同步到所有已连接会话</li>
+            <li>输出过滤（⌘⇧F）：含关键词的行常亮、其余变暗，可多条件</li>
+            <li>GBK 设备自动转码；自定义关键字高亮</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>📁 SFTP 文件面板（⌘⇧S）</h4>
+          <ul>
+            <li>浏览 / 上传 / 下载（<b>断点续传</b>：中断后重试同路径从断点续，app 重启也不丢）</li>
+            <li>远程编辑 / 重命名 / 删除 / 多选；路径面包屑导航</li>
+            <li>打开面板默认进入该主机家目录（堡垒机自动回退 /tmp）</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>🔗 SSH 隧道（⌘⇧T）</h4>
+          <ul>
+            <li>本地/远程端口转发，经跳板机访问内网数据库等</li>
+            <li>隧道随会话断开自动清理，退出 app 全部收尾</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>⚡ 批量执行（⌘⇧B）</h4>
+          <ul>
+            <li>勾选多台已连接主机，一条命令并发下发，结果统一查看</li>
+            <li>与「命令记录」面板互斥（共用右侧面板位）</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>🛡 堡垒机</h4>
+          <ul>
+            <li><b>JumpServer</b>：API 对接，复合用户名经 KoKo 网关直连资产；支持收藏分组</li>
+            <li><b>H3C</b>：内置浏览器登录（accessclient:// 自动解码），资产可双击直连 SSH</li>
+            <li>入口：会话列表「🛡 堡垒机」分组右键菜单</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>🎨 主题与字体</h4>
+          <ul>
+            <li>25 套主题（⌘, 设置里切换），每套自带 ANSI 16 色板，换主题 ls/错误色同步协调</li>
+            <li>终端字体支持 Nerd Font 等 14 种预设 + 自定义 font-family；界面/终端字号独立</li>
+          </ul>
+        </section>
+
+        <section>
+          <h4>🔒 安全与数据</h4>
+          <ul>
+            <li>会话库整库 AES-256-GCM 加密，密码用系统 safeStorage 加密存储</li>
+            <li>主机指纹校验（防中间人）；危险命令（rm -rf 等）在生产标记主机上执行前弹确认</li>
+            <li>数据目录默认 <code>~/.jms-terminal</code>；录制/会话日志/断点续传表都在其中</li>
+          </ul>
+        </section>
+
+      </div>
+      <div class="modal-actions">
+        <button id="help-close" class="btn-primary">知道了</button>
       </div>
     </div>
   </div>

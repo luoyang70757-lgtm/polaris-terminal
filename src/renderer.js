@@ -590,6 +590,10 @@ const els = {
   palette: $('palette'),
   paletteInput: $('palette-input'),
   paletteResults: $('palette-results'),
+  btnHelp: $('btn-help'),
+  helpModal: $('help-modal'),
+  helpCloseX: $('help-close-x'),
+  helpClose: $('help-close'),
 };
 
 // ---------- 应用状态 ----------
@@ -10021,6 +10025,7 @@ els.kbdFields.addEventListener('keydown', (e) => {
 // ⌘K 命令面板:输入即达(动作 / 会话),VS Code / Linear 风格
 // =====================================================================
 const COMMANDS = [
+  { name: '使用说明', hint: '📖', run: () => openHelp() },
   { name: '新建会话', hint: '⌘N', run: () => openSessionModal(null) },
   { name: '快捷连接', hint: '', run: () => toggleQuickConnect() },
   { name: '新建分组', hint: '', run: () => newGroup() },
@@ -10119,6 +10124,18 @@ els.paletteInput.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
 });
 els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
+
+// ---------- 使用说明弹窗 ----------
+function openHelp() {
+  els.helpModal.classList.remove('hidden');
+  closeSettingsModal(); // 从设置弹窗进来时,顺手关掉设置,避免叠弹窗
+}
+function closeHelp() { els.helpModal.classList.add('hidden'); }
+els.btnHelp.addEventListener('click', openHelp);
+els.helpCloseX.addEventListener('click', closeHelp);
+els.helpClose.addEventListener('click', closeHelp);
+els.helpModal.addEventListener('mousedown', (e) => { if (e.target === els.helpModal) closeHelp(); });
+els.helpModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelp(); });
 
 // =====================================================================
 // 启动:加载设置 + 会话列表
