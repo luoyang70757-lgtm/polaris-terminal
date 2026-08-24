@@ -266,6 +266,8 @@ select.select:focus { border-color: var(--accent); }
 
 /* AI 按钮:X 徽标 + 文字 水平对齐 */
 .ai-btn { display: inline-flex; align-items: center; gap: 5px; }
+/* AI 按钮始终固定在工具栏最右侧(其余按钮靠左紧凑) */
+#btn-ai { margin-left: auto; }
 
 .asset-header-btns { display: flex; gap: 4px; }
 
