@@ -1,11 +1,11 @@
 name: Build & Release
 
-# 在 GitHub runner 上原生编译 Windows 便携版 + macOS 版(兼容 Win10/11 / macOS)。
+# 在 GitHub runner 上原生编译 Windows 便携版(兼容 Win10/11)。macOS/Linux 不发布(用户决定)。
 # 触发:
 #   - push 到 main → 只传 Actions Artifact(不发布)
-#   - 打标签 v* → 编译两平台并发布到 Releases(自动发布)
-#   - 手动触发(workflow_dispatch,可填 version)→ 编译两平台并发布到 Releases(草稿)
-# 产物:release/Polaris <version>.exe(Windows portable)、release/Polaris-<version>-mac.zip(macOS .app 压缩包)
+#   - 打标签 v* → 编译 Windows 并发布到 Releases(自动发布)
+#   - 手动触发(workflow_dispatch,可填 version)→ 编译 Windows 并发布到 Releases(草稿)
+# 产物:release/Polaris <version>.exe(Windows portable)
 on:
   push:
     branches: [ main ]
@@ -37,38 +37,9 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Build macOS app (x64 仅 Intel;arm64 不编译)
-        run: npm run dist -- --mac --x64
-      - name: Read version
-        id: ver
-        shell: bash
-        run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-      - name: Zip .app (.app 是目录,GitHub Release 需要单文件;仅 x64)
-        shell: bash
-        run: |
-          [ -d release/mac/Polaris.app ] || { echo "release/mac/Polaris.app 不存在"; exit 1; }
-          ditto -c -k --sequesterRsrc --keepParent release/mac/Polaris.app "release/Polaris-${{ steps.ver.outputs.v }}-mac-x64.zip"
-          ls -la release/Polaris-*-mac-*.zip
-      - name: Upload macOS zip (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mac-app
-          path: release/Polaris-*-mac-*.zip
-          if-no-files-found: error
-
-  # 两平台都编译完 → 汇总发布(避免两个 job 并发建 Release 冲突)
+  # Windows 编译完 → 汇总发布(避免并发建 Release 冲突)
   release:
-    needs: [ build-windows, build-macos ]
+    needs: [ build-windows ]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -96,7 +67,6 @@ jobs:
         with:
           files: |
             artifacts/**/*.exe
-            artifacts/**/*.zip
           tag_name: ${{ steps.rel.outputs.tag }}
           name: Polaris ${{ steps.rel.outputs.name }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
