@@ -5021,7 +5021,7 @@ function injectBastionAssetHook(requireStable) {
         // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
         const broad = /accessView|device|tree|asset|host|group|fav/i.test(url);
         if (!matched && !broad) return;
-        const rec = { ts: Date.now(), url: String(url).slice(0, 250), len: text.length, matched };
+        const rec = { ts: Date.now(), url: String(url).slice(0, 250), reqBody: String(body || '').slice(0, 2000), len: text.length, matched };
         let j = null;
         try { j = JSON.parse(text); } catch (e) {}
         if (j && typeof j === 'object') {
@@ -5032,7 +5032,8 @@ function injectBastionAssetHook(requireStable) {
           rec.devs = Array.isArray(j.content) ? j.content.length
             : (j.children ? (function countIp(ns){ var c2 = 0; (ns || []).forEach(function(n){ if (n.ip) c2++; if (n.children) c2 += countIp(n.children); }); return c2; })(j.children) : -1);
         }
-        rec.preview = String(text).slice(0, 300);
+        // 响应预览扩到 8000 字符:足够看清收藏分组树/接口结构(旧 300 字只够猜)
+        rec.preview = String(text).slice(0, 8000);
         const diag = window.__bastionDiag || [];
         diag.push(rec);
         if (diag.length > 200) diag.shift();
@@ -5040,8 +5041,9 @@ function injectBastionAssetHook(requireStable) {
         if (!matched || !j) return; // 没匹配到已知资产 API:只记录(供判断真实接口名),不并入资产
         // 目录树:getAccessViewTree → 存树结构(分组展示 + 逐目录请求用)
         if (/getAccessViewTree/.test(url) && j.children) { window.__bastionTree = j.children; return; }
-        // 收藏夹树:userFav/getTree → {name, children:[{name,...}]}
-        if (/userFav\\/getTree/.test(url) && (j.children || j.name)) { window.__bastionFavTree = j; return; }
+        // 收藏夹树:兼容各 H3C 版本接口名(userFav/getTree 及其变体 getFavTree/favGroup/getTree 等)。
+        // URL 同时含 fav + tree/group 关键词且响应是树结构即捕获(getFavoriteDevices 设备列表不含 tree,不误捕)。
+        if (((/userFav\/getTree/.test(url)) || (/fav/i.test(url) && /(tree|group)/i.test(url))) && j && (j.children || j.name)) { window.__bastionFavTree = j; return; }
         // 分页拉全量:H3C 前端默认只请求 page=0(size=20),totalPages>1 时按原请求体主动翻页补齐
         // (真实堡垒机 totalElements=870 / 44 页,只捕获第 0 页 20 台 = "资产不完整"根因)
         // 仅 getAccessViewDevs 触发;收藏接口一次 100 条,不翻页
@@ -5276,7 +5278,7 @@ function injectBastionAssetHook(requireStable) {
             groups.push({ id: gid, name: prefix + (prefix ? '/' : '') + nm });
             walk(n.children || n.nodes || n.items, prefix + (prefix ? '/' : '') + nm);
           });
-        })((favTree && (favTree.children || favTree.nodes)) || []);
+        })((favTree && (favTree.children || favTree.nodes || favTree.data || favTree.list || favTree.rows)) || []);
         if (!groups.length) return Promise.resolve(false);
         // 清除历史残留的 favGroup(早期版本映射出过 "undefinedxxx"),再按组重新映射,保证数据干净
         (window.__bastionAssets || []).forEach(function(x){ delete x.favGroup; });
@@ -5649,25 +5651,27 @@ function bastionLog(evt) {
   if (window.__bastionConnLog.length > 50) window.__bastionConnLog.shift();
 }
 
-// 导出堡垒机资产诊断包:把捕获到的所有资产请求记录 + 当前资产列表打包成 JSON 文件,拷贝给开发者排查"资产不完整"
+// 导出堡垒机资产诊断包:把捕获到的所有资产请求记录 + 收藏树 + 资产列表打包成 JSON,拷贝给开发者排查
 function exportBastionDiag() {
   const wv = els.bastionWebview;
-  // diag 记录存在 webview(隔离的 guest 页面)的 window 里,必须从 webview 读,不是主窗口
-  const readDiag = (wv && wv.executeJavaScript)
-    ? wv.executeJavaScript(`window.__bastionDiag || []`).catch(() => [])
-    : Promise.resolve([]);
-  readDiag.then((diag) => {
+  // diag/favTree/assets 都存在 webview(隔离的 guest 页面)的 window 里,从 webview 读,不是主窗口
+  const readGuest = (wv && wv.executeJavaScript)
+    ? wv.executeJavaScript(`JSON.stringify({ diag: window.__bastionDiag || [], favTree: window.__bastionFavTree || null, assets: window.__bastionAssets || [] })`)
+        .then((s) => { try { return JSON.parse(s); } catch { return { diag: [], favTree: null, assets: [] }; } })
+        .catch(() => ({ diag: [], favTree: null, assets: [] }))
+    : Promise.resolve({ diag: [], favTree: null, assets: [] });
+  readGuest.then((guest) => {
     const data = {
       app: 'Polaris',
       time: new Date().toISOString(),
       ua: navigator.userAgent,
       webviewUrl: els.bastionCurrent ? els.bastionCurrent.textContent : '',
       assetCount: (state.bastionAssets || []).length,
-      assets: state.bastionAssets,
+      assets: guest.assets && guest.assets.length ? guest.assets : state.bastionAssets,
       tree: state.bastionTree || [],
-      favTree: state.bastionFavTree || null,
+      favTree: guest.favTree || state.bastionFavTree || null,
       favCount: state.bastionFavSet ? state.bastionFavSet.size : 0,
-      diag: diag || [],
+      diag: guest.diag || [],
       connLog: window.__bastionConnLog || [],
     };
     window.api.exportBastionDiag(data).then((r) => {
