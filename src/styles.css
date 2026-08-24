@@ -820,6 +820,11 @@ input[type="checkbox"] {
   padding: 0 6px;
   margin-left: auto;
 }
+/* 有活动连接的堡垒机连接:徽标高亮(提示可右键断开) */
+.bastion-saved-badge.has-live {
+  color: var(--accent);
+  background: rgba(45, 212, 254, 0.12);
+}
 .bastion-saved-assets {
   margin-left: 22px;
   padding-left: 8px;
@@ -839,7 +844,7 @@ input[type="checkbox"] {
 }
 .bastion-bar {
   display: flex; gap: 5px; align-items: center; padding: 6px 8px;
-  flex-wrap: nowrap; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap; border-bottom: 1px solid var(--border);
 }
 .bastion-title { font-size: 12px; white-space: nowrap; }
 .bastion-server-select { max-width: 120px; font-size: 12px; padding: 4px 6px; background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }

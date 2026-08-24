@@ -328,7 +328,6 @@ const els = {
   bastionCfgMsg: $('bastion-cfg-msg'),
   bastionUrl: $('bastion-url'),
   bastionGo: $('bastion-go'),
-  bastionPull: $('bastion-pull'),
   bastionMin: $('bastion-min'),
   bastionBack: $('bastion-back'),
   bastionForward: $('bastion-forward'),
@@ -663,7 +662,8 @@ const state = {
   bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
   bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
   bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
-  bastionAutoFetchFails: 0, // 自动拉全量失败次数(上限 3,防止持续请求锁定账号;成功/手动拉重置)
+  bastionAutoFetchFails: 0, // 自动拉全量失败次数(上限 3,防止持续请求锁定账号;成功/手动拉/URL变化/页面重载重置)
+  bastionLastUrl: '',       // 上次轮询看到的 webview URL(变化=登录跳转/切换页面 → 重置失败计数)
   bastionFavFetchAt: 0,     // 上次兜底拉收藏夹树(userFav/getTree)的时间戳(节流)
   bastionCollapsed: true, // H3C 堡垒机区默认折叠(打开堡垒机后左侧分组收起,需展开才看资产)
   collapsedBastionSaved: true, // 左侧"堡垒机连接"分组是否折叠(默认收起,登录后不自动展开)
@@ -4068,7 +4068,10 @@ async function jmsDoLogin() {
     els.jmsOtpWrap.style.display = 'none';
     els.jmsLoginBtn.disabled = false;
     els.jmsLoginBtn.textContent = '连接 JumpServer';
-    // 登录成功 → 该服务器区块默认折叠(左侧分组收起,展开才看资产)
+    // 登录成功 → 展开「🛡 堡垒机」顶级分组,让服务器区块头(含资产数)立刻可见
+    // (区块内部仍默认折叠,避免资产列表弹出;但用户不会再误以为"列表没了")
+    state.collapsedTopBastion = false;
+    // 该服务器区块默认折叠(左侧分组收起,展开才看资产)
     state.collapsedJms.add(server.id);
     jmsPersistConfig();
     jmsRenderServerSelect();
@@ -4107,6 +4110,7 @@ async function jmsDoMfa() {
     els.jmsOtp.value = '';
     els.jmsLoginBtn.disabled = false;
     els.jmsLoginBtn.textContent = '连接 JumpServer';
+    state.collapsedTopBastion = false; // 登录成功 → 展开顶级分组,资产区块头可见
     jmsPersistConfig();
     jmsRenderServerSelect();
     await jmsLoadAssets();
@@ -4566,7 +4570,9 @@ async function jmsRestore() {
       const r = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
       if (r.ok && r.token) {
         s.token = r.token; s.user = r.user;
-        // 恢复登录成功 → 该服务器区块默认折叠(左侧分组收起,展开才看资产)
+        // 恢复登录成功 → 展开「🛡 堡垒机」顶级分组(区块头含资产数可见),区块内部仍默认折叠
+        state.collapsedTopBastion = false;
+        // 该服务器区块默认折叠(左侧分组收起,展开才看资产)
         state.collapsedJms.add(s.id);
         const ar = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
         if (ar.ok) s.assets = ar.assets || [];
@@ -4581,10 +4587,19 @@ async function jmsRestore() {
 // 堡垒机客户端:右侧停靠面板 + 内置浏览器登录,拦截 accessclient://,解码后用 Polaris 连 SSH
 // =====================================================================
 // 面板默认宽度:未手动拖过(无持久化宽度)时默认占屏一半,保证堡垒机完整页面不被右侧遮挡
+// 最大宽度随窗口动态算:面板在最右,不能超过窗口(否则最小化/关闭按钮被挤出屏幕外)。
+// 会话面板可缩到 min-width(200),所以上限只扣它的最小宽、不扣当前宽 ——
+// 否则无终端时会话面板撑满空间,上限被压到很小,面板拖不宽(回归)。
+function bastionMaxWidth() {
+  const hidden = els.sessionPanel.classList.contains('hidden');
+  const sessionMin = hidden ? 0 : (parseInt(getComputedStyle(els.sessionPanel).minWidth, 10) || 200);
+  return Math.max(300, Math.min(1200, window.innerWidth - sessionMin - 26));
+}
 function applyBastionDefaultWidth() {
   const saved = Number(state.settings.bastionWidth) || 0;
-  if (saved >= 300) els.bastionPanel.style.width = `${saved}px`;
-  else els.bastionPanel.style.width = `${Math.max(420, Math.round(window.innerWidth * 0.5))}px`;
+  const maxW = bastionMaxWidth();
+  if (saved >= 300) els.bastionPanel.style.width = `${Math.min(saved, maxW)}px`;
+  else els.bastionPanel.style.width = `${Math.min(Math.max(420, Math.round(window.innerWidth * 0.5)), maxW)}px`;
 }
 // 会话列表宽度 / SFTP 面板高度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
 function applySessionPanelWidth() {
@@ -5426,7 +5441,9 @@ function pollBastionAssets(force) {
   const pathPart = (() => { try { return new URL(curUrl).pathname; } catch { return ''; } })();
   const isH3c = curUrl && (curUrl.indexOf('/shterm') !== -1 || pathPart === '' || pathPart === '/');
   if (!isH3c) {
-    state.bastionAllFetched = true; // 复位"未拉取"标记,避免切回 H3C 前反复自动重试
+    // 非 H3C 站点不捕获也不拉取(钩子无效)。注意:不能把 state.bastionAllFetched 置 true ——
+    // 那是"H3C 资产已拉成功"的全局标志,置 true 会门控掉切回 H3C 后的轮询,H3C 资产再也不捕获。
+    // 这里直接返回即可:auto-fetch 分支在 isH3c 判断之后,不会对非 H3C 站点发请求。
     return;
   }
   if (bastionWebviewLoading()) return; // 加载中:跳过本轮,避免 executeJavaScript 失败刷屏
@@ -5494,10 +5511,20 @@ function pollBastionAssets(force) {
         state.bastionTree = [];
         state.bastionFavTree = null;
       }
+      // URL 变化(SPA 登录跳转 / 切换页面 / 重新加载)→ 重置自动拉取失败计数:
+      // 登录页上烧光的 3 次额度,登录跳转后恢复,自动拉取重新接管,左侧资产能自动回来。
+      if (curUrl2 && curUrl2 !== state.bastionLastUrl) {
+        state.bastionLastUrl = curUrl2;
+        if (state.bastionAutoFetchFails) state.bastionAutoFetchFails = 0;
+      }
+      // 被动捕获到资产 = 页面已登录、数据在流动 → 重置自动拉取失败计数(登录确认,额度恢复)
+      if (r.assets && r.assets.length && state.bastionAutoFetchFails) state.bastionAutoFetchFails = 0;
       const json = stableJson(list);
       if (list.length && json !== stableJson(state.bastionAssets)) {
-        // 首次拿到资产(之前为空)→ H3C 区块与目录分组默认折叠(左侧分组收起,展开才看)
+        // 首次拿到资产(之前为空)→ 展开「🛡 堡垒机」顶级分组让区块头可见;
+        // H3C 区块与目录分组仍默认折叠(左侧分组收起,展开才看资产)
         if (!state.bastionAssets.length) {
+          state.collapsedTopBastion = false;
           state.bastionCollapsed = true;
           state.bastionDirCollapsed.add('__fav__');
         }
@@ -5554,13 +5581,14 @@ function pollBastionAssets(force) {
         }
       }
       if (changed) renderSessionList(els.inputSessionSearch.value);
-      // 平衡策略:资产未拉过时**有限次**自动拉全量(成功即停;失败 ≥3 次停止,不再持续请求避免锁定账号)。
-      // 用户手动点「🔄 拉取资产」随时可全量拉;被动捕获(页面自身请求)始终生效。
+      // 平衡策略:资产未拉过时**有限次**自动拉全量(成功即停;真实失败 ≥3 次停止,不再持续请求避免锁定账号)。
+      // 失败计数只在 triggerBastionFullFetch 的"真实拉取失败"分支 +1(未登录/接口异常);
+      // URL 变化 / 页面重载 / 成功 / 手动拉 / 被动捕获到资产都会重置 —— 登录跳转后额度自动恢复,
+      // 不会再出现"登录页烧光 3 次额度 → 登录后左侧资产永远不出现"的回归。
       if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled && state.bastionAutoFetchFails < 3) {
         const now = Date.now();
         if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 20000) { // 20s 节流(比旧 10s 更保守)
           state.bastionLastAutoFetch = now;
-          state.bastionAutoFetchFails++;
           triggerBastionFullFetch();
         }
       }
@@ -5606,6 +5634,9 @@ function triggerBastionFullFetch() {
             setStatus('拉取完成', 'var(--green)');
           }
         } else if (!state.bastionAllFetched) {
+          // 真实拉取失败(未登录/接口异常)才计数 —— 上限 3 次停止自动重试(防锁账号);
+          // URL 变化/页面重载/成功/手动拉会重置,登录后额度恢复,左侧资产能自动回来。
+          state.bastionAutoFetchFails++;
           // 未成功:只在"从未成功过"时提示一次;后续重复失败静默(数据没变就不打扰用户)
           if (!bastionFetchFailNotified) {
             bastionFetchFailNotified = true;
@@ -5756,7 +5787,7 @@ function renderBastionSavedSessions(container, f) {
   for (const s of list) {
     const item = document.createElement('div');
     item.className = 'asset-item jms-asset-item bastion-saved-item';
-    item.title = `${s.name || s.url}\n${s.url}${s.account ? ' · ' + s.account : ''}\n点击加载/收起资产;右键可编辑/刷新/删除`;
+    item.title = `${s.name || s.url}\n${s.url}${s.account ? ' · ' + s.account : ''}\n点击加载/收起资产;右键可编辑/拉取资产/断开/删除`;
     const icon = document.createElement('span');
     icon.className = 'icon';
     icon.textContent = '🛡';
@@ -5766,9 +5797,12 @@ function renderBastionSavedSessions(container, f) {
     const addr = document.createElement('span');
     addr.className = 'addr jms-a-addr';
     addr.textContent = s.url.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // 徽标:资产数 + 活动连接数(🔗 n,有连接时提示可右键断开);dataset 供连接状态变化时局部刷新
+    const liveN = bastionSavedConnCount(s);
     const badge = document.createElement('span');
-    badge.className = 'bastion-saved-badge';
-    badge.textContent = s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : '');
+    badge.className = 'bastion-saved-badge' + (liveN ? ' has-live' : '');
+    badge.dataset.conn = s.id;
+    badge.textContent = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : '')) + (liveN ? ` 🔗${liveN}` : '');
     item.appendChild(icon);
     item.appendChild(name);
     item.appendChild(addr);
@@ -5786,15 +5820,19 @@ function renderBastionSavedSessions(container, f) {
     });
     // 双击:打开右侧浏览器加载该堡垒机
     item.addEventListener('dblclick', () => { openBastionPanel(); bastionSelectServer('B:' + s.id); });
-    // 右键:编辑 / 刷新资产(JMS 站点才有,可 REST 拉取)/ 删除
+    // 右键:编辑 / 拉取资产 / 删除。资产来源按站点类型分流:
+    //   JMS 站点 → REST 拉取(bastionLoadSavedAssets);H3C 站点 → webview 捕获(手动全量拉)。
     item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const menu = [
         { label: '✏️ 编辑连接', action: () => bastionCfgEdit(s.id) },
       ];
-      if (!isH3CSavedConn(s)) {
-        menu.push({ label: '🔄 刷新资产', action: () => { s.assetsExpanded = true; s.assets = null; s.assetsLoadFailed = false; s.assetsLoadError = ''; bastionLoadSavedAssets(s); } });
+      if (isH3CSavedConn(s)) {
+        menu.push({ label: '🔄 拉取资产', action: () => { openBastionPanel(); bastionSelectServer('B:' + s.id); setTimeout(manualBastionPull, 1500); } });
+      } else {
+        menu.push({ label: '🔄 拉取资产', action: () => { s.assetsExpanded = true; s.assets = null; s.assetsLoadFailed = false; s.assetsLoadError = ''; bastionLoadSavedAssets(s); } });
       }
+      menu.push({ label: '🔌 断开连接', action: () => disconnectBastionSavedConn(s) });
       menu.push({ label: '🗑 删除连接', danger: true, action: () => bastionRemoveTab(s.id) });
       showCtxMenu(e.clientX, e.clientY, menu);
     });
@@ -6278,6 +6316,47 @@ function disconnectBastionAll() {
   }
 }
 
+// 断开某个"已保存堡垒机连接"发起的所有 SSH/SFTP 会话。
+// bastionConnectAsset 给会话打的 jmsKey 是 `saved-${s.id}|资产地址|账号`,按此前缀匹配。
+function disconnectBastionSavedConn(s) {
+  if (!s || !s.id) return;
+  const prefix = 'saved-' + s.id + '|';
+  let n = 0;
+  for (const [sid, t] of [...state.tabs.entries()]) {
+    const sess = t && t.session;
+    if (sess && sess.jmsKey && String(sess.jmsKey).startsWith(prefix)) { closeTab(sid); n++; }
+  }
+  if (n) setStatus(`已断开「${s.name || s.url}」的 ${n} 个连接`, 'var(--green)');
+  else setStatus('该堡垒机连接没有活动的 SSH/SFTP 会话', 'var(--text-dim)');
+}
+
+// 统计某个已保存堡垒机连接的活动会话数(徽标显示 🔗n,提示可右键断开)
+function bastionSavedConnCount(s) {
+  if (!s || !s.id) return 0;
+  const prefix = 'saved-' + s.id + '|';
+  let n = 0;
+  for (const t of state.tabs.values()) {
+    const sess = t && t.session;
+    if (sess && sess.jmsKey && String(sess.jmsKey).startsWith(prefix) && (t.status === 'connected' || t.status === 'connecting')) n++;
+  }
+  return n;
+}
+
+// 连接状态变化时局部刷新已保存连接的 🔗 徽标(不整列表重建,871 资产 DOM 太重)
+function updateBastionSavedBadges() {
+  const servers = bastionServers();
+  const badges = document.querySelectorAll('#session-tree .bastion-saved-badge');
+  for (const b of badges) {
+    const id = b.dataset.conn;
+    const s = servers.find((x) => x.id === id);
+    if (!s) continue;
+    const liveN = bastionSavedConnCount(s);
+    const assetsTxt = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : ''));
+    b.textContent = assetsTxt + (liveN ? ` 🔗${liveN}` : '');
+    b.classList.toggle('has-live', !!liveN);
+  }
+}
+
 function loadBastion(url) {
   if (!url) { alert('请填堡垒机 Web 地址'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
@@ -6403,6 +6482,7 @@ function initBastionWebview() {
     bastionSpasLogged = false;
     bastionInjectFails = 0;
     bastionInjectBackoff = 8000;
+    state.bastionAutoFetchFails = 0; // 页面重新加载 → 重置自动拉取失败计数(上一页的失败不算)
     // 页面重载 → 重新允许"拉取完成/失败"提示(新页面状态未知)
     bastionFetchOkNotified = false;
     bastionFetchFailNotified = false;
@@ -7356,11 +7436,21 @@ function connectInto(tab, session, isReconnect) {
     try { tab.term.reset(); } catch { /* ignore */ } // 重连前清屏:避免新旧输出叠在一起(字符重影/重复)
     tab.term.write('\r\n\x1b[36m[正在尝试重连...]\x1b[0m\r\n');
   }
+  // 连接初始化掩码:**在发起连接前就置位**(不是等 connected 才置)。
+  // 服务器 banner/MOTD 随 shell 数据一起到,可能抢在 connected 状态之前到达 → 没掩码就显示出来(闪一下)。
+  // 提前置位后,banner 从头到尾被缓冲不显示;然后清屏重印干净提示符再释放。
+  // 所有 SSH 会话都掩(含 H3C 堡垒机经 accessclient 连的设备:utf8 走编码探针释放,
+  // 手动指定编码如 GBK 的由 connected 后的固定延时释放);telnet 不掩(保持原有显示)。
+  tab.initMask = (session.protocol || 'ssh') !== 'telnet';
+  tab.initBuf = '';
+  if (tab.encSettleTimer) { clearTimeout(tab.encSettleTimer); tab.encSettleTimer = null; } // 重连:清掉上一轮的延迟释放
   tab.encoding = session.encoding || 'utf8'; // 终端编码(GBK 时主进程会转码)
   tab.decoder = new TextDecoder(); // 重置流式解码器:断线瞬间残留的多字节序列状态不能带到重连后首块(否则首字符偶发乱码)
   const fail = (res) => {
     dlog('CONN', `${tab.sessionId} 连接失败: ${res.error}`);
-    // 连接失败:写入真实原因;若是重连失败,继续安排下一次
+    // 连接失败:释放初始化掩码,让错误信息显示出来;若是重连失败,继续安排下一次
+    tab.initMask = false;
+    tab.initBuf = '';
     setTabStatus(tab.sessionId, 'closed');
     tab.term.write(`\r\n\x1b[31m[连接失败] ${res.error}\x1b[0m\r\n`);
     setStatus('连接失败', 'var(--red)');
@@ -7370,6 +7460,11 @@ function connectInto(tab, session, isReconnect) {
   };
   const isTelnet = (session.protocol || 'ssh') === 'telnet';
   dlog('CONN', `${session.name} 发起连接 ${session.username || ''}@${session.host}:${session.port || (isTelnet ? 23 : 22)} (${isTelnet ? 'telnet' : 'ssh'}${session.jump && session.jump.host ? ' · 经跳板 ' + session.jump.host : ''})`);
+  // 连接期间输出被掩码(不显示服务器 banner) → 终端是空白。显示一行「正在连接…」提示,
+  // 否则用户看着黑屏几秒以为卡死了;探针完成清屏时会被清掉。
+  if (!isReconnect && tab.initMask) {
+    try { tab.term.write('\x1b[2m正在连接…\x1b[0m'); } catch { /* ignore */ }
+  }
   const p = isTelnet
     ? window.api.telnetConnect(tab.sessionId, {
         host: session.host,
@@ -7515,6 +7610,7 @@ function closeTab(sessionId) {
   state.tabs.delete(sessionId);
   saveRestoreList(); // 更新打开列表
   updateConnectBtn(); // 关闭标签 → 刷新"连接/中断"二合一按钮
+  updateBastionSavedBadges(); // 关闭可能带走堡垒机连接的 🔗n 徽标
 
   if (state.tabs.size === 0) {
     state.activeSessionId = null;
@@ -7540,6 +7636,7 @@ function setTabStatus(sessionId, status) {
   if (!t) return;
   t.status = status;
   updateConnectBtn(); // 连接状态变化 → 刷新工具栏"连接/中断"二合一按钮
+  updateBastionSavedBadges(); // 已保存堡垒机连接的 🔗n 徽标跟随连接/断开
   const dot = t.el.querySelector('.tab-status-dot');
   if (!dot) return; // 标签已精简为只显示名称,没有状态点了
   dot.className = `tab-status-dot ${status}`;
@@ -8604,6 +8701,11 @@ async function sftpDownload() {
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   packToolbar(); // 工具栏间距压缩/换行,不防抖(只一次布局读取,拖拽窗口时实时响应)
+  // 窗口变窄后,堡垒机面板若超过新上限 → 收回到上限内(否则最小化/关闭按钮被挤出屏幕)
+  try {
+    const mw = bastionMaxWidth();
+    if (els.bastionPanel.offsetWidth > mw) els.bastionPanel.style.width = `${mw}px`;
+  } catch { /* 面板未初始化 */ }
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     for (const t of state.tabs.values()) {
@@ -8643,13 +8745,15 @@ function makeResizer(divider, axis, getSize, setSize, min, max, reverse, onDone,
     if (onDown) onDown();
     const startPos = axis === 'x' ? e.clientX : e.clientY;
     const startSize = getSize();
+    // max 支持传函数:拖拽开始时求值(窗口宽度可能变化,固定 1200 会拖出屏幕外)
+    const maxSize = typeof max === 'function' ? max() : max;
     const onMove = (ev) => {
       const pos = axis === 'x' ? ev.clientX : ev.clientY;
       // 默认:往拖拽方向 = 面板变大(面板在分隔条左侧);
       // reverse=true:面板在分隔条右侧,往拖拽反方向 = 变大(往左拖右面板变宽)
       let delta = axis === 'x' ? pos - startPos : startPos - pos;
       if (reverse) delta = -delta;
-      setSize(Math.min(max, Math.max(min, startSize + delta)));
+      setSize(Math.min(maxSize, Math.max(min, startSize + delta)));
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
@@ -8705,7 +8809,7 @@ applySftpPanelHeight();
 makeResizer(els.dividerBastion, 'x',
   () => els.bastionPanel.offsetWidth,
   (w) => { els.bastionPanel.style.width = `${w}px`; },
-  300, 1200, true,
+  300, bastionMaxWidth, true,
   () => { wvShowAfterDrag(); state.settings.bastionWidth = els.bastionPanel.offsetWidth; saveSettings(); },
   wvHideWhileDrag);
 
@@ -9032,7 +9136,6 @@ els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 els.bastionGo.addEventListener('click', bastionLoadSelected); // 打开:优先用下拉选中的堡垒机(带账号密码自动填充),否则加载地址栏输入的地址
-els.bastionPull.addEventListener('click', manualBastionPull); // 手动拉取堡垒机资产(重置自动失败计数 + 全量拉)
 els.bastionMin.addEventListener('click', minimizeBastion);
 els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });
 els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
@@ -9850,14 +9953,37 @@ window.api.onMainLog((level, msg) => dlog(level === 'error' ? 'MAIN·错误' : '
 // ---- 字符集自动探测:连接后发 OSC-0(标题)探针取服务器 $LANG,自动切编码 ----
 // 只在会话是默认 utf8(用户没手动指定编码)时探测;SSH 会话才探(Telnet 网络设备多无 $LANG)。
 // 探针输出经 OSC 标题携带,终端里不可见,回显只有一行 printf 命令(探测完成后清掉)。
+// 掩码释放 + 清屏重印干净提示符:探针完成 / 非探针会话延时兜底共用。
+function finishInitClean(t) {
+  if (!t || !t.term || t.term.isDisposed) return;
+  t.initBuf = '';
+  t.initMask = false;
+  try { t.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
+  window.api.sshWrite(t.sessionId, '\r');
+}
 function startEncodingProbe(t) {
   if (!t || !t.session || t.encProbe) return;
   if ((t.session.protocol || 'ssh') === 'telnet') return;
   if (t.session.encoding && t.session.encoding !== 'utf8') return; // 用户手动指定了编码,尊重
   t.encProbe = { buf: '', done: false };
+  // 探针期间屏蔽输出显示:服务器 banner/MOTD/探针回显先不画,探针完成后清屏重印干净提示符,
+  // 否则连接后 banner 闪一下才被清掉。缓冲的数据在探针完成后丢弃(banner 不需要保留)。
+  t.initMask = true;
+  t.initBuf = '';
   window.api.sshWrite(t.sessionId, `printf ']0;POLARISENC:%s' "\${LC_ALL:-\$LANG}"\r`);
-  // 3s 兜底:探针没回音就放弃(服务器无 printf/shell 异常),不卡会话
-  setTimeout(() => { if (t.encProbe && !t.encProbe.done) { t.encProbe.done = true; t.encProbe = null; } }, 3000);
+  // 3s 兜底:探针没回音就放弃(服务器无 printf/shell 异常),释放掩码把缓冲的 banner 显示出来,不丢信息
+  setTimeout(() => {
+    if (t.encProbe && !t.encProbe.done) {
+      t.encProbe.done = true;
+      t.encProbe = null;
+      if (t.initMask) {
+        t.initMask = false;
+        const buf = t.initBuf || '';
+        t.initBuf = '';
+        setTimeout(() => { try { if (t.term && !t.term.isDisposed) t.term.write(buf); } catch { /* ignore */ } }, 0);
+      }
+    }
+  }, 3000);
 }
 
 // 服务器 locale(LANG/LC_ALL)→ 会话编码
@@ -9887,8 +10013,10 @@ window.api.onSshData((sessionId, data) => {
         const enc = langToEncoding(m[1]);
         t.encProbe = null;
         if (enc !== 'utf8') window.api.sshSetEncoding(t.sessionId, enc);
-        // 等当前数据块写完后再清掉回显的 printf 行(上移一行清除,回到提示符行)
-        setTimeout(() => { try { if (t.term && !t.term.isDisposed) t.term.write('\x1b[1A\x1b[2K\x1b[1B'); } catch { /* ignore */ } }, 60);
+        // 探针 OSC 已拿到 → 但服务器 banner/MOTD 可能还在经网关/PTY 慢速传输(实测滞后 ~500ms,
+        // 过早释放掩码会让尾随的 banner 段落漏到终端)。再等 300ms 把尾随输出吸收进缓冲,
+        // 然后统一丢弃 + 清屏重印干净提示符。(300ms 足够:探针完成时 banner 已基本到齐)
+        t.encSettleTimer = setTimeout(() => finishInitClean(t), 300);
       }
     } catch { /* ignore */ }
   }
@@ -9916,17 +10044,13 @@ window.api.onSshData((sessionId, data) => {
       }
     }
   }
-  if (typeof data === 'string') {
-    // 主进程已把 GBK/GB2312 转成 UTF-8 字符串
-    let out = data;
-    if (state.settings.highlight) out = highlightString(out);
-    t.term.write(filterWrite(out));
-  } else {
-    // UTF-8 原始字节:统一走 t.decoder 流式解码(与 highlightText 同一解码器,流状态一致)→ 高亮 → 过滤
-    let out = t.decoder.decode(new Uint8Array(data), { stream: true });
-    if (state.settings.highlight) out = highlightString(out);
-    t.term.write(filterWrite(out));
-  }
+  let out = (typeof data === 'string') ? data : t.decoder.decode(new Uint8Array(data), { stream: true });
+  // 高亮(关键词着色);主进程已把 GBK/GB2312 转成 UTF-8 字符串
+  if (state.settings.highlight) out = highlightString(out);
+  // 连接初始化阶段(编码探针未完成):不显示,把输出缓冲起来 —— 否则服务器 banner/MOTD 会闪一下
+  // 探针完成后清屏重印干净提示符,缓冲的 banner 直接丢弃
+  if (t.initMask) { t.initBuf = (t.initBuf || '') + out; return; }
+  t.term.write(filterWrite(out));
 });
 
 // ---- 终端输出过滤(工具栏 🔍 框) ----
@@ -10034,6 +10158,11 @@ window.api.onSshStatus((sessionId, status) => {
     setStatus(`已连接: ${t.title}`, 'var(--green)');
     detectOsForTab(t); // 探测系统类型(结果给 AI 助手用,标签上不显示徽标)
     startEncodingProbe(t); // 自动探测服务器字符集(仅默认 utf8 的 SSH 会话)
+    // 编码探针不运行(手动指定了编码,如 H3C 堡垒机 GBK 设备)→ 掩码没有探针完成这个释放触发点。
+    // 等 1.5s 让 banner 传完,然后清屏重印干净提示符(与探针完成的处理一致,同样不闪)。
+    if (!t.encProbe && t.initMask) {
+      t.encSettleTimer = setTimeout(() => finishInitClean(t), 1500);
+    }
     updateAiHostList(); // AI 主机选择器刷新
     // 登录宏:连接成功后逐条发送会话里配置的 on_connect 命令(每行一条)
     if (t.session && t.session.on_connect) {
@@ -10047,6 +10176,8 @@ window.api.onSshStatus((sessionId, status) => {
     }
   } else if (status.status === 'closed') {
     setTabStatus(sessionId, 'closed');
+    t.initMask = false; t.initBuf = ''; t.encProbe = null; // 断开 → 复位初始化掩码(重连会重新设置)
+    if (t.encSettleTimer) { clearTimeout(t.encSettleTimer); t.encSettleTimer = null; }
     t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
     setStatus('连接已断开', 'var(--red)');
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
