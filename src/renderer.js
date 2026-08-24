@@ -5866,7 +5866,7 @@ function renderBastionSavedSessions(container, f) {
           ? `资产加载失败: ${s.assetsLoadError}`
           : '资产加载失败(确认站点为 JumpServer 且账号可登录)';
       } else if (isH3CSavedConn(s)) {
-        assetsWrap.textContent = 'H3C 站点:资产由右侧浏览器登录后捕获,展开「🌐 H3C 堡垒机」区块查看;双击连接可打开右侧浏览器';
+        assetsWrap.textContent = 'H3C 资产由右侧浏览器登录后捕获';
       } else {
         assetsWrap.textContent = '点击连接行加载资产…';
       }
@@ -5922,7 +5922,7 @@ async function bastionLoadSavedAssets(s) {
     s.assetsLoadFailed = false;
     s.assetsLoadError = '';
     renderSessionList(els.inputSessionSearch.value);
-    setStatus('H3C 站点资产由右侧浏览器登录后捕获,展开「🌐 H3C 堡垒机」区块查看(双击该连接打开浏览器)', 'var(--accent)');
+    setStatus('H3C 资产由右侧浏览器登录后捕获', 'var(--accent)');
     return;
   }
   s.assetsLoading = true;
