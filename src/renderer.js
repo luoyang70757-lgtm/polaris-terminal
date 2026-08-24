@@ -5574,27 +5574,29 @@ function triggerBastionFullFetch() {
   if (bastionWebviewLoading()) return; // 加载中不触发(executeJavaScript 会失败)
   if (bastionInjectFails >= 2) return; // 注入一直失败:页面不稳定,不主动拉取(避免成对报错)
   injectBastionAssetHook(); // 确保钩子已注入(换页后 guest 环境重置);注入是异步的,稍等再触发
-  // 只在"首次拉取"或"用户手动触发"时提示"正在拉取";后台 SPA 重试不再刷状态栏
+  // 只在"首次拉取"或"用户手动触发"时提示"拉取中";后台 SPA 重试不再刷状态栏
   if (!bastionFetchOkNotified && !bastionFetchFailNotified) {
-    setStatus('正在拉取堡垒机全部资产…', 'var(--accent)');
+    setStatus('拉取中', 'var(--accent)');
   }
   try {
     // 先注入钩子,400ms 后调用主动拉取(避免钩子未装好时 __bastionFetchAll 不存在)
     setTimeout(() => {
       if (bastionWebviewLoading()) return; // 延时期间页面开始导航 → 放弃本次
       wv.executeJavaScript('try { window.__bastionFetchAll && window.__bastionFetchAll() } catch(e) { false }').then((ok) => {
-        if (ok) {
+        // __bastionFetchAll 返回值偶尔假阴性(资产已通过拦截 getAccessViewDevs 抓到但返回 false):
+        // 只要资产实际捕获到(或拉取返回成功)就视为完成,消除误报"未完成"
+        if (ok || state.bastionAssets.length > 0) {
           state.bastionAllFetched = true; // SPA 登录后 poll 据此不再反复重试
           // 只提示一次"拉取完成"(数据就绪);重复触发不刷状态栏,避免闲置时状态栏反复闪
           if (!bastionFetchOkNotified) {
             bastionFetchOkNotified = true;
-            setStatus('堡垒机资产已拉取完成', 'var(--green)');
+            setStatus('拉取完成', 'var(--green)');
           }
         } else if (!state.bastionAllFetched) {
           // 未成功:只在"从未成功过"时提示一次;后续重复失败静默(数据没变就不打扰用户)
           if (!bastionFetchFailNotified) {
             bastionFetchFailNotified = true;
-            setStatus('堡垒机资产拉取未完成(可能未登录或接口异常)', 'var(--orange)');
+            setStatus('拉取未完成', 'var(--orange)');
           }
         }
         setTimeout(() => pollBastionAssets(true), 1200);
