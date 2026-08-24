@@ -4319,7 +4319,7 @@ async function batchSavedAssetConnect(s, assets) {
 
 function renderJmsInSessionList(container, f) {
   // 显示全部已配置的 JMS 服务器:未登录的也显示(标记「未登录」,右键可登录/编辑/删除)
-  const servers = state.jmsServers.filter((s) => s.baseUrl);
+  const servers = state.jmsServers.filter((s) => s && s.baseUrl);
   if (!servers.length) return;
   const kw = (f || '').toLowerCase();
   for (const s of servers) {
@@ -4734,7 +4734,7 @@ function bastionSelectableServers() {
     list.push({ id: 'B:' + s.id, name: s.name || s.url, url: s.url, account: s.account, password: s.password, src: 'cfg' });
   }
   for (const j of state.jmsServers) {
-    if (!j.baseUrl) continue;
+    if (!j || !j.baseUrl) continue; // 跳过损坏/空条目(与 bastionServers 一致,防整个下拉被拖空)
     list.push({ id: 'JMS:' + j.id, name: (j.name || 'JMS') + ' (JMS)', url: j.baseUrl, account: j.account, password: j.password, src: 'jms', jmsId: j.id });
   }
   return list;
