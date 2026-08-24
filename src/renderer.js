@@ -328,6 +328,7 @@ const els = {
   bastionCfgMsg: $('bastion-cfg-msg'),
   bastionUrl: $('bastion-url'),
   bastionGo: $('bastion-go'),
+  bastionPull: $('bastion-pull'),
   bastionMin: $('bastion-min'),
   bastionBack: $('bastion-back'),
   bastionForward: $('bastion-forward'),
@@ -662,6 +663,7 @@ const state = {
   bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
   bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
   bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
+  bastionAutoFetchFails: 0, // 自动拉全量失败次数(上限 3,防止持续请求锁定账号;成功/手动拉重置)
   bastionFavFetchAt: 0,     // 上次兜底拉收藏夹树(userFav/getTree)的时间戳(节流)
   bastionCollapsed: true, // H3C 堡垒机区默认折叠(打开堡垒机后左侧分组收起,需展开才看资产)
   collapsedBastionSaved: true, // 左侧"堡垒机连接"分组是否折叠(默认收起,登录后不自动展开)
@@ -5538,15 +5540,8 @@ function pollBastionAssets(force) {
           try { wv.executeJavaScript('try { window.__bastionFetchFavGroups && window.__bastionFetchFavGroups() } catch(e) { false }').then(() => setTimeout(() => pollBastionAssets(true), 2500)); } catch { /* ignore */ }
         }
       }
-      // 收藏树缺失兜底:SPA 常不发 userFav/getTree(组 id 在它缓存里),主动拉一次存下来。
-      // 10s 节流,失败(未登录/接口异常)下轮可重试;拉到后走上面的"收藏树变化 → 映射 favGroup"。
-      if (!r.favTree && !(r.fetchState && r.fetchState.favRunning) && !bastionWebviewLoading()) {
-        const now = Date.now();
-        if (!state.bastionFavFetchAt || now - state.bastionFavFetchAt > 10000) {
-          state.bastionFavFetchAt = now;
-          try { wv.executeJavaScript('try { window.__bastionFetchFavTree && window.__bastionFetchFavTree() } catch(e) { false }').then(() => setTimeout(() => pollBastionAssets(true), 1500)); } catch { /* ignore */ }
-        }
-      }
+      // 收藏树/全量资产**不做自动拉取**(持续请求易触发堡垒机账号锁定):
+      // 资产只被动捕获(页面自身请求)+ 用户手动点「🔄 拉取全部资产」时全量拉。
       if (r.favs && r.favs.length) {
         const favSet = new Set(r.favs);
         // 对比用"排序后的内容",不能只比 size:数量不变但收藏内容变了(如 A→B)也要更新(M7)
@@ -5559,18 +5554,24 @@ function pollBastionAssets(force) {
         }
       }
       if (changed) renderSessionList(els.inputSessionSearch.value);
-      // SPA 登录后自动重触发(M8):H3C 控制台是 SPA,登录后不刷新页面 → 没有 did-stop-loading,
-      // 主动拉全量只在页面加载时触发一次。这里检测:钩子已注入、但从未拉成功过、且未在跑 → 每 10s 试一次
-      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled) {
+      // 平衡策略:资产未拉过时**有限次**自动拉全量(成功即停;失败 ≥3 次停止,不再持续请求避免锁定账号)。
+      // 用户手动点「🔄 拉取资产」随时可全量拉;被动捕获(页面自身请求)始终生效。
+      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled && state.bastionAutoFetchFails < 3) {
         const now = Date.now();
-        if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 10000) {
+        if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 20000) { // 20s 节流(比旧 10s 更保守)
           state.bastionLastAutoFetch = now;
-          if (!bastionSpasLogged) { bastionSpasLogged = true; console.log('[堡垒机] SPA 页检测到未拉全量,自动重试拉取'); }
+          state.bastionAutoFetchFails++;
           triggerBastionFullFetch();
         }
       }
     }).catch((e) => console.log('[堡垒机] pollBastionAssets 异常:', e && e.message));
   } catch { /* ignore */ }
+}
+
+// 用户手动拉资产:重置自动失败计数(给后续自动重试新额度)+ 全量拉取
+function manualBastionPull() {
+  state.bastionAutoFetchFails = 0;
+  triggerBastionFullFetch();
 }
 
 // 主动拉全量:页面就绪/点击刷新时调用,不依赖前端是否请求过资产 API
@@ -5598,6 +5599,7 @@ function triggerBastionFullFetch() {
         // 只要资产实际捕获到(或拉取返回成功)就视为完成,消除误报"未完成"
         if (ok || state.bastionAssets.length > 0) {
           state.bastionAllFetched = true; // SPA 登录后 poll 据此不再反复重试
+          state.bastionAutoFetchFails = 0; // 拉取成功:重置自动失败计数,下次缺数据才有新额度
           // 只提示一次"拉取完成"(数据就绪);重复触发不刷状态栏,避免闲置时状态栏反复闪
           if (!bastionFetchOkNotified) {
             bastionFetchOkNotified = true;
@@ -6032,7 +6034,7 @@ function renderBastionInSessionList(container, f) {
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
       { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
-      { label: '🔄 拉取全部资产', action: () => triggerBastionFullFetch() },
+      { label: '🔄 拉取全部资产', action: manualBastionPull },
       { label: '📤 导出诊断包', action: () => exportBastionDiag() },
       { label: '🔌 断开全部堡垒机连接', action: () => disconnectBastionAll() },
     ]));
@@ -9006,6 +9008,7 @@ els.bastionClear.addEventListener('click', async () => {
     state.bastionFavSet.clear();
     // 重置拉取标志:否则 poll 以为"已拉过全量"不再重新捕获,左侧资产一直空
     state.bastionAllFetched = false;
+    state.bastionAutoFetchFails = 0; // 清除后给自动重试新额度
     bastionFetchOkNotified = false;
     bastionFetchFailNotified = false;
     // webview 回到空白页
@@ -9029,6 +9032,7 @@ els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 els.bastionGo.addEventListener('click', bastionLoadSelected); // 打开:优先用下拉选中的堡垒机(带账号密码自动填充),否则加载地址栏输入的地址
+els.bastionPull.addEventListener('click', manualBastionPull); // 手动拉取堡垒机资产(重置自动失败计数 + 全量拉)
 els.bastionMin.addEventListener('click', minimizeBastion);
 els.bastionUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) loadBastion(els.bastionUrl.value.trim()); });
 els.bastionBack.addEventListener('click', () => { try { els.bastionWebview.goBack(); } catch { /* ignore */ } });
