@@ -5408,11 +5408,10 @@ function pollBastionAssets(force) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板已收起:不打扰后台 webview,恢复展开后再轮询
-  // 操作驱动:用户最近 5 秒内操作过 H3C 页面(__bastionFocusTs 新)才立即同步资产,
-  // 否则跳过本轮 —— 闲置时每 4s 轮询纯属浪费(executeJavaScript IPC + guest 开销),
-  // 改为 15s 低频兜底 + 用户操作时快速同步,兼顾实时性与性能。
+  // 操作驱动:资产**已拉过**时闲置跳过本轮(避免空转);**未拉过**(首次/清除历史后)
+  // 总是尝试捕获 —— 否则重新登录后闲置就不捕获,左侧资产一直空。
   // force=true:流程内重触发(拉目录/拉全量后继续同步),不受操作驱动限制。
-  if (!force && !bastionFocusCheckPending()) return;
+  if (!force && !bastionFocusCheckPending() && state.bastionAllFetched) return;
   // 只对 H3C 控制台(路径含 /shterm)做资产捕获:webview 里若是 JumpServer(/ui /luna)等
   // 非 H3C 站点,钩子永远无效 —— 旧逻辑仍每 4s 轮询 + 每 10s 触发拉取,状态栏反复
   // "正在拉取堡垒机全部资产…/未完成",表现为连接堡垒机后界面频繁刷新。
