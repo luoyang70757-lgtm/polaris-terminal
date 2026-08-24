@@ -624,6 +624,31 @@ ipcMain.handle('jms:restore', async () => {
   }
 });
 
+// 已保存的堡垒机连接(bastionServers)同样落盘:与 jmsServers 同因(localStorage 在 Windows
+// 偶发丢失,重启后连接消失),bastionServers 此前只有 localStorage 存储 → 文件备份兜底。
+ipcMain.handle('bastion:persist', async (_e, servers) => {
+  try {
+    const dir = appLock.lockDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const finalPath = path.join(dir, 'bastion-servers.json');
+    const tmpPath = path.join(dir, `bastion-servers.json.tmp-${process.pid}`);
+    fs.writeFileSync(tmpPath, JSON.stringify(servers || []), 'utf8');
+    fs.renameSync(tmpPath, finalPath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('bastion:restore', async () => {
+  try {
+    const p = path.join(appLock.lockDir(), 'bastion-servers.json');
+    if (!fs.existsSync(p)) return { ok: true, servers: [] };
+    return { ok: true, servers: JSON.parse(fs.readFileSync(p, 'utf8')) || [] };
+  } catch (err) {
+    return { ok: false, error: err.message, servers: [] };
+  }
+});
+
 // 清除指定 origin 的登录态 cookie(左侧退出登录/删除时,同步退出右侧 webview 里的堡垒机网页)
 // 注意:堡垒机 webview 用 partition="persist:bastion",cookie 存在该 partition,不是 defaultSession。
 ipcMain.handle('jms:webLogout', async (_e, { origin }) => {

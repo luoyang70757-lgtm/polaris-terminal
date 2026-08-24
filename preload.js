@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('api', {
   jmsAssets: (cfg) => ipcRenderer.invoke('jms:assets', cfg),
   jmsPersist: (servers) => ipcRenderer.invoke('jms:persist', servers),
   jmsRestore: () => ipcRenderer.invoke('jms:restore'),
+  bastionPersist: (servers) => ipcRenderer.invoke('bastion:persist', servers),
+  bastionRestore: () => ipcRenderer.invoke('bastion:restore'),
   jmsWebLogout: (origin) => ipcRenderer.invoke('jms:webLogout', { origin }),
   bastionClearAll: () => ipcRenderer.invoke('bastion:clearAll'),
   cryptoEncrypt: (text) => ipcRenderer.invoke('crypto:encrypt', text),

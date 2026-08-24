@@ -4649,6 +4649,24 @@ function bastionServers() {
   if (arr.some((s) => !s || !s.id)) state.settings.bastionServers = arr.filter((s) => s && s.id);
   return state.settings.bastionServers;
 }
+// 已保存堡垒机连接持久化到文件:localStorage 在 Windows 偶发丢失(与 jmsServers 同因,
+// 此前 bastionServers 只有 localStorage → 重启后连接消失)。创建/删除后落盘,
+// 启动时 bastionRestoreFromFile 文件优先恢复。
+function persistBastionServers() {
+  try { window.api.bastionPersist(bastionServers()); } catch { /* ignore */ }
+}
+// 启动时从文件恢复已保存的堡垒机连接(文件优先,防 localStorage 丢失导致连接消失)
+async function bastionRestoreFromFile() {
+  try {
+    const r = await window.api.bastionRestore();
+    if (r.ok && r.servers && r.servers.length) {
+      state.settings.bastionServers = r.servers;
+      saveSettings();
+      try { renderSessionList(els.inputSessionSearch.value); } catch { /* ignore */ }
+      try { bastionRenderTabs(); bastionRenderServerSelect(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
 
 // 当前激活的堡垒机标签 id(与 bastionServers 的 id 对应;null=手动地址模式)
 let bastionActiveTabId = null;
@@ -4712,6 +4730,7 @@ async function bastionRemoveTab(id) {
   const s = bastionServers().find((x) => x.id === id);
   bastionServers().splice(bastionServers().findIndex((x) => x.id === id), 1);
   saveSettings();
+  persistBastionServers(); // 文件备份同步删除
   // 清除该堡垒机站点的登录态
   if (s && s.url) {
     try {
@@ -4853,6 +4872,7 @@ async function bastionCfgAdd() {
   }
   state.settings.bastionServers = bastionServers();
   saveSettings();
+  persistBastionServers(); // 文件备份(Windows localStorage 偶发丢失)
   bastionRenderServerSelect();
   bastionRenderTabs(); // 标签栏同步新堡垒机
   state.collapsedTopBastion = false; // 展开「🛡 堡垒机」分组,让新建的连接立刻可见
@@ -10204,6 +10224,7 @@ loadSettings();
 computeOutputFilter(); // 启动时按持久化的过滤条件恢复生效关键词
 resetIdleLock(); // 启动即开始闲置自动锁定计时
 jmsRestore(); // 启动恢复 JumpServer 登录(静默重登已登录过的服务器;localStorage 丢失时回退 jms-servers.json 文件备份)
+bastionRestoreFromFile(); // 已保存堡垒机连接文件恢复(Windows localStorage 偶发丢失时兜底,文件优先)
 // 恢复堡垒机 web 标签页:保存过 bastionUrl(说明上次用了 web 堡垒机)→ 自动打开面板并加载。
 // 用 setTimeout 而非 jmsRestore().then,避免重登未完成/抛异常时恢复被跳过。
 setTimeout(() => { try { if (state.settings.bastionUrl) restoreBastion(); } catch { /* ignore */ } }, 600);
