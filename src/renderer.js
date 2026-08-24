@@ -3984,6 +3984,7 @@ function jmsAddServer() {
   state.jmsActiveId = s.id;
   jmsPersistConfig();
   jmsRenderServerSelect();
+  try { bastionRenderServerSelect(); } catch { /* ignore */ } // 浏览器下拉同步新 JMS 服务器
   els.jmsName.focus();
 }
 
@@ -3996,6 +3997,7 @@ function jmsDeleteServer() {
   state.jmsActiveId = state.jmsServers.length ? state.jmsServers[0].id : null;
   jmsPersistConfig();
   jmsRenderServerSelect();
+  try { bastionRenderServerSelect(); } catch { /* ignore */ } // 浏览器下拉同步删除后的 JMS 服务器
   renderSessionList(els.inputSessionSearch.value);
 }
 
@@ -4548,6 +4550,9 @@ async function jmsRestore() {
     state.jmsActiveId = state.jmsActiveId || s.id;
   }
   jmsRenderServerSelect();
+  // 同步刷新右侧浏览器的下拉/标签:JMS 服务器是异步从文件备份恢复的(localStorage 偶发丢失),
+  // 若用户在此之前已打开浏览器面板,下拉会停留在空 → 必须在此补一次渲染。
+  try { bastionRenderServerSelect(); bastionRenderTabs(); } catch { /* ignore */ }
   for (const s of state.jmsServers) {
     // 用户主动退出过登录的服务器:不自动重登(配置保留,需手动登录)
     if (s.loggedOut) continue;
