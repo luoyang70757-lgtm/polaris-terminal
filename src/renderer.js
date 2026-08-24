@@ -6225,9 +6225,12 @@ function bastionDisconnect(asset) {
 
 // 断开所有堡垒机连接:accessclient 连的(bastion-*)和 JumpServer API 连的(jms-*)都断。
 // 原来只断 bastion-*,JMS 方式连的会话断不掉(点"断开全部"没反应)。
+// 注意:state.tabs 的键是 sess-N(connectToServer 重新生成),识别堡垒机会话要看
+// t.session.id(bastionConnectAsset/jmsConnectAsset 设的 jms-*/bastion-* 前缀)或 jmsKey 标记。
 function disconnectBastionAll() {
-  for (const sid of [...state.tabs.keys()]) {
-    if (isBastionSessionId(sid)) closeTab(sid);
+  for (const [sid, t] of [...state.tabs.entries()]) {
+    const s = t && t.session;
+    if (s && (isBastionSessionId(s.id) || s.jmsKey)) closeTab(sid);
   }
 }
 
