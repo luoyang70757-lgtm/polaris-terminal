@@ -2562,12 +2562,12 @@ function setupImeGuard(term) {
   const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
   const resetStuck = () => {
     clearTimer();
-    if (!composing) return;
+    const wasComposing = composing;
     composing = false;
     try {
-      // 必须先清空残留 preedit:否则合成 compositionend 时 xterm 会把
-      // substring(_compositionPosition.start, end) 那段拼音误提交到终端。
-      ta.value = '';
+      if (wasComposing) ta.value = ''; // 真实组合的残留 preedit 才清空,避免把拼音误提交
+      // 无条件派发 compositionend:清除 xterm 内部 _isComposing 卡死状态
+      // (vim 等全屏 TUI 退出后可能残留,键盘输入被当组合吞掉;只有窗口失焦触发 textarea blur 才恢复)
       ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }));
     } catch { /* ignore */ }
   };
@@ -7244,6 +7244,17 @@ async function connectToServer(session) {
   };
   state.tabs.set(sessionId, tab);
   tab.__imeReset = setupImeGuard(term); // 输入法组合状态看护(见 setupImeGuard)
+  // vim 等全屏 TUI 退出(备用屏切回普通 buffer)后,xterm 内部 _isComposing 可能残留卡死 →
+  // 键盘被当组合吞掉(现象:保存退出后终端无法操作,点窗口外触发 blur 才恢复)。
+  // 监听 buffer 切换,主动复位组合 + 重新聚焦终端,从根上避免卡死。
+  try {
+    if (term.buffer && term.buffer.onBufferChange) {
+      term.buffer.onBufferChange(() => {
+        try { tab.__imeReset && tab.__imeReset(); } catch { /* ignore */ }
+        try { term.focus(); } catch { /* ignore */ }
+      });
+    }
+  } catch { /* ignore */ }
   saveRestoreList(); // 记录打开列表,用于启动恢复
   recordRecent(sessionId); // 记入"最近连接"
 
