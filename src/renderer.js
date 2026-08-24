@@ -8991,6 +8991,31 @@ initBastionWebview();
 // 闲置时资产不会变,4s 空转纯属浪费 → 降频,见 bastionFocusCheckPending)
 setInterval(pollBastionAssets, 15000);
 
+// ---- H3C Web 会话保活:闲置时低频轻量请求,防止服务端闲置超时登出 ----
+// H3C 控制台有服务端闲置超时,闲置几分钟会掉线要重登。每 3 分钟在 guest 里发一个
+// 轻量 fetch(带会话 cookie 命中服务端,重置闲置计时;不刷新页面),远低于常见超时
+// (10-30min)又不频繁。闲置时 15s 资产轮询会因 bastionFocusCheckPending 跳过,
+// 所以这是闲置时唯一打到 H3C 的请求(≈1 次/3 分钟)。
+const BASTION_KEEPALIVE_MS = 3 * 60 * 1000;
+let bastionKeepaliveTimer = null;
+function bastionSessionKeepalive() {
+  const wv = els.bastionWebview;
+  let curUrl = '';
+  try { if (wv && wv.getURL && wv.getURL()) curUrl = wv.getURL(); } catch { /* ignore */ }
+  if (!curUrl && els.bastionCurrent) curUrl = els.bastionCurrent.textContent.split(' — ').pop() || '';
+  const pathPart = (() => { try { return new URL(curUrl).pathname; } catch { return ''; } })();
+  const isH3c = curUrl && (curUrl.indexOf('/shterm') !== -1 || pathPart === '' || pathPart === '/');
+  // 仅在 H3C 控制台 + 面板可见 + 页面稳定(非加载中)时保活;否则直接排下一轮
+  if (isH3c && wv && !els.bastionSlot.classList.contains('hidden') && !bastionWebviewLoading() && bastionPageStable(1200)) {
+    try {
+      // 轻量 GET 当前页:redirect:manual 不跟跳转、no-store 不走缓存;guest 侧吞掉错误
+      wv.executeJavaScript(`fetch(location.href, { cache: 'no-store', redirect: 'manual' }).catch(function(){}); 'ok'`);
+    } catch { /* ignore */ }
+  }
+  bastionKeepaliveTimer = setTimeout(bastionSessionKeepalive, BASTION_KEEPALIVE_MS);
+}
+bastionKeepaliveTimer = setTimeout(bastionSessionKeepalive, BASTION_KEEPALIVE_MS);
+
 // 键盘焦点桥(宿主侧):click 进 webview guest 不会把宿主焦点移到 webview 元素上,
 // 之后按键会被宿主当前焦点(地址框等)吞掉,guest 输入框"打不进去"。用 guest 注入的
 // __bastionFocusTs(mousedown/pointerdown 时间戳)判断"用户最近操作在 guest",把焦点补回 webview。
