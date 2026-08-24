@@ -9012,6 +9012,9 @@ els.bastionClear.addEventListener('click', async () => {
     // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
     state.settings.bastionUrl = '';
     saveSettings();
+    // 展开 🛡 堡垒机组 + 已保存连接子区块:清除后让用户立刻看到连接还在(默认折叠会误以为被删)
+    state.collapsedTopBastion = false;
+    state.collapsedBastionSaved = false;
     renderSessionList(els.inputSessionSearch.value);
     setStatus('堡垒机历史与缓存资产已清除,连接配置保留', 'var(--green)');
   } catch (e) {
