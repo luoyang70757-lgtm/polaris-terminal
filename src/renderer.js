@@ -652,6 +652,7 @@ const state = {
   jmsSeq: 0,         // 合成会话 id 全局计数器
   jmsRestoreDone: false, // 是否已做过持久登录恢复(避免重复登录)
   bastionAssets: [], // H3C 堡垒机资产(从 webview 拦截的资产 API 捕获)
+  bastionUrls: [], // 数据库里已有资产的堡垒机 URL(下拉/快捷加载用;从 SQLite 恢复 + 捕获时累计)
   bastionTree: [],   // H3C 堡垒机目录树(getAccessViewTree 捕获: [{name,id,path,empty,...}])
   bastionFavSet: new Set(), // 收藏设备 devId 集合(getFavoriteDevices / userFav 捕获)
   bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})
@@ -1453,6 +1454,8 @@ async function restoreBastionAssets() {
       console.log('[堡垒机] restore: SQLite 里没有堡垒机资产(键:', JSON.stringify(state.bastionUrl), ')');
       return;
     }
+    // 记下数据库里已有的堡垒机 URL:下拉/快捷加载据此列出这些站点(即便没建"保存的连接")
+    state.bastionUrls = urls.filter(Boolean);
     // 多个堡垒机合并展示;键用 origin 归一(旧数据可能是深链接 URL 存的,读回来统一成 origin,
     // 这样 persist 时会写回归一后的键,不再分裂)
     const all = [];
@@ -4760,6 +4763,15 @@ function bastionSelectableServers() {
   for (const j of state.jmsServers) {
     if (!j || !j.baseUrl) continue; // 跳过损坏/空条目(与 bastionServers 一致,防整个下拉被拖空)
     list.push({ id: 'JMS:' + j.id, name: (j.name || 'JMS') + ' (JMS)', url: j.baseUrl, account: j.account, password: j.password, src: 'jms', jmsId: j.id });
+  }
+  // 数据库里已有资产的堡垒机 URL(即便没建"保存的连接",也能从下拉加载该站点):
+  // 与上面已出现的 url 去重(尾部 / 归一),避免重复项。
+  const known = new Set(list.map((x) => (x.url || '').replace(/\/+$/, '')));
+  for (const u of state.bastionUrls) {
+    const norm = String(u || '').trim().replace(/\/+$/, '');
+    if (!norm || known.has(norm)) continue;
+    known.add(norm);
+    list.push({ id: 'URL:' + norm, name: norm, url: norm, src: 'url' });
   }
   return list;
 }
