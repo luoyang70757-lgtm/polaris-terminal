@@ -174,10 +174,10 @@ select.select:focus { border-color: var(--accent); }
   display: flex;
   flex-wrap: wrap; /* 窄窗口/高 DPI 时按钮换到下一行,不再横向溢出(Windows 上溢出滚动条会压住/裁掉内容) */
   align-items: center;
-  gap: var(--toolbar-gap, 4px); /* packToolbar() 按内容宽度把间距压到最小(2px)仍放不下才换行 */
-  min-height: 40px;
+  gap: var(--toolbar-gap, 3px); /* packToolbar() 按内容宽度把间距压到最小(2px)仍放不下才换行 */
+  min-height: 28px;
   height: auto;
-  padding: 5px 12px;
+  padding: 3px 6px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -255,11 +255,11 @@ select.select:focus { border-color: var(--accent); }
   background: transparent;
   border: none;
   color: var(--text-dim);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 500; /* 略加粗,小字更清晰 */
   -webkit-font-smoothing: antialiased;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border-radius: 3px;
 }
 .btn-mini:hover { background: var(--bg-hover); color: var(--text); }

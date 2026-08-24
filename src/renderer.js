@@ -7608,7 +7608,7 @@ function packToolbar() {
   const tb = document.querySelector('.toolbar');
   if (!tb) return;
   const items = tb.children.length;
-  const MAXG = 4, MING = 2; // 间距上限 4px/下限 2px:工具栏按钮尽量靠近
+  const MAXG = 3, MING = 2; // 间距上限 3px/下限 2px:工具栏按钮尽量靠近
   const prevWrap = tb.style.flexWrap, prevGap = tb.style.gap;
   const prevFlex = [];
   try {
