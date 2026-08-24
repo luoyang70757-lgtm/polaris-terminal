@@ -279,6 +279,8 @@ const els = {
   // 连接/中断二合一 + 锁定
   btnConnect: $('btn-connect'),
   btnLock: $('btn-lock'),
+  // 堡垒机浏览器入口(常显,防新用户找不到入口)
+  btnBastionBrowser: $('btn-bastion-browser'),
   // 端口探测
   btnPortProbe: $('btn-port-probe'),
   probeModal: $('probe-modal'),
@@ -8887,6 +8889,8 @@ els.fTestConn.addEventListener('click', async () => {
     res.textContent = '⚠ 测试失败: ' + ((e && e.message) || e); res.className = 'tcr tcr-bad';
   }
 });
+// 堡垒机浏览器入口:点击打开右侧浏览器(带标签页)
+els.btnBastionBrowser.addEventListener('click', (e) => { e.stopPropagation(); openBastionPanel(); });
 // 端口探测
 els.btnPortProbe.addEventListener('click', (e) => { e.stopPropagation(); openProbeModal(); });
 els.probeClose.addEventListener('click', closeProbeModal);
