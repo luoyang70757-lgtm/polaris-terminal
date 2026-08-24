@@ -8993,12 +8993,18 @@ els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中
 els.btnLock.addEventListener('click', requestLock); // 锁定
 els.bastionMini.addEventListener('click', restoreBastion);
 els.bastionCfg.addEventListener('click', openBastionCfg);
-// 🧹 清除历史:只清堡垒机浏览器的会话记录(浏览历史/登录态/表单/缓存),webview 回到空白页。
-// 不动左侧已保存的连接与已捕获的资产——那些是 app 自己的数据(主机列表),不属于浏览历史,误删会让用户以为连接丢了。
+// 🧹 清除历史:清堡垒机浏览器会话记录 + 左侧缓存的资产(浏览历史/登录态/表单/缓存/已捕获资产)。
+// 手动创建的堡垒机连接配置(名称/地址/账号/密码)不动——那是用户自己建的,不属于"历史"。
 els.bastionClear.addEventListener('click', async () => {
-  if (!confirm('清除堡垒机浏览器的全部历史记录吗?\n将清除:浏览历史、登录态(cookie)、表单与缓存。所有堡垒机站点需重新登录。')) return;
+  if (!confirm('清除堡垒机浏览器历史与缓存资产吗?\n将清除:浏览历史、登录态(cookie)、表单、缓存,以及左侧缓存的堡垒机资产(需重新从浏览器捕获)。\n已保存的堡垒机连接配置保留。')) return;
   try {
     await window.api.bastionClearAll(); // 清 persist:bastion partition(webview 会话)
+    try { await window.api.bastionClearAllAssets(); } catch { /* ignore */ } // 清 SQLite 缓存的堡垒机资产
+    // 清空内存里的缓存资产/目录树/收藏(连接配置不动)
+    state.bastionAssets = [];
+    state.bastionTree = [];
+    state.bastionUrls = [];
+    state.bastionFavSet.clear();
     // webview 回到空白页
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
@@ -9007,7 +9013,7 @@ els.bastionClear.addEventListener('click', async () => {
     state.settings.bastionUrl = '';
     saveSettings();
     renderSessionList(els.inputSessionSearch.value);
-    setStatus('堡垒机浏览器历史已清除,所有站点需重新登录', 'var(--green)');
+    setStatus('堡垒机历史与缓存资产已清除,连接配置保留', 'var(--green)');
   } catch (e) {
     setStatus('清除失败: ' + (e && e.message), 'var(--red)');
   }

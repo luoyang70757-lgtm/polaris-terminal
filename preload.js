@@ -122,6 +122,7 @@ contextBridge.exposeInMainWorld('api', {
   bastionSaveAssets: (url, assets) => ipcRenderer.invoke('bastion:saveAssets', { url, assets }),
   bastionLoadAssets: () => ipcRenderer.invoke('bastion:loadAssets'),
   bastionDeleteAssets: (url) => ipcRenderer.invoke('bastion:deleteAssets', url),
+  bastionClearAllAssets: () => ipcRenderer.invoke('bastion:clearAllAssets'),
 
   // ---- 快速命令(命令收藏) ----
   quickList: () => ipcRenderer.invoke('quick:list'),

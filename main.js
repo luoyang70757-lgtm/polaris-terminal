@@ -830,6 +830,16 @@ ipcMain.handle('bastion:deleteAssets', (_e, url) => {
     return { ok: false, error: err.message };
   }
 });
+// 清空全部已缓存堡垒机资产(清除历史时调用:缓存是"历史"的一部分,连接配置不动)
+ipcMain.handle('bastion:clearAllAssets', () => {
+  try {
+    sessionStore.deleteAllBastionAssets();
+    schedulePersist();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 // 批量上传:选一个本地文件,上传到每个选中主机的远程目录
 ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
