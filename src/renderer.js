@@ -9005,11 +9005,6 @@ els.bastionClear.addEventListener('click', async () => {
     els.bastionUrl.value = '';
     // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
     state.settings.bastionUrl = '';
-    // 清掉已保存连接的登录态(token/user),保留连接配置与已缓存资产(名称/地址/账号/密码/主机列表)
-    for (const s of bastionServers()) {
-      s.token = null;
-      s.user = null;
-    }
     saveSettings();
     renderSessionList(els.inputSessionSearch.value);
     setStatus('堡垒机浏览器历史已清除,所有站点需重新登录', 'var(--green)');
