@@ -4589,14 +4589,16 @@ function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
   els.bastionMini.classList.add('hidden');
   applyBastionDefaultWidth();
-  bastionRenderTabs(); // 渲染堡垒机标签栏
-  bastionRenderServerSelect();
+  // 渲染各自 try/catch 隔离:一个环节异常(如损坏的堡垒机条目)不拖垮整块面板
+  try { bastionRenderTabs(); } catch (e) { console.warn('[堡垒机] 标签栏渲染异常:', e); }
+  try { bastionRenderServerSelect(); } catch (e) { console.warn('[堡垒机] 下拉渲染异常:', e); }
   const saved = state.settings.bastionUrl || '';
   if (saved) els.bastionUrl.value = saved;
   // 有已保存堡垒机且无激活标签 → 自动选第一个(像主机连接一样开箱即用)
-  if (!bastionActiveTabId && bastionServers().length) {
-    bastionSwitchTab(bastionServers()[0].id);
-  }
+  try {
+    const first = (bastionServers() || []).find((s) => s && s.id);
+    if (!bastionActiveTabId && first) bastionSwitchTab(first.id);
+  } catch (e) { console.warn('[堡垒机] 自动选标签异常:', e); }
   // 键盘焦点:webview 已加载 → 焦点给 webview(否则点击 guest 页面时,宿主焦点停在地址框,
   // 按键会被地址框吞掉、输入框"打不进去";见 bastion-focus-fix)。空 webview 才聚焦地址框让用户输地址。
   if (!els.bastionWebview.src && saved) loadBastion(saved);
@@ -4636,7 +4638,12 @@ function updateBastionMini() {
 }
 
 // ---- 堡垒机(H3C)配置:保存/管理常用 Web 地址 ----
-function bastionServers() { return state.settings.bastionServers || (state.settings.bastionServers = []); }
+function bastionServers() {
+  const arr = state.settings.bastionServers || (state.settings.bastionServers = []);
+  // 自愈:清除损坏条目(曾出现 null 项导致堡垒机浏览器整块空白)
+  if (arr.some((s) => !s || !s.id)) state.settings.bastionServers = arr.filter((s) => s && s.id);
+  return state.settings.bastionServers;
+}
 
 // 当前激活的堡垒机标签 id(与 bastionServers 的 id 对应;null=手动地址模式)
 let bastionActiveTabId = null;
@@ -4647,6 +4654,7 @@ function bastionRenderTabs() {
   if (!list) return;
   list.innerHTML = '';
   for (const s of bastionServers()) {
+    if (!s || !s.id) continue; // 跳过损坏/空条目,防整块渲染崩溃(曾出现 null 项导致面板全空白)
     const tab = document.createElement('div');
     tab.className = 'bastion-tab' + (s.id === bastionActiveTabId ? ' active' : '');
     tab.title = s.url || s.name;
@@ -4722,6 +4730,7 @@ async function bastionRemoveTab(id) {
 function bastionSelectableServers() {
   const list = [];
   for (const s of bastionServers()) {
+    if (!s || !s.id) continue; // 跳过损坏/空条目
     list.push({ id: 'B:' + s.id, name: s.name || s.url, url: s.url, account: s.account, password: s.password, src: 'cfg' });
   }
   for (const j of state.jmsServers) {
