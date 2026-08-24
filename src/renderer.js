@@ -9005,6 +9005,10 @@ els.bastionClear.addEventListener('click', async () => {
     state.bastionTree = [];
     state.bastionUrls = [];
     state.bastionFavSet.clear();
+    // 重置拉取标志:否则 poll 以为"已拉过全量"不再重新捕获,左侧资产一直空
+    state.bastionAllFetched = false;
+    bastionFetchOkNotified = false;
+    bastionFetchFailNotified = false;
     // webview 回到空白页
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
