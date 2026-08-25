@@ -1873,6 +1873,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
         broadcast('ssh:status', sessionId, { status: 'closed' });
       }
       sshSessions.delete(sessionId);
+      clearSftpKnownSizes(sessionId);
     });
     conn.on('close', () => {
       if (!sshSessions.has(sessionId)) return; // 流 close / ssh:close 已收尾并广播,这里只兜底
@@ -2154,6 +2155,16 @@ ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
 });
 
 // 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
+// 某些设备(H3C 网络设备等)SFTP 对刚写入的文件 readdir/stat 恒报 size 0,但数据已落盘。
+// 记录本次会话成功上传文件的真实大小(sessionId|remotePath → size),面板列目录时
+// 若读到 0 就用真实值覆盖 —— 否则上传完面板里全是 0,用户误以为传坏了。
+const sftpKnownSizes = new Map();
+// 会话关闭时清掉该会话的上传大小记录,防 Map 无限增长
+function clearSftpKnownSizes(sessionId) {
+  const prefix = sessionId + '|';
+  for (const k of sftpKnownSizes.keys()) if (k.startsWith(prefix)) sftpKnownSizes.delete(k);
+}
+
 ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
   try {
     const sftp = await getSftp(sessionId);
@@ -2172,12 +2183,16 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
       }),
     ]);
-    const entries = items.map((it) => ({
-      name: it.filename,
-      isDir: !!it.attrs.isDirectory(),
-      size: it.attrs.size || 0,
-      mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null, // sftp 的 mtime 单位是秒,转成毫秒
-    }));
+    const entries = items.map((it) => {
+      const isDir = !!it.attrs.isDirectory();
+      let size = it.attrs.size || 0;
+      // 设备 stat 骗人:刚上传的文件读到 0,用已知真实大小覆盖(仅本次会话上传过的)
+      if (!isDir && size === 0) {
+        const known = sftpKnownSizes.get(`${sessionId}|${joinRemote(remotePath, it.filename)}`);
+        if (known) size = known;
+      }
+      return { name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null };
+    });
     return { ok: true, entries, cwd };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -2290,6 +2305,8 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
         (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
         (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp)
       );
+      // 记录本次上传文件的真实大小(设备 stat 可能报 0,面板列目录时用它覆盖显示)
+      for (const u of uploaded) sftpKnownSizes.set(`${sessionId}|${u.rp}`, u.size);
       return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
     }
     const remotePath = joinRemote(remoteDir, path.basename(localPath));
@@ -2297,6 +2314,7 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
     if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
     try {
       await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
+      sftpKnownSizes.set(`${sessionId}|${remotePath}`, fs.statSync(localPath).size); // 同上:记录真实大小
       return { ok: true, remotePath, resumedFrom: resumeFrom };
     } catch (err) {
       recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
