@@ -5453,6 +5453,7 @@ let bastionInjectDisabled = false; // 注入连续失败过多:自动注入/拉�
 let bastionSpasLogged = false;    // "SPA 未拉全量"日志只打一次
 let bastionLastPollKey = '';      // 轮询诊断日志限流:状态变化才打
 let bastionLastPollDlog = 0;      // 面板 BASTION 心跳:每 30s 报一次捕获状态(调试面板可见)
+let bastionDiagHint = '';         // 左侧空状态提示携带的实时诊断(URL/捕获数/钩子存活)
 let bastionPageStableTs = 0;      // 最近一次 did-stop-loading 时间;重定向风暴期间反复刷新 → 一直不稳
 // 页面是否已稳定(停止加载 ≥ms 且未再开始导航):稳定前不执行注入/轮询,避免导航瞬间帧层面报错
 function bastionPageStable(ms) {
@@ -5659,6 +5660,10 @@ function pollBastionAssets(force) {
           changed = true;
         }
       }
+      // 左侧空状态提示携带实时诊断:用户不开调试面板,直接看提示文字就能定位断在哪一环。
+      // URL 非 /shterm/根 → isH3c 拒绝;捕获=0 → 钩子/页面没触发资产接口;钩子✗ → 注入丢了。
+      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}`;
+      if (hintNow !== bastionDiagHint) { bastionDiagHint = hintNow; changed = true; }
       if (changed) renderSessionList(els.inputSessionSearch.value);
       // 面板可见诊断心跳:每 30s 报一次捕获状态(不随数据变化,保证调试面板能看到)。
       // URL/webview捕获数/state合并数/hook存活/fetch运行 → 一眼定位断在哪一环。
@@ -6040,7 +6045,8 @@ function renderBastionSavedSessions(container, f) {
         const n = state.bastionAssets.length;
         assetsWrap.textContent = n
           ? `✓ 已从右侧浏览器捕获 ${n} 台资产,展开下方「🌐 H3C 堡垒机」区块查看`
-          : '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」';
+          : '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」'
+            + (bastionDiagHint ? ` [${bastionDiagHint}]` : '');
       } else {
         assetsWrap.textContent = '点击连接行加载资产…';
       }
