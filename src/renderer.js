@@ -5015,15 +5015,14 @@ function injectBastionAssetHook(requireStable) {
       // 目录归属:getAccessViewDevs 请求体的 paths 就是设备所在业务目录 —— 部分 H3C 版本
       // 没有 getAccessViewTree,浏览器就是逐个目录请求的。把 paths 记到设备上,左侧直接按
       // dir/dirs/dirPath 分组,不再依赖树接口(自动获取,不写死)。
+      // 目录归属:getAccessViewDevs 请求体 paths 就是设备所在业务目录。一台设备可属多个
+      // 分组(根查询返回全部、父目录前缀匹配也返回子目录设备)—— 与右侧堡垒机浏览器显示一致,
+      // 不去重。dirs 记录设备实际出现过的每个目录段(含根/父),左侧按此分组展示。
       function tagPaths(d2, paths) {
         if (!paths || !paths.length) return;
         var clean = [];
         for (var i = 0; i < paths.length; i++) if (paths[i]) clean.push(String(paths[i]));
         if (!clean.length) return;
-        // 根级查询(paths 只有 1 段)是"get-all":返回整棵树全部设备(实测 root 查询 = 全部 870 台),
-        // 不是"设备属于根目录" —— 不据此标任何归属,否则每台设备都会被并进根分组。
-        // 根级设备由 __bastionFetchDirs 末尾兜底归根;子目录设备由 ≥2 段的叶子查询标。
-        if (clean.length === 1) return;
         d2.dirPath = clean.slice();
         d2.dir = clean[clean.length - 1] || '';
         d2.dirs = d2.dir ? [d2.dir] : [];
@@ -5069,29 +5068,17 @@ function injectBastionAssetHook(requireStable) {
         (list || []).forEach(function(d){
           var k = d.devId || d.name + d.ip;
           var old = map.get(k);
-          // 目录合并原则:"更深的路径 = 更具体的目录"优先。父目录查询是前缀匹配(会返回
-          // 子目录设备),不能算设备真实所属;同深度多条(设备属多个同层目录)取并集,
-          // 浅的(父目录)被深的下掉 —— 设备归叶子,不再被并进根/父分组。
-          if (old && old.dirPath && old.dirPath.length && d.dirPath && d.dirPath.length) {
-            if (d.dirPath.length < old.dirPath.length) {
-              // 新捕获更浅(父目录):保留旧的(更深/更具体)
-              d.dirPath = old.dirPath.slice();
-              if (old.dirs && old.dirs.length) d.dirs = old.dirs.slice();
-            } else if (d.dirPath.length === old.dirPath.length) {
-              // 同深度:dirs 并集(设备可属多个同层目录,与网页一致);dirPath 保留首次(主目录稳定)
-              var dirUnion = new Set(old.dirs || []);
-              d.dirs.forEach(function(x){ if (x) dirUnion.add(x); });
-              d.dirs = Array.from(dirUnion);
-              d.dirPath = old.dirPath.slice();
-            }
-            // 更深的新捕获:d.dirPath/d.dirs 保持新的(叶子)
-          } else if (old && old.dirPath && old.dirPath.length && (!d.dirPath || !d.dirPath.length)) {
-            d.dirPath = old.dirPath.slice();
-            if (old.dirs && old.dirs.length) d.dirs = old.dirs.slice();
+          // 主目录(dir/dirPath)以首次捕获为准(多目录设备展示稳定);dirs 取并集记录全部业务目录
+          if (old && old.dir) d.dir = old.dir;
+          if (old && old.dirPath && old.dirPath.length) d.dirPath = old.dirPath;
+          // dirs 取并集:一台设备可属多个业务目录(根/父/叶,与右侧浏览器一致),不去重
+          if (old && old.dirs && old.dirs.length && d.dirs && d.dirs.length) {
+            var dirUnion = new Set(old.dirs);
+            d.dirs.forEach(function(x){ if (x) dirUnion.add(x); });
+            d.dirs = Array.from(dirUnion);
+          } else if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) {
+            d.dirs = old.dirs;
           }
-          // dir = 最深 dirPath 的末段(具体目录);旧 dir 兜底
-          if (d.dirPath && d.dirPath.length) d.dir = d.dirPath[d.dirPath.length - 1] || '';
-          else if (old && old.dir) d.dir = old.dir;
           // 保留旧 favGroup 前先剔除历史脏数据("undefinedxxx" 是早期版本映射 bug 产物),
           // 否则合并时会把残留的坏分组一直带下去;干净的 favGroup 正常保留
           if (old && old.favGroup && !d.favGroup && old.favGroup.indexOf('undefined') !== 0) d.favGroup = old.favGroup;
@@ -5330,21 +5317,6 @@ function injectBastionAssetHook(requireStable) {
             return t;
           }).catch(function(){ return ''; });
         }).then(function(){
-          // 根级/未分类设备(只被 root 查询返回、未进入任何子目录)→ 归到业务根,
-          // 避免落「未分组」与浏览器不一致。业务根取观察到的 paths[0]。
-          try {
-            var rn = '';
-            var seenR = {};
-            (window.__bastionPaths || []).forEach(function(s){
-              var a = []; try { a = JSON.parse(s); } catch (e) {}
-              if (a && a[0] && !seenR[a[0]]) { seenR[a[0]] = 1; if (!rn) rn = a[0]; }
-            });
-            if (rn) {
-              (window.__bastionAssets || []).forEach(function(x){
-                if (!x.dir && !((x.dirs || []).length)) { x.dir = rn; x.dirs = [rn]; if (!x.dirPath || !x.dirPath.length) x.dirPath = [rn]; }
-              });
-            }
-          } catch (e) {}
           (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
           window.__bastionFetchState.running = false;
           window.__bastionAllLoading = false;
