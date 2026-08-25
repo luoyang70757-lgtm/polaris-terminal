@@ -5093,7 +5093,7 @@ function injectBastionAssetHook(requireStable) {
           }
         } catch (e) {}
         if (!text) return;
-        const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\\/getTree/.test(url);
+        const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\\/getTree|getLoginUserRecentDevs/.test(url);
         // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
         const broad = /accessView|device|tree|asset|host|group|fav/i.test(url);
         if (!matched && !broad) return;
@@ -5215,6 +5215,7 @@ function injectBastionAssetHook(requireStable) {
       window.__bastionFetchAll = function() {
         if (window.__bastionFetchState.running) return Promise.resolve(false);
         window.__bastionFetchState.running = true;
+        window.__bastionFetchState.gotAny = false; // 本轮是否从任何接口拿到过设备(未登录=全空)
         window.__bastionAllLoading = true;
         (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-start' });
         // paths 是完整目录路径数组(如 ["中华人寿大连IDC","安全设备"]),逐目录分页拉全
@@ -5227,6 +5228,7 @@ function injectBastionAssetHook(requireStable) {
           }).then(function(t){
             var j = null; try { j = JSON.parse(t); } catch (e) {}
             if (!j || !j.content) return true; // 该页失败:跳过(已有结果保留,不阻塞整体)
+            if (Array.isArray(j.content) && j.content.length) window.__bastionFetchState.gotAny = true;
             if (j.last === false && j.totalPages && page + 1 < j.totalPages) {
               return bdelay(150).then(function(){ return fetchPathDevs(paths, page + 1); });
             }
@@ -5251,6 +5253,25 @@ function injectBastionAssetHook(requireStable) {
           } catch (e) {}
           return out;
         }
+        // 最近设备:登录后必可用,不依赖 webview 停在哪个页面 —— 兜底确保左侧有资产
+        // (空 paths 若不被该版本支持,最近设备仍能拉回一批;目录分组靠观察 paths 补)
+        function fetchRecent(page) {
+          page = page || 0;
+          return bget('/shterm/api/asset/getLoginUserRecentDevs?page=' + page + '&size=100&sort=accessTime,desc', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}'
+          }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && Array.isArray(j.content) && j.content.length) {
+              window.__bastionFetchState.gotAny = true;
+              var devs = parseDevs(j, null);
+              if (devs.length) mergeDevs(devs);
+              if (j.last === false && j.totalPages && page + 1 < j.totalPages) {
+                return bdelay(150).then(function(){ return fetchRecent(page + 1); });
+              }
+            }
+            return true;
+          }).catch(function(){ return true; });
+        }
         var fetchPlan = bget('/shterm/api/asset/getAccessViewTree', { method: 'GET' }).then(function(t){
           var j = null; try { j = JSON.parse(t); } catch (e) {}
           if (j && j.children) {
@@ -5262,23 +5283,22 @@ function injectBastionAssetHook(requireStable) {
             rootNames.forEach(function(rn){ p = p.then(function(){ return fetchPathDevs([rn]); }); });
             return p;
           }
-          // 无树接口 → 用观察到的目录补拉;一个目录都没有(webview 没打开过资产视图,
-          // 停在 RIS 等非资产页)则试空 paths 拉全量 —— 部分版本空 paths 返回全部设备,
-          // 至少让左侧有资产(先未分组,打开资产视图后按请求体 paths 自动补目录)。
+          // 无树接口:先空 paths 拉全量(不依赖资产视图,部分版本返回全部设备),
+          // 再用观察到的目录逐个补拉(给设备补业务目录分组)
+          var p2 = fetchPathDevs([]);
           var paths2 = observedPaths();
-          var p2 = Promise.resolve();
-          if (paths2.length) {
-            paths2.forEach(function(pth){ p2 = p2.then(function(){ return fetchPathDevs(pth); }); });
-          } else {
-            p2 = p2.then(function(){ return fetchPathDevs([]); });
-          }
+          paths2.forEach(function(pth){ p2 = p2.then(function(){ return fetchPathDevs(pth); }); });
           return p2;
         }).catch(function(){ return true; }); // 树接口请求失败(不存在/未登录)不中断,继续收藏等后续步骤
-        return fetchPlan.then(function(){
+        return fetchPlan.then(function(){ return fetchRecent(0); }).then(function(){
           // 收藏设备主动拉一次(真实接口是 PUT + body {favId:null},不是 GET ——
           // 用 GET 会被拒/返回空,收藏永远拉不到;来自 10.204.240.4-5.har 实测)
           var favBody = JSON.stringify({ page: 0, size: 100, favId: null });
-          return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).catch(function(){ return ''; });
+          return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && Array.isArray(j.content) && j.content.length) window.__bastionFetchState.gotAny = true;
+            return t;
+          }).catch(function(){ return ''; });
         }).then(function(){
           // 收藏夹树(userFav/getTree)主动拉一次,前端不一定每次都会发;结果存下来供收藏分组映射
           return bget('/shterm/api/userFav/getTree', { method: 'GET' }).then(function(t){
@@ -5440,6 +5460,25 @@ function injectBastionAssetHook(requireStable) {
         }
         return one();
       };
+      // 资产视图路由发现:读 AngularJS $route 全部路由。H3C 登录后默认页可能不是资产视图
+      // (不发 getAccessViewDevs),知道路由后「拉取资产」可主动跳转。每次注入都尝试,宿主可再调。
+      window.__bastionDiscoverRoutes = function() {
+        try {
+          var inj2 = null;
+          try { inj2 = angular.element(document.querySelector('[ng-app]') || document.body).injector(); } catch (e) {}
+          if (inj2) {
+            var routes = null;
+            try { routes = inj2.get('$route').routes; } catch (e) {}
+            if (routes && typeof routes === 'object') {
+              window.__bastionRoutes = Object.keys(routes)
+                .filter(function(r){ return r && r !== '/' && r.indexOf(':') === -1 && r.indexOf('?') === -1; })
+                .sort();
+            }
+          }
+        } catch (e) {}
+        return window.__bastionRoutes || [];
+      };
+      try { window.__bastionDiscoverRoutes(); } catch (e) {}
       } catch (e) {
         // 页面状态异常(导航中/登录页 fetch 已被 SPA 重定义等):静默失败并复位注入标记,
         // 下轮 poll 会重新尝试。不抛错 → 避免 Electron 的
@@ -5695,7 +5734,7 @@ function pollBastionAssets(force) {
       }
       // 左侧空状态提示携带实时诊断:用户不开调试面板,直接看提示文字就能定位断在哪一环。
       // URL 非 /shterm/根 → isH3c 拒绝;捕获=0 → 钩子/页面没触发资产接口;钩子✗ → 注入丢了。
-      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}${r.hookErr ? ' 注入:' + r.hookErr : ''}`;
+      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}${(!(r.assets || []).length && r.fetchState && r.fetchState.gotAny === false ? ' ·未登录/待认证' : '')}${r.hookErr ? ' 注入:' + r.hookErr : ''}`;
       if (hintNow !== bastionDiagHint) { bastionDiagHint = hintNow; changed = true; }
       if (changed) renderSessionList(els.inputSessionSearch.value);
       // 面板可见诊断心跳:每 30s 报一次捕获状态(不随数据变化,保证调试面板能看到)。
@@ -5836,10 +5875,10 @@ function exportBastionDiag() {
   const wv = els.bastionWebview;
   // diag/favTree/assets 都存在 webview(隔离的 guest 页面)的 window 里,从 webview 读,不是主窗口
   const readGuest = (wv && wv.executeJavaScript)
-    ? wv.executeJavaScript(`JSON.stringify({ diag: window.__bastionDiag || [], favTree: window.__bastionFavTree || null, assets: window.__bastionAssets || [], netLog: window.__bastionNetLog || [] })`)
-        .then((s) => { try { return JSON.parse(s); } catch { return { diag: [], favTree: null, assets: [], netLog: [] }; } })
-        .catch(() => ({ diag: [], favTree: null, assets: [], netLog: [] }))
-    : Promise.resolve({ diag: [], favTree: null, assets: [], netLog: [] });
+    ? wv.executeJavaScript(`JSON.stringify({ diag: window.__bastionDiag || [], favTree: window.__bastionFavTree || null, assets: window.__bastionAssets || [], netLog: window.__bastionNetLog || [], routes: (typeof window.__bastionDiscoverRoutes === 'function' ? window.__bastionDiscoverRoutes() : (window.__bastionRoutes || [])) })`)
+        .then((s) => { try { return JSON.parse(s); } catch { return { diag: [], favTree: null, assets: [], netLog: [], routes: [] }; } })
+        .catch(() => ({ diag: [], favTree: null, assets: [], netLog: [], routes: [] }))
+    : Promise.resolve({ diag: [], favTree: null, assets: [], netLog: [], routes: [] });
   readGuest.then((guest) => {
     const data = {
       app: 'Polaris',
@@ -5854,6 +5893,7 @@ function exportBastionDiag() {
       diag: guest.diag || [],
       netLog: guest.netLog || [],   // 全量 API 抓包(浏览器标签登录全过程)
       navLog: window.__bastionNavLog || [], // 页面跳转路由
+      routes: guest.routes || [],   // AngularJS $route 全量路由(定位资产视图)
       connLog: window.__bastionConnLog || [],
     };
     window.api.exportBastionDiag(data).then((r) => {
@@ -6100,7 +6140,7 @@ function renderBastionSavedSessions(container, f) {
             for (const a of arr) assetsWrap.appendChild(makeBastionAssetItem(a));
           }
         } else {
-          assetsWrap.textContent = '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」'
+          assetsWrap.textContent = '未捕获到资产:请在右侧浏览器完成登录与双因素认证,通过后资产自动捕获;或点「🔄 拉取资产」立即同步'
             + (bastionDiagHint ? ` [${bastionDiagHint}]` : '');
         }
       } else {
