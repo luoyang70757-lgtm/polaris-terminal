@@ -124,6 +124,19 @@ function findHar() {
     assert((w.__bastionAssets || []).length >= 800, '补拉后资产仍 >=800');
   });
 
+  await ok('全量 API 抓包:netLog 记录所有非静态请求(方法/URL/请求体/响应)', async () => {
+    const net = w.__bastionNetLog || [];
+    const total = entries.filter((e) => /getAccessViewDevs|getFavoriteDevices|getLoginUserRecentDevs|sessshare/.test(e.request.url)).length;
+    assert(net.length >= total, 'netLog 应覆盖全部 API 请求,实际 ' + net.length + ' / ' + total);
+    const sample = net.find((n) => n.url.includes('getAccessViewDevs'));
+    assert(sample, '应有 getAccessViewDevs 记录');
+    assert(sample.m === 'PUT', '方法应为 PUT,实际 ' + sample.m);
+    assert(sample.req && sample.req.includes('paths'), '请求体应含 paths');
+    assert(sample.resp && sample.resp.length > 0, '响应预览应非空');
+    const hasTree = net.some((n) => n.url.includes('userFav') || n.url.includes('getAccessViewTree'));
+    console.log('    netLog 条数:' + net.length + ', 含目录/收藏接口:' + hasTree);
+  });
+
   console.log('\n=== ' + (failed ? failed + ' 项失败' : '全部通过(' + passed + ')') + ' ===');
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error('执行异常:', e.message); process.exit(1); });

@@ -5070,8 +5070,20 @@ function injectBastionAssetHook(requireStable) {
         });
         window.__bastionAssets = Array.from(map.values());
       }
-      function capture(url, text, body) {
-        if (!url || !text) return;
+      function capture(url, text, body, method) {
+        if (!url) return;
+        // 全量 API 抓包:记录所有非静态资源请求(方法/URL/请求体/响应预览),供导出分析。
+        // 用于定位:资产视图路由、目录树接口、getAccessViewDevs 调用形状 —— 不写死接口名,
+        // 页面实际调了什么就记录什么,浏览器登录/点资产视图的全过程都能回放。
+        try {
+          const isStatic = /\.(png|jpe?g|gif|svg|css|js|ico|woff2?|ttf|eot|map|html?)(\?|$)/i.test(url) || /\/resources\//.test(url);
+          if (!isStatic) {
+            const net = window.__bastionNetLog || (window.__bastionNetLog = []);
+            net.push({ ts: Date.now(), m: String(method || (body ? 'POST' : 'GET')), url: String(url).slice(0, 300), req: String(body || '').slice(0, 1200), len: (text || '').length, resp: String(text || '').slice(0, 1200) });
+            if (net.length > 500) net.splice(0, net.length - 500);
+          }
+        } catch (e) {}
+        if (!text) return;
         const matched = /getAccessViewDevs|getFavoriteDevices|getAccessViewTree|userFav\\/getTree/.test(url);
         // 兜底:所有"像资产请求"的 URL 都记录(判断真实 API 名是否与代码假设不同)
         const broad = /accessView|device|tree|asset|host|group|fav/i.test(url);
@@ -5150,9 +5162,9 @@ function injectBastionAssetHook(requireStable) {
       // 钩 XMLHttpRequest
       const oOpen = XMLHttpRequest.prototype.open;
       const oSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function(m, u) { this.__u = u; return oOpen.apply(this, arguments); };
+      XMLHttpRequest.prototype.open = function(m, u) { this.__m = m; this.__u = u; return oOpen.apply(this, arguments); };
       XMLHttpRequest.prototype.send = function() {
-        try { this.__body = arguments[0]; this.addEventListener('load', function(){ capture(this.__u, this.responseText, this.__body); }); } catch(e) {}
+        try { this.__body = arguments[0]; this.addEventListener('load', function(){ capture(this.__u, this.responseText, this.__body, this.__m); }); } catch(e) {}
         return oSend.apply(this, arguments);
       };
       // 钩 fetch(保存原始 fetch,翻页请求也用被 hook 的 window.fetch,响应自动走 capture 合并+记录)
@@ -5160,7 +5172,7 @@ function injectBastionAssetHook(requireStable) {
       window.fetch = function() {
         const _init = arguments[1] || {};
         return oFetch.apply(this, arguments).then(function(r){
-          try { r.clone().text().then(function(t){ capture(r.url, t, _init.body || ''); }); } catch(e) {}
+          try { r.clone().text().then(function(t){ capture(r.url, t, _init.body || '', _init.method || 'GET'); }); } catch(e) {}
           return r;
         });
       };
@@ -5809,10 +5821,10 @@ function exportBastionDiag() {
   const wv = els.bastionWebview;
   // diag/favTree/assets 都存在 webview(隔离的 guest 页面)的 window 里,从 webview 读,不是主窗口
   const readGuest = (wv && wv.executeJavaScript)
-    ? wv.executeJavaScript(`JSON.stringify({ diag: window.__bastionDiag || [], favTree: window.__bastionFavTree || null, assets: window.__bastionAssets || [] })`)
-        .then((s) => { try { return JSON.parse(s); } catch { return { diag: [], favTree: null, assets: [] }; } })
-        .catch(() => ({ diag: [], favTree: null, assets: [] }))
-    : Promise.resolve({ diag: [], favTree: null, assets: [] });
+    ? wv.executeJavaScript(`JSON.stringify({ diag: window.__bastionDiag || [], favTree: window.__bastionFavTree || null, assets: window.__bastionAssets || [], netLog: window.__bastionNetLog || [] })`)
+        .then((s) => { try { return JSON.parse(s); } catch { return { diag: [], favTree: null, assets: [], netLog: [] }; } })
+        .catch(() => ({ diag: [], favTree: null, assets: [], netLog: [] }))
+    : Promise.resolve({ diag: [], favTree: null, assets: [], netLog: [] });
   readGuest.then((guest) => {
     const data = {
       app: 'Polaris',
@@ -5825,6 +5837,8 @@ function exportBastionDiag() {
       favTree: guest.favTree || state.bastionFavTree || null,
       favCount: state.bastionFavSet ? state.bastionFavSet.size : 0,
       diag: guest.diag || [],
+      netLog: guest.netLog || [],   // 全量 API 抓包(浏览器标签登录全过程)
+      navLog: window.__bastionNavLog || [], // 页面跳转路由
       connLog: window.__bastionConnLog || [],
     };
     window.api.exportBastionDiag(data).then((r) => {
@@ -6640,8 +6654,21 @@ function initBastionWebview() {
     }
   });
   // 地址栏显示当前地址 + 页面标题(诊断空白页:能看到加载到哪个地址/标题)
+  // 记录页面跳转路由(全量/SPA hash 跳转都记):导出抓包时用于定位资产视图的 #/… 路由
+  window.__bastionNavLog = window.__bastionNavLog || [];
+  const bastionNavRec = (u) => {
+    try {
+      window.__bastionNavLog.push({ ts: Date.now(), url: String(u || '').slice(0, 300) });
+      if (window.__bastionNavLog.length > 200) window.__bastionNavLog.splice(0, window.__bastionNavLog.length - 200);
+    } catch { /* ignore */ }
+  };
   wv.addEventListener('did-navigate', (e) => {
+    bastionNavRec(e.url);
     try { if (e.url && e.url !== 'about:blank') els.bastionCurrent.textContent = e.url; } catch { /* ignore */ }
+  });
+  // SPA hash 路由跳转(#/… 变化)也记录 —— 资产视图 vs RIS 视图的路由差异靠它定位
+  wv.addEventListener('did-navigate-in-page', (e) => {
+    bastionNavRec(e.url);
   });
   wv.addEventListener('page-title-updated', (e) => {
     try {
