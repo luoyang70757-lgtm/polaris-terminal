@@ -25,7 +25,12 @@ const SEED_DIR = process.env.MOCK_SFTP_ROOT || path.join(__dirname, 'sftp-root')
 // 每个节点都带 _disk(它在磁盘上的绝对路径),写操作直接落盘。
 // 如果磁盘根目录还不存在(首次),先铺一份演示文件,保证开箱就有内容可玩。
 function ensureSeed() {
-  if (fs.existsSync(SEED_DIR)) return;
+  if (fs.existsSync(SEED_DIR)) {
+    // 磁盘根已存在(可能是旧版本铺的):/tmp 也要保证有 —— SFTP 家目录探测"无家目录 → /tmp"
+    // 时要能列出;不补的话旧 mock 磁盘上 app 回退到 /tmp 会"No such file"。幂等补建。
+    fs.mkdirSync(path.join(SEED_DIR, 'tmp'), { recursive: true });
+    return;
+  }
   fs.mkdirSync(SEED_DIR, { recursive: true });
   const w = (rel, content) => {
     const p = path.join(SEED_DIR, rel);

@@ -241,6 +241,12 @@ const sshd = new SSHServer({ hostKeys: [fs.readFileSync(path.join(__dirname, 'ho
     console.log('[SSH] 客户端已认证,等待会话请求');
   });
 
+  // keepalive 全局请求(ssh2 客户端每 10s 心跳):必须 accept,否则连续 3 次无回应
+  // 客户端判"Keepalive timeout"掉线(真实 KoKo 网关同样回心跳)。
+  client.on('request', (accept, reject, name) => {
+    if (accept) accept();
+  });
+
   // 直接 TCP 转发(direct-tcpip):本地端口转发 / 动态 SOCKS / 跳板机(ProxyJump)走这个通道。
   // 区分两类目标:
   //   - 本机地址(127.0.0.1/::1)→ 真转发:跳板场景要把隧道接到本机另一个 mock 的 SSH 端口
@@ -295,9 +301,15 @@ const sshd = new SSHServer({ hostKeys: [fs.readFileSync(path.join(__dirname, 'ho
       });
     });
     session.on('exec', (accept, reject, info) => {
-      // 支持 exec 命令模式(真实 KoKo 也支持),演示用:直接回显
+      // 支持 exec 命令模式(真实 KoKo 网关也支持):app 的 SFTP 家目录探测靠 exec('pwd')
+      // 拿登录目录。这里 pwd 返回与 SFTP VFS 根一致的 '/',其余命令回显演示。
       const stream = accept();
-      stream.write(`(mock) exec: ${info.command}\r\n`);
+      const cmd = String(info.command || '').trim();
+      if (cmd === 'pwd' || cmd === 'pwd -L' || cmd === 'pwd -P') {
+        stream.write('/\r\n'); // 与 sftp-vfs 根一致:家目录探测 → '/' 可访问
+      } else {
+        stream.write(`(mock) exec: ${cmd}\r\n`);
+      }
       stream.exit(0);
       stream.end();
     });
