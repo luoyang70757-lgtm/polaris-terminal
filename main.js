@@ -2206,25 +2206,37 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
       }),
     ]);
-    const entries = await Promise.all(items.map(async (it) => {
+    // 设备 stat 骗人(读目录属性报 0,数据其实在):先用已知上传大小覆盖;
+    // 不在已知记录里的再试一次新鲜 stat(部分设备 readdir 属性过期但 stat 准)。
+    // 有界探测:只探"最近 24h 修改"的 size0 文件(用户关心的都是刚传/刚改的),
+    // 最多 10 个、单次 2s 超时 —— 旧文件/慢设备不会拖垮列表(20s 超时只包了 readdir,
+    // 旧版 stat 无超时会挂住整个 sftp:list)。
+    let probeBudget = 10;
+    const NOW = Date.now();
+    const probeStat = (fullPath) => new Promise((res) => {
+      let done = false;
+      const to = setTimeout(() => { if (!done) { done = true; res(0); } }, 2000);
+      sftp.stat(fullPath, (e, x) => {
+        if (done) return;
+        done = true; clearTimeout(to);
+        res((!e && x && x.size) ? x.size : 0);
+      });
+    });
+    const entries = [];
+    for (const it of items) {
       const isDir = !!it.attrs.isDirectory();
       let size = it.attrs.size || 0;
       const fullPath = joinRemote(remotePath, it.filename);
-      // 设备 stat 骗人(读目录属性报 0,数据其实在):先用已知上传大小覆盖;
-      // 不在已知记录里的再试一次新鲜 stat(部分设备 readdir 属性过期但 stat 准)。
-      // 两个都拿不到就保持 0 —— 避免对慢目录逐文件读内容拖垮列表。
       if (!isDir && size === 0) {
         const known = sftpKnownSizes.get(`${sessionId}|${fullPath}`);
         if (known) size = known;
-        else {
-          try {
-            const a = await new Promise((res, rej) => sftp.stat(fullPath, (e, x) => (e ? rej(e) : res(x))));
-            if (a && a.size) size = a.size;
-          } catch { /* stat 失败保持 0 */ }
+        else if (probeBudget > 0 && it.attrs.mtime && (NOW - it.attrs.mtime * 1000) < 24 * 3600 * 1000) {
+          probeBudget--;
+          size = await probeStat(fullPath);
         }
       }
-      return { name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null };
-    }));
+      entries.push({ name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null });
+    }
     return { ok: true, entries, cwd };
   } catch (err) {
     return { ok: false, error: err.message };
