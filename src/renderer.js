@@ -4985,10 +4985,15 @@ function showBastionCfgMsg(text) {
 function injectBastionAssetHook(requireStable) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
-  if (bastionWebviewLoading()) return; // 加载中不注入(executeJavaScript 会失败)
-  // 轮询路径(requireStable=true 默认):要求页面稳定 2s 再注入,避免导航风暴中帧层面报错;
-  // did-stop-loading 的 debounce 路径传 false:debounce(800ms)本身就是稳定等待,不再二次卡 2s
-  if (requireStable !== false && !bastionPageStable(2000)) return;
+  // 普通路径(requireStable 默认,trigger 调用):要求页面稳定 2s 再注入,避免导航风暴中报错。
+  // 恢复路径(requireStable=false,轮询/页面加载后):**无条件尝试注入** —— 不再因 isLoading
+  // 或页面稳定度提前返回。历史版本本就无条件注入;加上拦截后,isLoading 抖动/页面重置会让
+  // 钩子永远进不去(用户实测钩子✗)。executeJavaScript 在导航中会拒绝,由下方 .catch 计数
+  // 并下轮重试,不会刷屏报错。
+  if (requireStable !== false) {
+    if (bastionWebviewLoading()) return;
+    if (!bastionPageStable(2000)) return;
+  }
   try {
     wv.executeJavaScript(`(function(){
       try {
@@ -5492,9 +5497,11 @@ function injectBastionAssetHook(requireStable) {
       bastionInjectFails = 0;
       bastionInjectBackoff = 8000;
       bastionInjectDisabled = false;
-    }).catch(() => {
+      bastionInjectErr = '';
+    }).catch((err) => {
       // 帧层面失败(页面导航/卸载中,executeJavaScript 拒绝,guest 侧 try/catch 拦不住):
       // 指数退避;连续失败过多则暂停自动注入(页面明显不可用,不再产生错误日志)
+      bastionInjectErr = String((err && err.message) || err || '').slice(0, 120);
       bastionInjectFails++;
       bastionInjectBackoff = Math.min(60000, 8000 * Math.pow(2, Math.min(bastionInjectFails, 3)));
       if (bastionInjectFails >= 3) {
@@ -5520,6 +5527,7 @@ let bastionSpasLogged = false;    // "SPA 未拉全量"日志只打一次
 let bastionLastPollKey = '';      // 轮询诊断日志限流:状态变化才打
 let bastionLastPollDlog = 0;      // 面板 BASTION 心跳:每 30s 报一次捕获状态(调试面板可见)
 let bastionDiagHint = '';         // 左侧空状态提示携带的实时诊断(URL/捕获数/钩子存活)
+let bastionInjectErr = '';        // 最近一次注入的帧层面错误(executeJavaScript 拒绝原因),提示里显示
 let bastionPageStableTs = 0;      // 最近一次 did-stop-loading 时间;重定向风暴期间反复刷新 → 一直不稳
 // 页面是否已稳定(停止加载 ≥ms 且未再开始导航):稳定前不执行注入/轮询,避免导航瞬间帧层面报错
 function bastionPageStable(ms) {
@@ -5734,7 +5742,7 @@ function pollBastionAssets(force) {
       }
       // 左侧空状态提示携带实时诊断:用户不开调试面板,直接看提示文字就能定位断在哪一环。
       // URL 非 /shterm/根 → isH3c 拒绝;捕获=0 → 钩子/页面没触发资产接口;钩子✗ → 注入丢了。
-      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}${(!(r.assets || []).length && r.fetchState && r.fetchState.gotAny === false ? ' ·未登录/待认证' : '')}${r.hookErr ? ' 注入:' + r.hookErr : ''}`;
+      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}${(!(r.assets || []).length && r.fetchState && r.fetchState.gotAny === false ? ' ·未登录/待认证' : '')}${(!r.hookAlive && (bastionInjectErr || r.hookErr) ? ' 注入:' + (bastionInjectErr || r.hookErr) : '')}`;
       if (hintNow !== bastionDiagHint) { bastionDiagHint = hintNow; changed = true; }
       if (changed) renderSessionList(els.inputSessionSearch.value);
       // 面板可见诊断心跳:每 30s 报一次捕获状态(不随数据变化,保证调试面板能看到)。
