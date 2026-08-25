@@ -29,21 +29,29 @@ async function ok(name, fn) {
 // ---- 从 renderer.js 提取注入脚本本体(与运行时代码完全一致) ----
 function extractInjectedScript() {
   const src = fs.readFileSync(path.join(__dirname, 'src/renderer.js'), 'utf8');
-  const start = src.indexOf('function injectBastionAssetHook()');
+  const start = src.indexOf('function injectBastionAssetHook(');
   assert(start >= 0, '找不到 injectBastionAssetHook');
-  const seg = src.slice(start, start + 20000);
+  const seg = src.slice(start, start + 40000);
   const open = seg.indexOf('executeJavaScript(`(function(){');
   assert(open >= 0, '找不到 executeJavaScript 模板起点');
   const begin = open + 'executeJavaScript(`'.length;
   // 模板以 })()` 结束(反引号紧跟其后),匹配完整的模板闭合
   const close = seg.indexOf('})()`)', begin);
   assert(close >= 0, '找不到模板终点');
-  return seg.slice(begin, close + 4); // 含 (function(){ ... })()
+  // 模拟宿主模板字面量转义:注入脚本里的 \\/ 在运行时被宿主模板解码成 \/
+  return seg.slice(begin, close + 4).replace(/\\\\\//g, '\\/');
 }
 
-// ---- 从 HAR 提取真实响应 ----
+// ---- 从 HAR 提取真实响应(优先当前版本 -11,回退旧版) ----
 function loadHar(fname) {
-  const d = JSON.parse(fs.readFileSync(path.join(__dirname, '..', fname), 'utf8'));
+  const candidates = [fname, '10.204.240.4-11.har', '10.204.240.4-10.har', '10.204.240.4-9.har', '10.204.240.4-8.har'];
+  let p = null;
+  for (const c of candidates) {
+    const q = path.join(__dirname, c);
+    if (fs.existsSync(q)) { p = q; break; }
+  }
+  assert(p, '仓库根目录没有可用的 10.204.240.4-*.har(HAR 不入库,本测试仅本机跑)');
+  const d = JSON.parse(fs.readFileSync(p, 'utf8'));
   const out = {};
   for (const e of d.log.entries) {
     const u = e.request.url;
@@ -169,16 +177,44 @@ function mockFetchByUrl(routes) {
     assert.ok(w4.__bastionFavSet.has('100'), 'favSet 应含 devId 100');
   });
 
-  await ok('目录树解析(真实 HAR,203 节点 + path)', async () => {
-    assert(har.tree, 'HAR 里没有 getAccessViewTree 响应');
-    const tree = JSON.parse(har.tree);
-    const w5 = runInjected(mockFetchByUrl({ getAccessViewTree: JSON.stringify(tree) }));
-    await w5.__bastionFetchAll();
-    assert.ok(Array.isArray(w5.__bastionTree), '应有树');
-    assert.strictEqual(w5.__bastionTree.length, 203, '203 个目录节点,实际 ' + (w5.__bastionTree || []).length);
-    const n = w5.__bastionTree[0];
-    assert.ok(Array.isArray(n.path) && n.path.length === 2, 'path 应为 [根, 目录名]');
-    assert.strictEqual(n.path[0], '中华人寿大连IDC');
+  if (har.tree) {
+    await ok('目录树解析(树接口版本:getAccessViewTree → 树结构)', async () => {
+      const tree = JSON.parse(har.tree);
+      const w5 = runInjected(mockFetchByUrl({ getAccessViewTree: JSON.stringify(tree) }));
+      await w5.__bastionFetchAll();
+      assert.ok(Array.isArray(w5.__bastionTree), '应有树');
+      assert.ok(w5.__bastionTree.length > 0, '树非空');
+    });
+  }
+
+  // 无树接口版本(10.204.240.4 现行):目录归属从 getAccessViewDevs 请求体 paths 自动获取
+  // (不写死 getAccessViewTree)。__bastionFetchAll 用观察到的 paths 补拉,设备带 dir/dirs/dirPath。
+  await ok('无树接口自动归属(观察 paths → fetchAll 补拉 → dir/dirs/dirPath)', async () => {
+    const mkDev = (id, name) => ({ id, dev: { id, name, ip: '10.1.1.' + id, services: { services: { ssh: { port: 22 } } }, accounts: { accounts: [{ name: 'root' }] } }, recent: { account: 'root' } });
+    const rA = { content: [mkDev(1, 'host-a')], last: true, totalPages: 1 };
+    const rB = { content: [mkDev(1, 'host-a'), mkDev(2, 'host-b')], last: true, totalPages: 1 };
+    const w7 = runInjected((url, init) => {
+      let resp = '{}';
+      if (String(url).includes('getAccessViewDevs')) {
+        let body = {};
+        try { body = JSON.parse((init && init.body) || '{}'); } catch {}
+        const p = (body.paths || []).join('/');
+        resp = JSON.stringify(p === '根/目录A' ? rA : (p === '根/目录B' ? rB : { content: [], last: true, totalPages: 1 }));
+      }
+      return Promise.resolve({ clone: () => ({ text: () => Promise.resolve(resp) }), text: () => Promise.resolve(resp) });
+    });
+    // 模拟浏览器已观察到的两个目录(无树接口)
+    w7.__bastionPaths.add(JSON.stringify(['根', '目录A']));
+    w7.__bastionPaths.add(JSON.stringify(['根', '目录B']));
+    const r = await w7.__bastionFetchAll();
+    assert.strictEqual(r, true, '无树接口 fetchAll 不应失败');
+    const a = w7.__bastionAssets.find((x) => x.name === 'host-a');
+    const b = w7.__bastionAssets.find((x) => x.name === 'host-b');
+    assert(a, 'host-a 应捕获');
+    assert.strictEqual(a.dir, '目录A', '主目录首次为准');
+    assert.deepStrictEqual(a.dirPath, ['根', '目录A'], 'dirPath 首次为准');
+    assert.ok(a.dirs.includes('目录A') && a.dirs.includes('目录B'), 'host-a 应属两个目录(dirs 并集),实际 ' + JSON.stringify(a.dirs));
+    assert.strictEqual(b.dir, '目录B', 'host-b 主目录 目录B');
   });
 
   await ok('目录分组分配(逐目录请求 → dir 字段)', async () => {

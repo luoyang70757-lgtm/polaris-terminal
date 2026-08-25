@@ -4986,6 +4986,7 @@ function injectBastionAssetHook(requireStable) {
       if (window.__bastionHookInjected) return;
       window.__bastionHookInjected = true;
       window.__bastionAssets = [];
+      window.__bastionPaths = new Set(); // 观察到的业务目录(getAccessViewDevs 请求体 paths);无树接口版本用它主动补拉
       window.__bastionDiag = [{ ts: Date.now(), ev: 'hook-injected' }];
       // 键盘焦点桥:记录"用户最后交互发生在 guest"的时间戳(click 时 webview guest 的
       // focus/focusin 事件被 Chromium 抑制、不发;pointerdown/mousedown 正常)。宿主用它
@@ -4997,7 +4998,19 @@ function injectBastionAssetHook(requireStable) {
       ['pointerdown', 'mousedown'].forEach(function (ev) {
         document.addEventListener(ev, function (e) { if (e && e.isTrusted) window.__bastionFocusTs = Date.now(); }, true);
       });
-      function parseDevs(j) {
+      // 目录归属:getAccessViewDevs 请求体的 paths 就是设备所在业务目录 —— 部分 H3C 版本
+      // 没有 getAccessViewTree,浏览器就是逐个目录请求的。把 paths 记到设备上,左侧直接按
+      // dir/dirs/dirPath 分组,不再依赖树接口(自动获取,不写死)。
+      function tagPaths(d2, paths) {
+        if (!paths || !paths.length) return;
+        var clean = [];
+        for (var i = 0; i < paths.length; i++) if (paths[i]) clean.push(String(paths[i]));
+        if (!clean.length) return;
+        d2.dirPath = clean.slice();
+        d2.dir = clean[clean.length - 1] || '';
+        d2.dirs = d2.dir ? [d2.dir] : [];
+      }
+      function parseDevs(j, paths) {
         var out = [];
         try {
           if (j.content) { // getAccessViewDevs / getFavoriteDevices: { content:[{ id, dev:{id,name,ip,services,accounts}, recent:{account} }] }
@@ -5005,7 +5018,7 @@ function injectBastionAssetHook(requireStable) {
               var d = c.dev || {};
               var srv = (d.services && d.services.services) || {};
               var accts = ((d.accounts && d.accounts.accounts) || []).map(function(a){ return a.name; }).filter(Boolean);
-              return {
+              var d2 = {
                 name: d.name || c.name,
                 ip: d.ip || '',
                 id: d.id || c.id || '',
@@ -5016,12 +5029,14 @@ function injectBastionAssetHook(requireStable) {
                 recentAccount: (c.recent && c.recent.account) || '',
                 favorite: false, dir: '', dirs: []
               };
+              tagPaths(d2, paths);
+              return d2;
             }).filter(function(d){ return d.name; });
           } else if (j.children) { // 树结构:递归收集设备(有 ip 的节点)
             (function walk(nodes){
               for (var i = 0; i < (nodes || []).length; i++) {
                 var n = nodes[i];
-                if (n.ip) out.push({ name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] });
+                if (n.ip) { var d3 = { name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] }; tagPaths(d3, paths); out.push(d3); }
                 if (n.children) walk(n.children);
               }
             })(j.children);
@@ -5036,9 +5051,17 @@ function injectBastionAssetHook(requireStable) {
         (list || []).forEach(function(d){
           var k = d.devId || d.name + d.ip;
           var old = map.get(k);
-          if (old && old.dir && !d.dir) d.dir = old.dir;
-          if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) d.dirs = old.dirs;
-          if (old && old.dirPath && !d.dirPath) d.dirPath = old.dirPath;
+          // 主目录(dir/dirPath)以首次捕获为准(多目录设备展示稳定);dirs 取并集记录全部业务目录
+          if (old && old.dir) d.dir = old.dir;
+          if (old && old.dirPath && old.dirPath.length) d.dirPath = old.dirPath;
+          // dirs 取并集:一台设备可属多个业务目录(与网页一致),后请求的目录不能顶掉先前的
+          if (old && old.dirs && old.dirs.length && d.dirs && d.dirs.length) {
+            var dirUnion = new Set(old.dirs);
+            d.dirs.forEach(function(x){ if (x) dirUnion.add(x); });
+            d.dirs = Array.from(dirUnion);
+          } else if (old && old.dirs && old.dirs.length && (!d.dirs || !d.dirs.length)) {
+            d.dirs = old.dirs;
+          }
           // 保留旧 favGroup 前先剔除历史脏数据("undefinedxxx" 是早期版本映射 bug 产物),
           // 否则合并时会把残留的坏分组一直带下去;干净的 favGroup 正常保留
           if (old && old.favGroup && !d.favGroup && old.favGroup.indexOf('undefined') !== 0) d.favGroup = old.favGroup;
@@ -5071,6 +5094,15 @@ function injectBastionAssetHook(requireStable) {
         if (diag.length > 200) diag.shift();
         window.__bastionDiag = diag;
         if (!matched || !j) return; // 没匹配到已知资产 API:只记录(供判断真实接口名),不并入资产
+        // 请求体 paths = 设备所属业务目录:部分 H3C 版本无树接口,浏览器逐个目录请求,
+        // 从请求体拿目录归属,并记录到 __bastionPaths 供主动补拉(自动获取,不写死)
+        let reqPaths = null;
+        try { if (body) { const pb = JSON.parse(body); if (pb && Array.isArray(pb.paths)) reqPaths = pb.paths; } } catch (e) {}
+        if (/getAccessViewDevs/.test(url) && reqPaths && reqPaths.length) {
+          const cleanP = [];
+          for (const p2 of reqPaths) if (p2) cleanP.push(String(p2));
+          if (cleanP.length) window.__bastionPaths.add(JSON.stringify(cleanP));
+        }
         // 目录树:getAccessViewTree → 存树结构(分组展示 + 逐目录请求用)
         if (/getAccessViewTree/.test(url) && j.children) { window.__bastionTree = j.children; return; }
         // 收藏夹树:兼容各 H3C 版本接口名(userFav/getTree 及其变体 getFavTree/favGroup/getTree 等)。
@@ -5106,8 +5138,8 @@ function injectBastionAssetHook(requireStable) {
             } catch (e) { next(); }
           })(1);
         }
-        // 解析并合并设备
-        const devs = parseDevs(j);
+        // 解析并合并设备(带请求体 paths → 目录归属)
+        const devs = parseDevs(j, reqPaths);
         if (/getFavoriteDevices/.test(url)) {
           devs.forEach(function(d){ d.favorite = true; });
           const favs = window.__bastionFavSet || (window.__bastionFavSet = new Set());
@@ -5164,48 +5196,74 @@ function injectBastionAssetHook(requireStable) {
         window.__bastionFetchState.running = true;
         window.__bastionAllLoading = true;
         (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-start' });
-        function fetchRootDevs(rootName, page) {
+        // paths 是完整目录路径数组(如 ["中华人寿大连IDC","安全设备"]),逐目录分页拉全
+        function fetchPathDevs(paths, page) {
           page = page || 0;
           var size = 100;
-          var body = JSON.stringify({ page: page, size: size, sort: 'name,asc', stateIn: '0', paths: [rootName] });
+          var body = JSON.stringify({ page: page, size: size, sort: 'name,asc', stateIn: '0', paths: paths });
           return bget('/shterm/api/asset/getAccessViewDevs?page=' + page + '&size=' + size, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: body
           }).then(function(t){
             var j = null; try { j = JSON.parse(t); } catch (e) {}
             if (!j || !j.content) return true; // 该页失败:跳过(已有结果保留,不阻塞整体)
             if (j.last === false && j.totalPages && page + 1 < j.totalPages) {
-              return bdelay(150).then(function(){ return fetchRootDevs(rootName, page + 1); });
+              return bdelay(150).then(function(){ return fetchPathDevs(paths, page + 1); });
             }
             return true;
           }).catch(function(){ return true; }); // M2:单页彻底失败(重试后仍挂)也继续后续 root/收藏,不中止整链
         }
-        return bget('/shterm/api/asset/getAccessViewTree', { method: 'GET' }).then(function(t){
+        // 目录来源:优先树接口(部分版本有);没有则用"已观察到的请求体 paths"——
+        // 浏览器本身是逐个目录请求 getAccessViewDevs 的,把它看到的目录拿来主动补拉,
+        // 不写死 getAccessViewTree(部分 H3C 版本根本没有这个接口,硬等它 = 永远拉不到)。
+        function observedPaths() {
+          var out = [];
+          var seen = {};
+          try {
+            (window.__bastionPaths || []).forEach(function(s){
+              var a = [];
+              try { a = JSON.parse(s); } catch (e) {}
+              if (a && a.length) {
+                var k2 = JSON.stringify(a);
+                if (!seen[k2]) { seen[k2] = 1; out.push(a); }
+              }
+            });
+          } catch (e) {}
+          return out;
+        }
+        var fetchPlan = bget('/shterm/api/asset/getAccessViewTree', { method: 'GET' }).then(function(t){
           var j = null; try { j = JSON.parse(t); } catch (e) {}
-          if (!j || !j.children) { window.__bastionFetchState.running = false; window.__bastionAllLoading = false; return false; }
-          window.__bastionTree = j.children;
-          var roots = {};
-          (function walk(ns){ (ns || []).forEach(function(n){ roots[(n.path && n.path[0]) || n.name] = 1; walk(n.children); }); })(j.children);
-          var rootNames = Object.keys(roots);
-          var p = Promise.resolve();
-          rootNames.forEach(function(rn){ p = p.then(function(){ return fetchRootDevs(rn); }); });
-          return p.then(function(){
-            // 收藏设备主动拉一次(真实接口是 PUT + body {favId:null},不是 GET ——
-            // 用 GET 会被拒/返回空,收藏永远拉不到;来自 10.204.240.4-5.har 实测)
-            var favBody = JSON.stringify({ page: 0, size: 100, favId: null });
-            return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).catch(function(){ return ''; });
-          }).then(function(){
-            // 收藏夹树(userFav/getTree)主动拉一次,前端不一定每次都会发;结果存下来供收藏分组映射
-            return bget('/shterm/api/userFav/getTree', { method: 'GET' }).then(function(t){
-              var j = null; try { j = JSON.parse(t); } catch (e) {}
-              if (j && (j.children || j.name)) window.__bastionFavTree = j;
-              return t;
-            }).catch(function(){ return ''; });
-          }).then(function(){
-            (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
-            window.__bastionFetchState.running = false;
-            window.__bastionAllLoading = false;
-            return true;
-          });
+          if (j && j.children) {
+            window.__bastionTree = j.children;
+            var roots = {};
+            (function walk(ns){ (ns || []).forEach(function(n){ roots[(n.path && n.path[0]) || n.name] = 1; walk(n.children); }); })(j.children);
+            var rootNames = Object.keys(roots);
+            var p = Promise.resolve();
+            rootNames.forEach(function(rn){ p = p.then(function(){ return fetchPathDevs([rn]); }); });
+            return p;
+          }
+          // 无树接口 → 用观察到的目录补拉;一个目录都没有(页面还没打开资产视图)则跳过设备拉取
+          var paths2 = observedPaths();
+          var p2 = Promise.resolve();
+          paths2.forEach(function(pth){ p2 = p2.then(function(){ return fetchPathDevs(pth); }); });
+          return p2;
+        }).catch(function(){ return true; }); // 树接口请求失败(不存在/未登录)不中断,继续收藏等后续步骤
+        return fetchPlan.then(function(){
+          // 收藏设备主动拉一次(真实接口是 PUT + body {favId:null},不是 GET ——
+          // 用 GET 会被拒/返回空,收藏永远拉不到;来自 10.204.240.4-5.har 实测)
+          var favBody = JSON.stringify({ page: 0, size: 100, favId: null });
+          return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).catch(function(){ return ''; });
+        }).then(function(){
+          // 收藏夹树(userFav/getTree)主动拉一次,前端不一定每次都会发;结果存下来供收藏分组映射
+          return bget('/shterm/api/userFav/getTree', { method: 'GET' }).then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch (e) {}
+            if (j && (j.children || j.name)) window.__bastionFavTree = j;
+            return t;
+          }).catch(function(){ return ''; });
+        }).then(function(){
+          (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
+          window.__bastionFetchState.running = false;
+          window.__bastionAllLoading = false;
+          return true;
         }).catch(function(){ window.__bastionFetchState.running = false; window.__bastionAllLoading = false; return false; });
       };
       // ---- 后台按目录补充分组(串行 + 120ms 间隔渐进式,避免打爆堡垒机;树节点 empty=true 跳过) ----
@@ -5216,6 +5274,21 @@ function injectBastionAssetHook(requireStable) {
         var dirs = [];
         // path.length >= 2 才算目录(根节点 path=[根] 只有 1 段,不是目录)
         (function walk(ns){ (ns || []).forEach(function(n){ if (n.path && n.path.length >= 2 && !n.empty) dirs.push(n); walk(n.children); }); })(tree);
+        // 无树接口(部分版本):用已观察到的 getAccessViewDevs 请求体 paths 作为目录清单
+        if (!dirs.length) {
+          try {
+            var seen2 = {};
+            (window.__bastionPaths || []).forEach(function(s){
+              var a = [];
+              try { a = JSON.parse(s); } catch (e) {}
+              if (a && a.length >= 2) {
+                var nm2 = String(a[a.length - 1]);
+                var key3 = JSON.stringify(a);
+                if (nm2 && !seen2[key3]) { seen2[key3] = 1; dirs.push({ path: a, name: nm2, empty: false }); }
+              }
+            });
+          } catch (e) {}
+        }
         if (!dirs.length) return Promise.resolve(false);
         window.__bastionFetchState.dirRunning = true;
         (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'dir-fetch-start', dirs: dirs.length });
@@ -5637,6 +5710,8 @@ function triggerBastionFullFetch() {
         // 所以直接读 webview 的 window.__bastionAssets 真实长度来判定成功。
         let wN = 0;
         try { wN = (await wv.executeJavaScript('(window.__bastionAssets||[]).length')) || 0; } catch { /* 页面导航中,读不到按 0 处理 */ }
+        // 诊断:每次拉取打一行,看 webview 到底捕获到没有 / 当前 URL / fetchAll 结果
+        console.log(`[堡垒机] 拉取结果: fetchAll=${!!ok} webview资产=${wN} state资产=${state.bastionAssets.length} URL=${(cu || '').slice(0, 80)}`);
         if (state.bastionAssets.length > 0 || wN > 0) {
           state.bastionAllFetched = true; // 资产已实际捕获(poll 据此不再反复重试)
           state.bastionAutoFetchFails = 0; // 拉取成功:重置自动失败计数,下次缺数据才有新额度
@@ -5842,7 +5917,20 @@ function renderBastionSavedSessions(container, f) {
         { label: '✏️ 编辑连接', action: () => bastionCfgEdit(s.id) },
       ];
       if (isH3CSavedConn(s)) {
-        menu.push({ label: '🔄 拉取资产', action: () => { openBastionPanel(); bastionSelectServer('B:' + s.id); setTimeout(manualBastionPull, 1500); } });
+        menu.push({ label: '🔄 拉取资产', action: () => {
+          openBastionPanel();
+          // webview 已在目标站点:不再 loadBastion 重载 —— 重载会打断已登录会话/SPA,
+          // 重载后若回到登录页或钩子没跟上,左侧资产就拉不回来。直接对当前页面拉全量。
+          let cu = '';
+          try { if (els.bastionWebview && els.bastionWebview.getURL && els.bastionWebview.getURL()) cu = els.bastionWebview.getURL(); } catch { /* ignore */ }
+          const onSite = !!(s.url && bastionOrigin(s.url) && bastionOrigin(s.url) === bastionOrigin(cu));
+          if (onSite) {
+            setTimeout(manualBastionPull, 300); // 页面稳定,立即拉
+          } else {
+            bastionSelectServer('B:' + s.id); // 空白/别的站:加载目标站点后再拉
+            setTimeout(manualBastionPull, 1500);
+          }
+        } });
       } else {
         menu.push({ label: '🔄 拉取资产', action: () => { s.assetsExpanded = true; s.assets = null; s.assetsLoadFailed = false; s.assetsLoadError = ''; bastionLoadSavedAssets(s); } });
       }
