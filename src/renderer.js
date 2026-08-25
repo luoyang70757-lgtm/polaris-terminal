@@ -4855,6 +4855,15 @@ async function bastionAutoFill(s) {
         if (user) { user.value = ${JSON.stringify(s.account || '')}; user.dispatchEvent(new Event('input', {bubbles:true})); }
         pw.value = ${JSON.stringify(password || '')};
         pw.dispatchEvent(new Event('input', {bubbles:true}));
+        // 二次认证:填完账号密码自动点登录按钮(常见 H3C 登录页;找不到按钮则用户手点,不误点)
+        try {
+          const btns = Array.from(document.querySelectorAll('button, input[type=button], input[type=submit]'));
+          const lb = btns.find(function(b){
+            var t = String(b.textContent || b.value || '').replace(/\\s+/g, '').toLowerCase();
+            return t.indexOf('登录') !== -1 || t.indexOf('login') !== -1 || t.indexOf('登入') !== -1 || t.indexOf('logon') !== -1;
+          });
+          if (lb) lb.click();
+        } catch (e) {}
         return true;
       } catch(e) { return false; }
     })()`).then((r) => { if (r && r.result && r.result.value) console.log('[堡垒机] 已自动填充账号密码'); }).catch(() => {});
@@ -6065,14 +6074,35 @@ function renderBastionSavedSessions(container, f) {
           ? `资产加载失败: ${s.assetsLoadError}`
           : '资产加载失败(确认站点为 JumpServer 且账号可登录)';
       } else if (isH3CSavedConn(s)) {
-        // H3C 站点资产统一在下方「🌐 H3C 堡垒机」区块展示(来自右侧浏览器 webview 捕获),
-        // 该连接行不重复渲染。提示文案要反映真实捕获状态——不能永远写"登录后捕获",
-        // 用户已登录还看到这句会误以为没生效。已捕获 → 指路;未捕获 → 说明操作。
-        const n = state.bastionAssets.length;
-        assetsWrap.textContent = n
-          ? `✓ 已从右侧浏览器捕获 ${n} 台资产,展开下方「🌐 H3C 堡垒机」区块查看`
-          : '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」'
+        // H3C 站点资产来自右侧浏览器 webview 捕获(state.bastionAssets),按业务目录分组
+        // 直接渲染在这个连接下面(与 JMS 连接一致),而不是只放单独的「🌐 H3C 堡垒机」区块。
+        const mine = (!state.bastionUrl || bastionOrigin(s.url) === state.bastionUrl) ? state.bastionAssets : [];
+        const h3cList = kw ? mine.filter((a) => bastionAssetMatch(a, kw)) : mine;
+        if (h3cList.length) {
+          const dirMap = new Map();
+          for (const a of h3cList) {
+            const groups = (a.dirs && a.dirs.length) ? a.dirs : [a.dir || '__ungrouped__'];
+            for (const g of groups) {
+              if (!dirMap.has(g)) dirMap.set(g, []);
+              dirMap.get(g).push(a);
+            }
+          }
+          const dirArr = [...dirMap.entries()].sort((x, y) => {
+            if (!x[0] || x[0] === '__ungrouped__') return 1;
+            if (!y[0] || y[0] === '__ungrouped__') return -1;
+            return String(x[0]).localeCompare(String(y[0]), 'zh');
+          });
+          for (const [g, arr] of dirArr) {
+            const ghead = document.createElement('div');
+            ghead.className = 'bastion-asset-group-head';
+            ghead.textContent = (!g || g === '__ungrouped__') ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
+            assetsWrap.appendChild(ghead);
+            for (const a of arr) assetsWrap.appendChild(makeBastionAssetItem(a));
+          }
+        } else {
+          assetsWrap.textContent = '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」'
             + (bastionDiagHint ? ` [${bastionDiagHint}]` : '');
+        }
       } else {
         assetsWrap.textContent = '点击连接行加载资产…';
       }
