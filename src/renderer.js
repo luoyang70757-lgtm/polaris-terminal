@@ -5687,11 +5687,11 @@ function pollBastionAssets(force) {
       const json = stableJson(list);
       if (list.length && json !== stableJson(state.bastionAssets)) {
         // 首次拿到资产(之前为空)→ 展开「🛡 堡垒机」顶级分组让区块头可见;
-        // H3C 区块与目录分组仍默认折叠(左侧分组收起,展开才看资产)
+        // H3C 区块与业务目录分组仍默认折叠(左侧分组收起,展开才看资产);
+        // ⭐收藏 区不折叠 —— 用户展开 H3C 区块后收藏分组+主机直接可见(无需再点一次)
         if (!state.bastionAssets.length) {
           state.collapsedTopBastion = false;
           state.bastionCollapsed = true;
-          state.bastionDirCollapsed.add('__fav__');
         }
         state.bastionAssets = list;
         persistBastionAssets(); // 异步持久化,不阻塞渲染
