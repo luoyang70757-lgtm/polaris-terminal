@@ -5537,11 +5537,13 @@ function pollBastionAssets(force) {
           favTree: window.__bastionFavTree || null,
           favs: Array.from(window.__bastionFavSet || []),
           fetchState: window.__bastionFetchState || { running: false, dirRunning: false },
-          hookAlive: typeof window.__bastionFetchAll === 'function'
+          hookAlive: typeof window.__bastionFetchAll === 'function',
+          // 注入脚本内部抛错记录在 __bastionDiag(hook-throw),取最后一条显示,定位注入为何失败
+          hookErr: (() => { const dd = window.__bastionDiag || []; for (let i = dd.length - 1; i >= 0; i--) { if (dd[i].ev === 'hook-throw') return String(dd[i].msg || '').slice(0, 100); } return ''; })()
         };
       } catch (e) {
         // 页面导航中/被卸载:返回空快照,下轮再试(不抛错,避免错误刷屏)
-        return { assets: [], tree: [], favTree: null, favs: [], fetchState: { running: false, dirRunning: false }, hookAlive: false };
+        return { assets: [], tree: [], favTree: null, favs: [], fetchState: { running: false, dirRunning: false }, hookAlive: false, hookErr: '' };
       }
     })()`).then((r) => {
       r = r || {};
@@ -5562,10 +5564,14 @@ function pollBastionAssets(force) {
           if (!bastionInjectDisabled) console.log('[堡垒机] webview 钩子丢失(页面可能重载),重新注入');
         }
         const now = Date.now();
-        // 注入被禁用(页面不稳定):不再自动重试/拉取,只保留轮询读取
-        if (!bastionInjectDisabled && (!bastionLastInject || now - bastionLastInject > bastionInjectBackoff)) {
+        // 稳定页面上读到 hookAlive=false = 注入丢了/被 disabled 卡死,必须强制重试。
+        // 此分支在 poll 已通过 bastionPageStable(1200) 后才执行,页面是稳定的 ——
+        // disabled/backoff 只在"导航风暴"期间有意义;稳定页复位它,否则 3 次失败后
+        // 注入永久停摆(只在 did-stop-loading 复位,而 SPA 页面不触发),钩子再也回不来。
+        if (!bastionLastInject || now - bastionLastInject > 8000) {
           bastionLastInject = now;
-          injectBastionAssetHook();
+          bastionInjectDisabled = false;
+          injectBastionAssetHook(false); // requireStable=false:稳定性已由 poll 的 1200ms 兜底
           // 注入连续失败时不再触发 fetchAll(否则每个周期成对报错)
           if (bastionInjectFails < 2) {
             if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 10000) {
@@ -5662,7 +5668,7 @@ function pollBastionAssets(force) {
       }
       // 左侧空状态提示携带实时诊断:用户不开调试面板,直接看提示文字就能定位断在哪一环。
       // URL 非 /shterm/根 → isH3c 拒绝;捕获=0 → 钩子/页面没触发资产接口;钩子✗ → 注入丢了。
-      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}`;
+      const hintNow = `URL=${String(curUrl2 || '').replace(/^https?:\/\//, '').slice(0, 45)} 捕获${(r.assets || []).length}台 钩子${r.hookAlive ? '✓' : '✗'}${r.hookErr ? ' 注入:' + r.hookErr : ''}`;
       if (hintNow !== bastionDiagHint) { bastionDiagHint = hintNow; changed = true; }
       if (changed) renderSessionList(els.inputSessionSearch.value);
       // 面板可见诊断心跳:每 30s 报一次捕获状态(不随数据变化,保证调试面板能看到)。
