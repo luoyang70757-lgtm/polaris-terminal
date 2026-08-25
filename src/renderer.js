@@ -6300,7 +6300,9 @@ function renderBastionInSessionList(container, f) {
   const list = all.filter((a) => bastionAssetMatch(a, kw));
   if (!list.length) return;
   const favCount = all.filter((a) => a.favorite).length;
-  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${list.length}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
+  // 设备总数不含收藏:收藏主机单独在 ⭐收藏 区块展示(下面分组+主机),不重复计入总数
+  const nonFavCount = all.length - favCount;
+  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${kw ? list.length : nonFavCount}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
       { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
@@ -6408,12 +6410,11 @@ function renderBastionInSessionList(container, f) {
     if (!collapsed) {
       const gmap = new Map();
       for (const a of favs) {
-        const raw = a.favGroup;
-        // 历史脏数据("undefinedxxx" 是早期映射 bug 产物)视为无分组,归「默认收藏」,
-        // 避免收藏区显示 "undefined资金管理系统" 这类垃圾分组名(与 merge 守卫一致)
-        const g = (raw && raw.indexOf('undefined') !== 0) ? raw : '默认收藏';
-        if (!gmap.has(g)) gmap.set(g, []);
-        gmap.get(g).push(a);
+        // 收藏分组优先用 favGroup(有 userFav/getTree 时映射);此 H3C 版本无收藏树接口
+        // → favGroup 恒空,改用业务目录 dir 分组展示(收藏主机也归到各自业务目录,与浏览器一致)。
+        const raw = (a.favGroup && a.favGroup.indexOf('undefined') !== 0) ? a.favGroup : (a.dir || '默认收藏');
+        if (!gmap.has(raw)) gmap.set(raw, []);
+        gmap.get(raw).push(a);
       }
       // 按 favGroup 的 "/" 段建树:设备挂在叶子组;父组头显示后代总数并缩进
       const favRoot = { children: new Map() };
