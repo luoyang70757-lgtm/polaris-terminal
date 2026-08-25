@@ -2194,7 +2194,15 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
     const [items, cwd] = await Promise.all([
       new Promise((resolve, reject) => {
         let done = false;
-        const to = setTimeout(() => { if (!done) { done = true; reject(new Error('目录读取超时(20s)')); } }, 20000);
+        // 慢设备(H3C 网络设备)readdir 可能很慢;stat 探测若挂住通道也会拖到 readdir。
+        // 放宽到 40s + 超时留痕(旧版 20s 偏紧,慢设备常误报"目录读取超时")
+        const to = setTimeout(() => {
+          if (!done) {
+            done = true;
+            try { if (typeof __startupLog === 'function') __startupLog('sftp:list readdir 超时: ' + remotePath + ' (40s)'); } catch { /* ignore */ }
+            reject(new Error('目录读取超时(40s)'));
+          }
+        }, 40000);
         sftp.readdir(remotePath, (err, list) => {
           if (done) return;
           done = true; clearTimeout(to);
@@ -2206,22 +2214,9 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
       }),
     ]);
-    // 设备 stat 骗人(读目录属性报 0,数据其实在):先用已知上传大小覆盖;
-    // 不在已知记录里的再试一次新鲜 stat(部分设备 readdir 属性过期但 stat 准)。
-    // 有界探测:只探"最近 24h 修改"的 size0 文件(用户关心的都是刚传/刚改的),
-    // 最多 10 个、单次 2s 超时 —— 旧文件/慢设备不会拖垮列表(20s 超时只包了 readdir,
-    // 旧版 stat 无超时会挂住整个 sftp:list)。
-    let probeBudget = 10;
-    const NOW = Date.now();
-    const probeStat = (fullPath) => new Promise((res) => {
-      let done = false;
-      const to = setTimeout(() => { if (!done) { done = true; res(0); } }, 2000);
-      sftp.stat(fullPath, (e, x) => {
-        if (done) return;
-        done = true; clearTimeout(to);
-        res((!e && x && x.size) ? x.size : 0);
-      });
-    });
+    // 设备 stat 骗人(读目录属性报 0,数据其实在):用已知上传大小覆盖显示。
+    // 不做 stat 兜底探测 —— H3C 等设备 SFTP 服务器串行处理请求,挂住的 stat 会阻塞
+    // 后续 readdir → 面板"目录读取超时";且撒谎设备 stat 也报 0,探测无收益。
     const entries = [];
     for (const it of items) {
       const isDir = !!it.attrs.isDirectory();
@@ -2230,10 +2225,6 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
       if (!isDir && size === 0) {
         const known = sftpKnownSizes.get(`${sessionId}|${fullPath}`);
         if (known) size = known;
-        else if (probeBudget > 0 && it.attrs.mtime && (NOW - it.attrs.mtime * 1000) < 24 * 3600 * 1000) {
-          probeBudget--;
-          size = await probeStat(fullPath);
-        }
       }
       entries.push({ name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null });
     }
