@@ -5452,6 +5452,7 @@ let bastionInjectDebounce = null; // did-stop-loading 的注入 debounce(页面�
 let bastionInjectDisabled = false; // 注入连续失败过多:自动注入/拉取全部暂停(页面明显不可用)
 let bastionSpasLogged = false;    // "SPA 未拉全量"日志只打一次
 let bastionLastPollKey = '';      // 轮询诊断日志限流:状态变化才打
+let bastionLastPollDlog = 0;      // 面板 BASTION 心跳:每 30s 报一次捕获状态(调试面板可见)
 let bastionPageStableTs = 0;      // 最近一次 did-stop-loading 时间;重定向风暴期间反复刷新 → 一直不稳
 // 页面是否已稳定(停止加载 ≥ms 且未再开始导航):稳定前不执行注入/轮询,避免导航瞬间帧层面报错
 function bastionPageStable(ms) {
@@ -5659,6 +5660,13 @@ function pollBastionAssets(force) {
         }
       }
       if (changed) renderSessionList(els.inputSessionSearch.value);
+      // 面板可见诊断心跳:每 30s 报一次捕获状态(不随数据变化,保证调试面板能看到)。
+      // URL/webview捕获数/state合并数/hook存活/fetch运行 → 一眼定位断在哪一环。
+      const nowD2 = Date.now();
+      if (!bastionLastPollDlog || nowD2 - bastionLastPollDlog > 30000) {
+        bastionLastPollDlog = nowD2;
+        dlog('BASTION', `poll: URL=${String(curUrl2 || '').slice(0, 70)} webview=${(r.assets || []).length} state=${state.bastionAssets.length} hook=${r.hookAlive ? 1 : 0} run=${r.fetchState ? (r.fetchState.running ? 'Y' : '-') : '?'} fails=${state.bastionAutoFetchFails}`);
+      }
       // 平衡策略:左侧资产**为空**时有限次自动拉全量(设备到左侧即停;真实失败 ≥3 次停止,
       // 不再持续请求避免锁定账号)。判据是"是否真的有设备"(state.bastionAssets.length),
       // 不是 bastionAllFetched —— 它会被"树接口通但设备为 0"误置 true,空资产从此永不重试。
@@ -5712,6 +5720,7 @@ function triggerBastionFullFetch() {
         try { wN = (await wv.executeJavaScript('(window.__bastionAssets||[]).length')) || 0; } catch { /* 页面导航中,读不到按 0 处理 */ }
         // 诊断:每次拉取打一行,看 webview 到底捕获到没有 / 当前 URL / fetchAll 结果
         console.log(`[堡垒机] 拉取结果: fetchAll=${!!ok} webview资产=${wN} state资产=${state.bastionAssets.length} URL=${(cu || '').slice(0, 80)}`);
+        dlog('BASTION', `拉取: fetchAll=${!!ok} webview=${wN} state=${state.bastionAssets.length} URL=${String(cu || '').slice(0, 70)}`);
         if (state.bastionAssets.length > 0 || wN > 0) {
           state.bastionAllFetched = true; // 资产已实际捕获(poll 据此不再反复重试)
           state.bastionAutoFetchFails = 0; // 拉取成功:重置自动失败计数,下次缺数据才有新额度
