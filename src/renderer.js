@@ -9416,8 +9416,10 @@ function bastionSessionKeepalive() {
   if (!curUrl && els.bastionCurrent) curUrl = els.bastionCurrent.textContent.split(' — ').pop() || '';
   const pathPart = (() => { try { return new URL(curUrl).pathname; } catch { return ''; } })();
   const isH3c = curUrl && (curUrl.indexOf('/shterm') !== -1 || pathPart === '' || pathPart === '/');
-  // 仅在 H3C 控制台 + 面板可见 + 页面稳定(非加载中)时保活;否则直接排下一轮
-  if (isH3c && wv && !els.bastionSlot.classList.contains('hidden') && !bastionWebviewLoading() && bastionPageStable(1200)) {
+  // 保活不依赖面板可见:webview 最小化/连资产后面板收起,网页会话仍在 —— 若面板一藏
+  // 保活就停,H3C 闲置超时会掉线,有 2FA 的重登很麻烦。3 分钟一次轻量 fetch 开销可忽略。
+  // 仅 H3C 控制台 + 页面稳定(非加载中)时保活;否则直接排下一轮。
+  if (isH3c && wv && !bastionWebviewLoading() && bastionPageStable(1200)) {
     try {
       // 轻量 GET 当前页:redirect:manual 不跟跳转、no-store 不走缓存;guest 侧吞掉错误
       wv.executeJavaScript(`fetch(location.href, { cache: 'no-store', redirect: 'manual' }).catch(function(){}); 'ok'`);
