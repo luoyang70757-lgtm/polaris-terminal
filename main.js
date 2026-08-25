@@ -2064,16 +2064,33 @@ ipcMain.on('ssh:close', (_e, sessionId) => {
 
 // ---------- IPC:SFTP 文件传输 ----------
 // SFTP 对象按 sessionId 缓存:同一 SSH 连接只开一次 sftp 通道
+// ---- SFTP 调试日志:记录每次 SFTP 操作(耗时/结果/错误),协助排查偶发"目录读取超时"、大文件传输失败 ----
+// 日志写到 app-*.log(调试面板 ⬇ 下载日志可导出),带 [SFTP] 前缀便于 grep。
+function __sftpLog(msg, extra) {
+  try {
+    const line = '[SFTP] ' + msg + (extra ? ' | ' + JSON.stringify(extra).slice(0, 600) : '');
+    // console.log 在 main.js 里被重写:转发到调试面板(🧾) + 落盘 app-*.log
+    try { console.log(line); } catch { /* ignore */ }
+  } catch { /* ignore */ }
+}
 async function getSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (!s) throw new Error('SSH 连接不存在或已断开');
   if (!s.sftp) {
     // 堡垒机(经 KoKo 等网关)的 SFTP 子系统可能迟迟不应答(路由/认证慢或挂起):
     // 加超时兜底,避免 sftp:list 永久 pending → 面板一直空白无任何提示。
-    s.sftp = await Promise.race([
-      sshClient.openSftp(s.conn),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
-    ]);
+    const t0 = Date.now();
+    __sftpLog('打开 SFTP 通道', { sessionId, t0 });
+    try {
+      s.sftp = await Promise.race([
+        sshClient.openSftp(s.conn),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
+      ]);
+      __sftpLog('SFTP 通道打开成功', { sessionId, ms: Date.now() - t0 });
+    } catch (e) {
+      __sftpLog('SFTP 通道打开失败', { sessionId, ms: Date.now() - t0, error: e && e.message });
+      throw e;
+    }
   }
   return s.sftp;
 }
@@ -2189,6 +2206,7 @@ function clearSftpKnownSizes(sessionId) {
 }
 
 ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
+  const _t0 = Date.now();
   try {
     const sftp = await getSftp(sessionId);
     const [items, cwd] = await Promise.all([
@@ -2199,6 +2217,7 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         const to = setTimeout(() => {
           if (!done) {
             done = true;
+            __sftpLog('readdir 超时', { sessionId, path: remotePath, ms: Date.now() - _t0 });
             try { if (typeof __startupLog === 'function') __startupLog('sftp:list readdir 超时: ' + remotePath + ' (40s)'); } catch { /* ignore */ }
             reject(new Error('目录读取超时(40s)'));
           }
@@ -2214,6 +2233,7 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
       }),
     ]);
+    __sftpLog('readdir 完成', { sessionId, path: remotePath, count: (items || []).length, ms: Date.now() - _t0 });
     // 设备 stat 骗人(读目录属性报 0,数据其实在):用已知上传大小覆盖显示。
     // 不做 stat 兜底探测 —— H3C 等设备 SFTP 服务器串行处理请求,挂住的 stat 会阻塞
     // 后续 readdir → 面板"目录读取超时";且撒谎设备 stat 也报 0,探测无收益。
@@ -2230,6 +2250,7 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
     }
     return { ok: true, entries, cwd };
   } catch (err) {
+    __sftpLog('readdir 失败', { sessionId, path: remotePath, ms: Date.now() - _t0, error: err && err.message });
     return { ok: false, error: err.message };
   }
 });
@@ -2322,6 +2343,7 @@ function emitSftpProgress(payload) {
 }
 
 ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
+  const _t0 = Date.now();
   try {
     const sftp = await getSftp(sessionId);
     // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)
@@ -2331,6 +2353,7 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
     });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
     const localPath = pick.filePaths[0];
+    __sftpLog('上传开始', { sessionId, remoteDir, localPath, isDir: fs.statSync(localPath).isDirectory() });
     const prog = (p) => emitSftpProgress({ op: 'upload', ...p });
     if (fs.statSync(localPath).isDirectory()) {
       const target = joinRemote(remoteDir, path.basename(localPath));
@@ -2342,20 +2365,26 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
       );
       // 记录本次上传文件的真实大小(设备 stat 可能报 0,面板列目录时用它覆盖显示)
       for (const u of uploaded) sftpKnownSizes.set(`${sessionId}|${u.rp}`, u.size);
+      __sftpLog('上传结束(目录)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length, ms: Date.now() - _t0 });
+      if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
       return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
     }
     const remotePath = joinRemote(remoteDir, path.basename(localPath));
     const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
     if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
     try {
+      __sftpLog('上传文件开始', { sessionId, remotePath, size: fs.statSync(localPath).size, resumeFrom });
       await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
       sftpKnownSizes.set(`${sessionId}|${remotePath}`, fs.statSync(localPath).size); // 同上:记录真实大小
+      __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
       return { ok: true, remotePath, resumedFrom: resumeFrom };
     } catch (err) {
       recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
+      __sftpLog('上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
       return { ok: false, error: err.message };
     }
   } catch (err) {
+    __sftpLog('上传异常', { sessionId, remoteDir, ms: Date.now() - _t0, error: err && err.message });
     return { ok: false, error: err.message };
   }
 });
@@ -2386,11 +2415,15 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
     if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', localPath)); // 这次从偏移续传,旧的记录作废
     const prog = (p) => emitSftpProgress({ op: 'download', ...p });
+    const _t0 = Date.now();
+    __sftpLog('下载开始', { sessionId, remotePath, localPath, resumeFrom });
     try {
       await sshClient.downloadFile(sftp, remotePath, localPath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
+      __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
       return { ok: true, localPath, resumedFrom: resumeFrom };
     } catch (err) {
       recordDownloadPartial(sessionId, localPath); // 又失败:用最新的真实落盘大小更新中断点
+      __sftpLog('下载失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
       return { ok: false, error: err.message };
     }
   } catch (err) {
