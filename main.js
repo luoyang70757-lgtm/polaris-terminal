@@ -2183,16 +2183,25 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
         sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
       }),
     ]);
-    const entries = items.map((it) => {
+    const entries = await Promise.all(items.map(async (it) => {
       const isDir = !!it.attrs.isDirectory();
       let size = it.attrs.size || 0;
-      // 设备 stat 骗人:刚上传的文件读到 0,用已知真实大小覆盖(仅本次会话上传过的)
+      const fullPath = joinRemote(remotePath, it.filename);
+      // 设备 stat 骗人(读目录属性报 0,数据其实在):先用已知上传大小覆盖;
+      // 不在已知记录里的再试一次新鲜 stat(部分设备 readdir 属性过期但 stat 准)。
+      // 两个都拿不到就保持 0 —— 避免对慢目录逐文件读内容拖垮列表。
       if (!isDir && size === 0) {
-        const known = sftpKnownSizes.get(`${sessionId}|${joinRemote(remotePath, it.filename)}`);
+        const known = sftpKnownSizes.get(`${sessionId}|${fullPath}`);
         if (known) size = known;
+        else {
+          try {
+            const a = await new Promise((res, rej) => sftp.stat(fullPath, (e, x) => (e ? rej(e) : res(x))));
+            if (a && a.size) size = a.size;
+          } catch { /* stat 失败保持 0 */ }
+        }
       }
       return { name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null };
-    });
+    }));
     return { ok: true, entries, cwd };
   } catch (err) {
     return { ok: false, error: err.message };
