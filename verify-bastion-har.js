@@ -111,8 +111,12 @@ function findHar() {
     await sleep(50);
     const assets = w.__bastionAssets || [];
     assert(assets.length >= 800, '应捕获 >=800 台,实际 ' + assets.length);
+    // 根污染消除:root 查询(get-all)不再把整棵树设备标进根分组
+    const rootInDirs = assets.filter((a) => (a.dirs || []).includes('中华人寿大连IDC'));
+    assert.strictEqual(rootInDirs.length, 0, 'dirs 不应含根名(根查询是 get-all,非真实归属),实际 ' + rootInDirs.length);
+    // 绝大多数设备已带叶子目录(根级设备待 fetchAll 兜底归根)
     const withDir = assets.filter((a) => a.dir || (a.dirs && a.dirs.length));
-    assert.strictEqual(withDir.length, assets.length, '全部设备应带目录归属,缺 ' + (assets.length - withDir.length));
+    assert(withDir.length >= assets.length * 0.98, '应 >=98% 带目录,实际 ' + withDir.length + '/' + assets.length);
     const sub = assets.find((a) => a.dirPath && a.dirPath.length >= 2);
     assert(sub, '应有子目录设备');
     assert(sub.dirPath[0], '子目录设备 dirPath 应有业务根');
