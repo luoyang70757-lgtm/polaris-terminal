@@ -5687,11 +5687,11 @@ function pollBastionAssets(force) {
       const json = stableJson(list);
       if (list.length && json !== stableJson(state.bastionAssets)) {
         // 首次拿到资产(之前为空)→ 展开「🛡 堡垒机」顶级分组让区块头可见;
-        // H3C 区块与业务目录分组仍默认折叠(左侧分组收起,展开才看资产);
-        // ⭐收藏 区不折叠 —— 用户展开 H3C 区块后收藏分组+主机直接可见(无需再点一次)
+        // H3C 区块/收藏/业务目录分组都默认折叠(左侧分组收起,展开才看资产)
         if (!state.bastionAssets.length) {
           state.collapsedTopBastion = false;
           state.bastionCollapsed = true;
+          state.bastionDirCollapsed.add('__fav__');
         }
         state.bastionAssets = list;
         persistBastionAssets(); // 异步持久化,不阻塞渲染
@@ -6291,6 +6291,25 @@ function promptJmsMfa(s, { cookie, challengeUrl, choices, username, password }) 
   attempt();
 }
 
+// 「收起全部分组」:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠
+// (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
+function collapseAllBastionGroups() {
+  const s = state.bastionDirCollapsed;
+  s.add('__fav__');
+  s.add('__ungrouped__');
+  for (const a of state.bastionAssets) {
+    (a.dirs || []).forEach((d) => { if (d) s.add(d); });
+    if (a.dirPath && a.dirPath[0]) s.add('__root__' + a.dirPath[0]);
+    if (a.dirPath && a.dirPath.length === 1) s.add('__rootdev__' + a.dirPath[0]);
+    if (a.favorite && a.favGroup && a.favGroup.indexOf('undefined') !== 0) {
+      const parts = String(a.favGroup).split('/');
+      let p = '';
+      for (const seg of parts) { p = p ? p + '/' + seg : seg; s.add('__fav__' + p); }
+    }
+  }
+  renderSessionList(els.inputSessionSearch.value);
+}
+
 // 会话列表里的"🌐 H3C 堡垒机"资产区:
 // 空搜索 → 按目录分组展示(⭐收藏置顶 + 业务目录组,可折叠);有搜索词 → 平铺匹配项(性能考虑)
 function renderBastionInSessionList(container, f) {
@@ -6306,6 +6325,7 @@ function renderBastionInSessionList(container, f) {
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
       { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
+      { label: '🧹 收起全部分组', action: () => collapseAllBastionGroups() },
       { label: '🔄 拉取全部资产', action: manualBastionPull },
       { label: '📤 导出诊断包', action: () => exportBastionDiag() },
       { label: '🔌 断开全部堡垒机连接', action: () => disconnectBastionAll() },
@@ -6349,9 +6369,13 @@ function renderBastionInSessionList(container, f) {
     if (sample) {
       const r = sample.dirPath[0];
       if (g.dir === r) {
-        // 根级设备(如 dir=中华人寿大连IDC,dirPath=[中华人寿大连IDC]):归到根下单独展示,不进子目录列表
+        // 根目录组(get-all 查询返回全部设备,dir 都含根):只保留"仅根目录"的设备(无任何子目录),
+        // 其余设备已在其子目录分组里 —— 根下不再重复展示,消除"中华人寿大连IDC 出现两次"
         if (!rootLevel.has(r)) rootLevel.set(r, []);
-        rootLevel.get(r).push(...g.assets);
+        for (const a of g.assets) {
+          const hasSub = (a.dirs || []).some((d) => d && d !== r);
+          if (!hasSub) rootLevel.get(r).push(a);
+        }
         continue;
       }
       dirRoot.set(g.dir, r);
@@ -6467,9 +6491,11 @@ function renderBastionInSessionList(container, f) {
     // 根级设备:直接在业务根下的主机(非任何子目录),浏览器里它们在根视图可见
     if (rootLevel.has(r)) {
       const rl = rootLevel.get(r);
+      if (!rl.length) continue;
       const rlKey = '__rootdev__' + r;
       const rlCollapsed = state.bastionDirCollapsed.has(rlKey);
-      const rlHead = makeSectionHead(`📁 ${r}·根目录(${rl.length})`, rlCollapsed,
+      // "根目录设备"不带业务根名 —— 根名已在父级显示,避免"中华人寿大连IDC 出现两次"
+      const rlHead = makeSectionHead(`🗂 根目录设备(${rl.length})`, rlCollapsed,
         () => { rlCollapsed ? state.bastionDirCollapsed.delete(rlKey) : state.bastionDirCollapsed.add(rlKey); renderSessionList(els.inputSessionSearch.value); },
         [{ label: '🔗 批量连接', action: () => batchBastionConnect(rl) }]);
       rlHead.style.paddingLeft = (8 + 14) + 'px'; // 与子目录同级缩进
