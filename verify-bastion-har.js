@@ -32,7 +32,8 @@ function extractInjectedScript() {
   const begin = open + 'executeJavaScript(`'.length;
   const close = seg.indexOf('})()`)', begin);
   assert(close >= 0, '找不到模板终点');
-  return seg.slice(begin, close + 4).replace(/\\\\\//g, '\\/');
+  // 模拟宿主模板字面量转义:任何 \\X → X(identity escape)。全部解码,别只解 \\/
+  return seg.slice(begin, close + 4).replace(/\\(.)/g, '$1');
 }
 
 // ---- 找本地 HAR ----

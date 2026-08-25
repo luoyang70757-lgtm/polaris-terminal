@@ -5090,7 +5090,9 @@ function injectBastionAssetHook(requireStable) {
         // 用于定位:资产视图路由、目录树接口、getAccessViewDevs 调用形状 —— 不写死接口名,
         // 页面实际调了什么就记录什么,浏览器登录/点资产视图的全过程都能回放。
         try {
-          const isStatic = /\.(png|jpe?g|gif|svg|css|js|ico|woff2?|ttf|eot|map|html?)(\?|$)/i.test(url) || /\/resources\//.test(url);
+          // 注意:这段在宿主模板字面量里,正则里的反斜杠必须写双份(两个反斜杠 → 模板解码成一个),
+          // 否则会被模板吞掉变成裸字符,整个注入脚本语法错误 → Script failed to execute
+          const isStatic = /\\.(png|jpe?g|gif|svg|css|js|ico|woff2?|ttf|eot|map|html?)(\\?|$)/i.test(url) || /\\/resources\\//.test(url);
           if (!isStatic) {
             const net = window.__bastionNetLog || (window.__bastionNetLog = []);
             net.push({ ts: Date.now(), m: String(method || (body ? 'POST' : 'GET')), url: String(url).slice(0, 300), req: String(body || '').slice(0, 1200), len: (text || '').length, resp: String(text || '').slice(0, 1200) });
@@ -5133,7 +5135,7 @@ function injectBastionAssetHook(requireStable) {
         if (/getAccessViewTree/.test(url) && j.children) { window.__bastionTree = j.children; return; }
         // 收藏夹树:兼容各 H3C 版本接口名(userFav/getTree 及其变体 getFavTree/favGroup/getTree 等)。
         // URL 同时含 fav + tree/group 关键词且响应是树结构即捕获(getFavoriteDevices 设备列表不含 tree,不误捕)。
-        if (((/userFav\/getTree/.test(url)) || (/fav/i.test(url) && /(tree|group)/i.test(url))) && j && (j.children || j.name)) { window.__bastionFavTree = j; return; }
+        if (((/userFav\\/getTree/.test(url)) || (/fav/i.test(url) && /(tree|group)/i.test(url))) && j && (j.children || j.name)) { window.__bastionFavTree = j; return; }
         // 分页拉全量:H3C 前端默认只请求 page=0(size=20),totalPages>1 时按原请求体主动翻页补齐
         // (真实堡垒机 totalElements=870 / 44 页,只捕获第 0 页 20 台 = "资产不完整"根因)
         // 仅 getAccessViewDevs 触发;收藏接口一次 100 条,不翻页

@@ -38,8 +38,9 @@ function extractInjectedScript() {
   // 模板以 })()` 结束(反引号紧跟其后),匹配完整的模板闭合
   const close = seg.indexOf('})()`)', begin);
   assert(close >= 0, '找不到模板终点');
-  // 模拟宿主模板字面量转义:注入脚本里的 \\/ 在运行时被宿主模板解码成 \/
-  return seg.slice(begin, close + 4).replace(/\\\\\//g, '\\/');
+  // 模拟宿主模板字面量转义:注入脚本里的任何 \\X 在运行时被宿主模板解码成 X
+  // (identity escape)。注意必须全部解码 —— 只解 \\/ 会漏掉 \. \? 等,掩盖真实语法错误
+  return seg.slice(begin, close + 4).replace(/\\(.)/g, '$1');
 }
 
 // ---- 从 HAR 提取真实响应(优先当前版本 -11,回退旧版) ----
