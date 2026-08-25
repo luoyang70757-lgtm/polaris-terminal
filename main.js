@@ -13,25 +13,45 @@ const path = require('path');
 const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
 
-const sshClient = require('./lib/ssh-client');
-const telnetClient = require('./lib/telnet-client'); // 最小 Telnet 客户端(裸 TCP + IAC 协商)
-const { createStore } = require('./lib/session-store');
-const crypto = require('./lib/crypto'); // safeStorage 密码加密
-const knownHosts = require('./lib/known-hosts'); // 主机指纹校验
-const iconv = require('iconv-lite'); // 终端编码转换(GBK/GB2312 → UTF-8)
-const dangerousLib = require('./lib/dangerous'); // 危险命令识别与分级(AI 审批用)
-const { callAiStream, normalizeAiUrl, AI_SYSTEM_PROMPT } = require('./lib/ai-stream'); // AI 流式调用(SSE 解析)
-const skillsLib = require('./lib/skills'); // Agent Skill 技能库(use_skill / summarize_to_skill)
-const recommendLib = require('./lib/recommend'); // 智能命令推荐(历史高频 + 常用运维命令库)
-const kbLib = require('./lib/kb'); // 用户知识库(运维文档导入 + 关键词检索)
-const dbCrypto = require('./lib/db-crypto'); // 数据库整库加密(AES-256-GCM)
-const appLock = require('./lib/app-lock'); // App 打开密码锁
-const recorder = require('./lib/recorder'); // 会话录制与回放数据层(JSONL)
-const sessionLog = require('./lib/session-log'); // 会话日志落盘(可读纯文本)
-const tunnelLib = require('./lib/tunnel'); // SSH 隧道/端口转发(本地/远程/动态 SOCKS)
-const jmsApi = require('./lib/jms-api'); // JumpServer v4 REST API(登录/资产列表)
-const XLSX = require('xlsx'); // SheetJS:生成导入模板 Excel(和导入同一套库)
-const appLog = require('./lib/app-log'); // 全量日志落盘(主/渲染层 dlog/console/异常 → logs/app-*.log)
+// ---- 启动诊断:早期崩溃(模块 require 失败/异常)记到独立文件 —— 排查 Windows 打不开 ----
+// app-log 在下面才加载,若它自身或它依赖的模块 require 失败,app 会在注册任何错误处理
+// 前崩溃、无任何日志。这里用最原始的 fs 先落一个启动痕迹,任何失败都能定位到具体模块。
+const __startupLog = (() => {
+  try {
+    const os = require('os');
+    const f = path.join(process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal'), 'logs', 'startup-error.log');
+    try { fs.mkdirSync(path.dirname(f), { recursive: true }); } catch { /* ignore */ }
+    return (m) => { try { fs.appendFileSync(f, `[${new Date().toISOString()}] ${m}\n`); } catch { /* ignore */ } };
+  } catch { return () => {}; }
+})();
+__startupLog('main.js 加载开始');
+// 逐模块加载并留痕:任何一个 require 失败(如 node:sqlite 在当前 Electron 不可用)都会在
+// 启动时崩溃且无日志 —— 这里把失败模块名记到 startup-error.log,Windows 打不开时能定位。
+// 用 var(function 作用域)保证后续代码能访问到这些模块。
+function __req(mod, label) {
+  try { return require(mod); }
+  catch (e) { __startupLog('require 失败 ' + (label || mod) + ': ' + (e && (e.stack || e.message))); throw e; }
+}
+var sshClient = __req('./lib/ssh-client', 'ssh-client');
+var telnetClient = __req('./lib/telnet-client', 'telnet-client');
+var { createStore } = __req('./lib/session-store', 'session-store');
+var crypto = __req('./lib/crypto', 'crypto');
+var knownHosts = __req('./lib/known-hosts', 'known-hosts');
+var iconv = __req('iconv-lite', 'iconv-lite');
+var dangerousLib = __req('./lib/dangerous', 'dangerous');
+var { callAiStream, normalizeAiUrl, AI_SYSTEM_PROMPT } = __req('./lib/ai-stream', 'ai-stream');
+var skillsLib = __req('./lib/skills', 'skills');
+var recommendLib = __req('./lib/recommend', 'recommend');
+var kbLib = __req('./lib/kb', 'kb');
+var dbCrypto = __req('./lib/db-crypto', 'db-crypto');
+var appLock = __req('./lib/app-lock', 'app-lock');
+var recorder = __req('./lib/recorder', 'recorder');
+var sessionLog = __req('./lib/session-log', 'session-log');
+var tunnelLib = __req('./lib/tunnel', 'tunnel');
+var jmsApi = __req('./lib/jms-api', 'jms-api');
+var XLSX = __req('xlsx', 'xlsx');
+var appLog = __req('./lib/app-log', 'app-log');
+__startupLog('模块加载完成');
 
 // ---------- 安全日志 ----------
 // 当 stdout/stderr 管道被关闭(如从终端启动后终端被关、后台运行、日志重定向断开)时,
@@ -67,6 +87,9 @@ process.on('uncaughtException', (e) => {
   if (e && e.code === 'EPIPE') return;
   try { __err.call(console, '[MAIN] 未捕获异常:', e); } catch { /* ignore */ }
   try { appLog.error('uncaughtException', e); } catch { /* ignore */ }
+  // Windows 打不开排查:弹一个可见错误框(而不是静默退出),用户能直接看到报错文字并反馈
+  try { __startupLog('uncaughtException: ' + (e && (e.stack || e.message))); } catch { /* ignore */ }
+  try { dialog.showErrorBox('Polaris 异常', String((e && (e.stack || e.message)) || e)); } catch { /* ignore */ }
 });
 // Promise 拒绝也要独立处理:不能只靠 uncaughtException 兜底(拒绝不会触发它)。
 // 错误要打日志(可观测),而不是静默吞掉 —— 桌面应用继续运行,不退出。
