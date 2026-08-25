@@ -660,7 +660,7 @@ const state = {
   bastionDirsInit: false,   // 分组视图是否已完成"首次默认折叠"初始化
   bastionGrouping: false,   // 是否正在后台逐目录补充分组
   bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
-  bastionAllFetched: false, // 是否已成功主动拉过全量(SPA 登录后自动重试的依据)
+  bastionAllFetched: false, // 是否已捕获到**真实设备**(有资产才置 true;poll 门控以 state.bastionAssets.length 为准)
   bastionLastAutoFetch: 0,  // 上次自动重试拉全量的时间戳(节流)
   bastionAutoFetchFails: 0, // 自动拉全量失败次数(上限 3,防止持续请求锁定账号;成功/手动拉/URL变化/页面重载重置)
   bastionLastUrl: '',       // 上次轮询看到的 webview URL(变化=登录跳转/切换页面 → 重置失败计数)
@@ -4630,6 +4630,9 @@ function openBastionPanel() {
   else if (els.bastionWebview.src) els.bastionWebview.focus();
   else els.bastionUrl.focus();
   refitAll(); // 面板打开后终端区变窄,重排 xterm(否则旧宽度 canvas 外溢盖到面板区)
+  // 面板重新展开 → 立即同步一次资产:后台隐藏期间(最小化/连接资产自动收起)webview 捕获的
+  // 资产积在 guest 里,poll 因「面板已收起」跳过不合并;这里主动读一次,左侧不用等下一轮 15s。
+  setTimeout(() => { try { if (!bastionWebviewLoading()) pollBastionAssets(true); } catch { /* ignore */ } }, 400);
 }
 // 渲染堡垒机 web 标签页专属的资产列表:显示当前 web 标签页对应堡垒机(JMS)的资产,
 // 双击直接连 SSH(与左侧会话树 JMS 区块一致)。无登录的 JMS 服务器时隐藏侧边栏。
@@ -5425,10 +5428,12 @@ function pollBastionAssets(force) {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板已收起:不打扰后台 webview,恢复展开后再轮询
-  // 操作驱动:资产**已拉过**时闲置跳过本轮(避免空转);**未拉过**(首次/清除历史后)
-  // 总是尝试捕获 —— 否则重新登录后闲置就不捕获,左侧资产一直空。
+  // 操作驱动:资产**已在左侧展示**时闲置跳过本轮(避免空转);资产为空时(首次/清除历史/
+  // 重新登录/拉取未成功)总是尝试捕获 —— 否则左侧资产缺失却闲置,轮询被跳过就永远不回来。
+  // 判据用 state.bastionAssets.length(真实设备数),**不是** bastionAllFetched —— 后者会被
+  // "树接口通但设备为 0"误置 true(见 triggerBastionFullFetch),用它门控 = 空资产永不重试。
   // force=true:流程内重触发(拉目录/拉全量后继续同步),不受操作驱动限制。
-  if (!force && !bastionFocusCheckPending() && state.bastionAllFetched) return;
+  if (!force && !bastionFocusCheckPending() && state.bastionAssets.length > 0) return;
   // 只对 H3C 控制台(路径含 /shterm)做资产捕获:webview 里若是 JumpServer(/ui /luna)等
   // 非 H3C 站点,钩子永远无效 —— 旧逻辑仍每 4s 轮询 + 每 10s 触发拉取,状态栏反复
   // "正在拉取堡垒机全部资产…/未完成",表现为连接堡垒机后界面频繁刷新。
@@ -5581,11 +5586,13 @@ function pollBastionAssets(force) {
         }
       }
       if (changed) renderSessionList(els.inputSessionSearch.value);
-      // 平衡策略:资产未拉过时**有限次**自动拉全量(成功即停;真实失败 ≥3 次停止,不再持续请求避免锁定账号)。
-      // 失败计数只在 triggerBastionFullFetch 的"真实拉取失败"分支 +1(未登录/接口异常);
+      // 平衡策略:左侧资产**为空**时有限次自动拉全量(设备到左侧即停;真实失败 ≥3 次停止,
+      // 不再持续请求避免锁定账号)。判据是"是否真的有设备"(state.bastionAssets.length),
+      // 不是 bastionAllFetched —— 它会被"树接口通但设备为 0"误置 true,空资产从此永不重试。
+      // 失败计数只在 triggerBastionFullFetch 的"真实拉取失败"分支 +1(未登录/接口异常/零设备);
       // URL 变化 / 页面重载 / 成功 / 手动拉 / 被动捕获到资产都会重置 —— 登录跳转后额度自动恢复,
       // 不会再出现"登录页烧光 3 次额度 → 登录后左侧资产永远不出现"的回归。
-      if (!state.bastionAllFetched && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled && state.bastionAutoFetchFails < 3) {
+      if (!state.bastionAssets.length && !(r.fetchState && r.fetchState.running) && !bastionInjectDisabled && state.bastionAutoFetchFails < 3) {
         const now = Date.now();
         if (!state.bastionLastAutoFetch || now - state.bastionLastAutoFetch > 20000) { // 20s 节流(比旧 10s 更保守)
           state.bastionLastAutoFetch = now;
@@ -5622,11 +5629,16 @@ function triggerBastionFullFetch() {
     // 先注入钩子,400ms 后调用主动拉取(避免钩子未装好时 __bastionFetchAll 不存在)
     setTimeout(() => {
       if (bastionWebviewLoading()) return; // 延时期间页面开始导航 → 放弃本次
-      wv.executeJavaScript('try { window.__bastionFetchAll && window.__bastionFetchAll() } catch(e) { false }').then((ok) => {
-        // __bastionFetchAll 返回值偶尔假阴性(资产已通过拦截 getAccessViewDevs 抓到但返回 false):
-        // 只要资产实际捕获到(或拉取返回成功)就视为完成,消除误报"未完成"
-        if (ok || state.bastionAssets.length > 0) {
-          state.bastionAllFetched = true; // SPA 登录后 poll 据此不再反复重试
+      wv.executeJavaScript('try { window.__bastionFetchAll && window.__bastionFetchAll() } catch(e) { false }').then(async (ok) => {
+        // "成功"必须真的有设备,不能是"拉取流程跑完"。ok 只在 getAccessViewTree 返回 children
+        // 时为 true,getAccessViewDevs 每页失败都被吞掉 → ok=true 但设备可能为 0;旧逻辑据此置
+        // bastionAllFetched=true,左侧空资产从此永不重试(闲置轮询+自动拉取双门控)。
+        // 此刻 state.bastionAssets 可能还没合进本轮捕获(合并在下轮 poll +1200ms),
+        // 所以直接读 webview 的 window.__bastionAssets 真实长度来判定成功。
+        let wN = 0;
+        try { wN = (await wv.executeJavaScript('(window.__bastionAssets||[]).length')) || 0; } catch { /* 页面导航中,读不到按 0 处理 */ }
+        if (state.bastionAssets.length > 0 || wN > 0) {
+          state.bastionAllFetched = true; // 资产已实际捕获(poll 据此不再反复重试)
           state.bastionAutoFetchFails = 0; // 拉取成功:重置自动失败计数,下次缺数据才有新额度
           // 只提示一次"拉取完成"(数据就绪);重复触发不刷状态栏,避免闲置时状态栏反复闪
           if (!bastionFetchOkNotified) {
@@ -5634,7 +5646,7 @@ function triggerBastionFullFetch() {
             setStatus('拉取完成', 'var(--green)');
           }
         } else if (!state.bastionAllFetched) {
-          // 真实拉取失败(未登录/接口异常)才计数 —— 上限 3 次停止自动重试(防锁账号);
+          // 真实拉取失败(未登录/接口异常)或零设备才计数 —— 上限 3 次停止自动重试(防锁账号);
           // URL 变化/页面重载/成功/手动拉会重置,登录后额度恢复,左侧资产能自动回来。
           state.bastionAutoFetchFails++;
           // 未成功:只在"从未成功过"时提示一次;后续重复失败静默(数据没变就不打扰用户)
@@ -5799,10 +5811,12 @@ function renderBastionSavedSessions(container, f) {
     addr.textContent = s.url.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     // 徽标:资产数 + 活动连接数(🔗 n,有连接时提示可右键断开);dataset 供连接状态变化时局部刷新
     const liveN = bastionSavedConnCount(s);
+    // H3C 站点无 REST 资产(s.assets 恒空),计数来自右侧浏览器捕获的 state.bastionAssets
+    const h3cN = isH3CSavedConn(s) ? state.bastionAssets.length : 0;
     const badge = document.createElement('span');
     badge.className = 'bastion-saved-badge' + (liveN ? ' has-live' : '');
     badge.dataset.conn = s.id;
-    badge.textContent = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : '')) + (liveN ? ` 🔗${liveN}` : '');
+    badge.textContent = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : (h3cN ? `(${h3cN})` : ''))) + (liveN ? ` 🔗${liveN}` : '');
     item.appendChild(icon);
     item.appendChild(name);
     item.appendChild(addr);
@@ -5923,7 +5937,13 @@ function renderBastionSavedSessions(container, f) {
           ? `资产加载失败: ${s.assetsLoadError}`
           : '资产加载失败(确认站点为 JumpServer 且账号可登录)';
       } else if (isH3CSavedConn(s)) {
-        assetsWrap.textContent = 'H3C 资产由右侧浏览器登录后捕获';
+        // H3C 站点资产统一在下方「🌐 H3C 堡垒机」区块展示(来自右侧浏览器 webview 捕获),
+        // 该连接行不重复渲染。提示文案要反映真实捕获状态——不能永远写"登录后捕获",
+        // 用户已登录还看到这句会误以为没生效。已捕获 → 指路;未捕获 → 说明操作。
+        const n = state.bastionAssets.length;
+        assetsWrap.textContent = n
+          ? `✓ 已从右侧浏览器捕获 ${n} 台资产,展开下方「🌐 H3C 堡垒机」区块查看`
+          : '未捕获到资产:在右侧浏览器打开该 H3C 控制台并登录后自动捕获;已登录请稍候或点「🔄 拉取资产」';
       } else {
         assetsWrap.textContent = '点击连接行加载资产…';
       }
@@ -6351,7 +6371,8 @@ function updateBastionSavedBadges() {
     const s = servers.find((x) => x.id === id);
     if (!s) continue;
     const liveN = bastionSavedConnCount(s);
-    const assetsTxt = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : ''));
+    const h3cN = isH3CSavedConn(s) ? state.bastionAssets.length : 0;
+    const assetsTxt = (s.assets && s.assets.length ? `(${s.assets.length})` : (s.assetsLoading ? '加载中…' : (h3cN ? `(${h3cN})` : '')));
     b.textContent = assetsTxt + (liveN ? ` 🔗${liveN}` : '');
     b.classList.toggle('has-live', !!liveN);
   }
@@ -6362,6 +6383,14 @@ function loadBastion(url) {
   if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
   state.settings.bastionUrl = url;
   saveSettings();
+  // 换站点/重新加载 → 复位拉取状态:让 poll 对**这个新页面**重新自动捕获。
+  // 否则上次成功(或"树通但零设备"的假成功)留下的 bastionAllFetched=true 会门控掉
+  // 新站的拉取 —— 跨站点切过去左侧资产永远不自动回来。
+  // state.bastionAssets 保留展示(避免切站瞬间列表清空),新捕获后由 merge 渐进更新。
+  state.bastionAllFetched = false;
+  state.bastionAutoFetchFails = 0;
+  bastionFetchOkNotified = false;
+  bastionFetchFailNotified = false;
   els.bastionEmpty.classList.remove('hidden');
   els.bastionEmpty.textContent = '加载中…';
   els.bastionLoading.classList.remove('hidden');
