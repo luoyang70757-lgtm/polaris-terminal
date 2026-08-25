@@ -106,7 +106,7 @@ const check = (cond, n, e) => (cond ? ok(n) : bad(n, e));
     await ev(c, `window.api.createSession({ name: 'SFTP-A', host: '127.0.0.1', port: ${SSH}, username: 'admin', password: 'admin123' })`);
     await ev(c, `window.api.createSession({ name: 'SFTP-B', host: '127.0.0.1', port: ${SSH}, username: 'admin', password: 'admin123' })`);
     await ev(c, `loadSessions()`); await sleep(500);
-    await ev(c, `state.collapsedGroups.clear(); renderSessionList('')`);
+    await ev(c, `state.collapsedGroups.clear(); state.collapsedTopHost = false; renderSessionList('')`);
     await ev(c, `state.settings.verifyHostKey = false; saveSettings()`);
     check(await waitPort(SSH, 10000), `mock KoKo SSH 端口 ${SSH} 就绪`);
     await ev(c, `(async () => {

@@ -70,13 +70,14 @@ async function main() {
       if (m) { c = await connect(m.webSocketDebuggerUrl); break; }
     }
     if (!c) throw new Error('解锁后主窗口未出现');
+    for (let i = 0; i < 30; i++) { if (await ev(c, `typeof renderSessionList === 'function'`)) break; await sleep(300); }
     for (let i = 0; i < 40; i++) { if (await ev(c, `!!document.getElementById('sftp-path') && !!document.getElementById('btn-sftp-toggle')`)) break; await sleep(300); }
 
     // 建主机并连接(mock SSH):渲染资产行 → 双击连接 → 等 connected
     await ev(c, `window.api.createSession({ name: 'SFTP-A', host: '127.0.0.1', port: ${SSH}, username: 'admin', password: 'admin123' })`);
     await ev(c, `state.settings.verifyHostKey = false; saveSettings()`);
     await ev(c, `loadSessions()`); await sleep(500);
-    await ev(c, `state.collapsedGroups.clear(); renderSessionList('')`);
+    await ev(c, `state.collapsedGroups.clear(); state.collapsedTopHost = false; renderSessionList('')`);
     await ev(c, `(async () => {
       const row = [...document.querySelectorAll('.asset-item')].find((x) => x.textContent.includes('SFTP-A'));
       if (!row) return { err: 'no asset row' };
@@ -114,11 +115,14 @@ async function main() {
       if (!dirs.length) return { err: 'no dirs in root' };
       state.sftp.path = '/' + dirs[0].name;
       await loadSftpList();
+      await new Promise((r) => setTimeout(r, 300)); // 等面包屑异步渲染
       const segs = [...document.querySelectorAll('#sftp-path .sftp-path-seg')];
       const labels = segs.map((s) => s.textContent);
       const active = segs.filter((s) => s.classList.contains('active')).map((s) => s.textContent);
       // 点击根段 → 回到 /
-      document.querySelector('#sftp-path .sftp-path-seg.root').click();
+      const rootSeg = document.querySelector('#sftp-path .sftp-path-seg.root');
+      if (!rootSeg) return { err: 'no root seg', labels, active };
+      rootSeg.click();
       await new Promise((r) => setTimeout(r, 400));
       const afterRootClick = state.sftp.path;
       return { dirEntered: '/' + dirs[0].name, labels, active, afterRootClick };

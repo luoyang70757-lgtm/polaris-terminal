@@ -58,12 +58,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
 (async () => {
   console.log('\n=== 终端调试日志功能验证 ===\n');
   try {
-    const ts = await targets();
-    const lockT = ts.find((t) => /解锁/.test(t.title || ''));
+    let lockT = null;
+    for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
+    if (!lockT) throw new Error('解锁页未就绪');
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    await ev(lock, `document.getElementById('pw').value='x1234567'; document.getElementById('pw2').value='x1234567'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) { await sleep(500); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { main = m; break; } }
     c = await connect(main.webSocketDebuggerUrl);
@@ -95,13 +96,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (/KEY[\s\S]*'a'[\s\S]*→终端/.test(logA)) ok(`聚焦终端按 a → KEY 日志标记「→终端」`); else bad('KEY 日志未标记正常送达', logA.slice(-400));
     if (logA.includes('SEND')) ok(`按键经 xterm 发送 → SEND 日志`); else bad('SEND 日志缺失', logA.slice(-400));
 
-    // ③ 焦点顶到 BODY 后按空格 → 应标记按键被吞
+    // ③ 焦点顶到 BODY 后按空格 → 应标记「已兜底转发终端」(修复:BODY 不再吞键,转发给终端)
     await ev(c, `(function(){ const ta=document.querySelector('.xterm-helper-textarea'); if(ta) ta.focus(); document.activeElement.blur(); return true; })()`);
     await sleep(150);
     await key(c, ' ', { code: 'Space', vk: 32, text: ' ' });
     await sleep(350);
     const logB = await ev(c, `document.getElementById('debug-body').textContent`);
-    if (/KEY[\s\S]*'␣'[\s\S]*BODY 按键被吞/.test(logB)) ok(`焦点在 BODY 按空格 → 日志标记「BODY 按键被吞」`); else bad('未标记按键被吞', logB.slice(-400));
+    if (/KEY[\s\S]*'␣'[\s\S]*已兜底转发终端/.test(logB)) ok(`焦点在 BODY 按空格 → 日志标记「已兜底转发终端」`); else bad('BODY 按键未被标记兜底转发', logB.slice(-400));
 
     // ④ 复制按钮 → 状态栏提示已复制
     await ev(c, `document.getElementById('debug-copy').click(); true`);

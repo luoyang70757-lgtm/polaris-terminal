@@ -54,12 +54,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
 (async () => {
   console.log('\n=== 树形紧凑小条布局验证 ===\n');
   try {
-    const ts = await targets();
-    const lockT = ts.find((t) => /解锁/.test(t.title || ''));
+    let lockT = null;
+    for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
+    if (!lockT) throw new Error('解锁页未就绪');
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    await ev(lock, `document.getElementById('pw').value='x1234567'; document.getElementById('pw2').value='x1234567'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) {
       await sleep(500);
@@ -86,7 +87,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     } else bad('启动分组折叠异常: ' + JSON.stringify(boot), null);
 
     // 展开分组 → 主机行带分割线可见
-    await ev(c, `state.collapsedGroups.clear(); renderSessionList('');`);
+    await ev(c, `state.collapsedGroups.clear(); state.collapsedTopHost = false; renderSessionList('');`);
     await sleep(400);
 
     // 树形视图:紧凑条;主机条不再有右侧「}」竖线(border-right 已去掉),宽度仍贴合内容
@@ -97,11 +98,11 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
       ok(`树形紧凑条:宽度 ${tree.m.rowW}px < 容器 ${tree.m.contW}px,右侧竖线已去掉(border-right ${tree.m.border}、留白 ${tree.m.marginR}),不再是「}」大括号`);
     } else bad('树形布局异常: ' + JSON.stringify(tree), null);
 
-    // JMS/H3C 堡垒机资产行(asset-item jms-asset-item)同样带右侧分割线
-    const jms = JSON.parse(await ev(c, `(function(){ const el=document.createElement('div'); el.className='asset-item jms-asset-item'; document.getElementById('session-tree').appendChild(el); const cs=getComputedStyle(el); const w=cs.borderRightWidth, color=cs.borderRightColor, mr=cs.marginRight; el.remove(); return JSON.stringify({w, color, mr}); })()`));
-    if (jms.w === '2px' && jms.color === 'rgb(148, 169, 218)' && jms.mr === '8px') {
-      ok(`JMS/H3C 资产行同样带右侧亮色分割线(${jms.w} ${jms.color})`);
-    } else bad('JMS/H3C 资产行无分割线: ' + JSON.stringify(jms), null);
+    // JMS/H3C 堡垒机资产行(asset-item jms-asset-item)同样无右侧竖线(紧凑布局统一去掉)
+    const jms = JSON.parse(await ev(c, `(function(){ const el=document.createElement('div'); el.className='asset-item jms-asset-item'; document.getElementById('session-tree').appendChild(el); const cs=getComputedStyle(el); const w=cs.borderRightWidth, mr=cs.marginRight; el.remove(); return JSON.stringify({w, mr}); })()`));
+    if (jms.w === '0px' && jms.mr === '0px') {
+      ok(`JMS/H3C 资产行同样无右侧竖线(border-right ${jms.w}、留白 ${jms.mr}),紧凑布局统一`);
+    } else bad('JMS/H3C 资产行分割线异常: ' + JSON.stringify(jms), null);
 
     // 分组头(asset-group-head)右侧也不再有「}」竖线
     const ghead = JSON.parse(await ev(c, `(function(){ const el=document.querySelector('.asset-group-head'); if(!el) return null; const cs=getComputedStyle(el); return JSON.stringify({w:cs.borderRightWidth}); })()`));

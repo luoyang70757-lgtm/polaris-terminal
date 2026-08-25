@@ -123,7 +123,7 @@ const check = (cond, n, e) => (cond ? ok(n) : bad(n, e));
     await ev(c, `loadSessions()`);
     await sleep(500);
     // 默认树形视图 + 分组启动时折叠:展开所有分组再重渲染,让会话行可见
-    await ev(c, `(async () => { state.collapsedGroups.clear(); renderSessionList(''); return true; })()`);
+    await ev(c, `(async () => { state.collapsedGroups.clear(); state.collapsedTopHost = false; renderSessionList(''); return true; })()`);
     await sleep(300);
     const cardOk = await ev(c, `[...document.querySelectorAll('.asset-item')].some((x) => x.textContent.includes('推荐测试机'))`);
     check(cardOk, '会话行出现在列表');

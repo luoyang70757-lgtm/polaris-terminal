@@ -44,12 +44,13 @@ const hits = (c, q) => ev(c, `filterSessions(${JSON.stringify(q)}).map(s=>s.name
 (async () => {
   console.log('\n=== 搜索框 IP 精确匹配 ===\n');
   try {
-    const ts = await targets();
-    const lockT = ts.find((t) => /解锁/.test(t.title || ''));
+    let lockT = null;
+    for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
+    if (!lockT) throw new Error('解锁页未就绪');
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    await ev(lock, `document.getElementById('pw').value='x1234567'; document.getElementById('pw2').value='x1234567'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) { await sleep(500); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { main = m; break; } }
     c = await connect(main.webSocketDebuggerUrl);

@@ -84,7 +84,7 @@ const termText = async (c, sid) => {
     await ev(c, `closeSettingsModal(); true`);
 
     // 建会话并连接(mock 用户 admin/admin123)
-    await ev(c, `(async()=>{ await window.api.createSession({name:'srvA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); state.collapsedGroups.clear(); state.settings.sessionView='list'; renderSessionList(''); return true; })()`);
+    await ev(c, `(async()=>{ await window.api.createSession({name:'srvA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); state.collapsedGroups.clear(); state.settings.sessionView='list'; state.settings.verifyHostKey = false; state.settings.autoTrustHostKey = true; renderSessionList(''); return true; })()`);
     await sleep(400);
     const aJson = await ev(c, `(function(){ const s=state.sessions.find(x=>x.name==='srvA'); return s?JSON.stringify(s):'NOTFOUND'; })()`);
     if (aJson === 'NOTFOUND') throw new Error('srvA 未创建');

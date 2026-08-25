@@ -74,7 +74,7 @@ async function main() {
     await ev(c, `window.api.createSession({ name: 'T-A', host: '127.0.0.1', port: ${SSH}, username: 'admin', password: 'admin123' })`);
     await ev(c, `state.settings.verifyHostKey = false; saveSettings()`);
     await ev(c, `loadSessions()`); await sleep(500);
-    await ev(c, `state.collapsedGroups.clear(); renderSessionList('')`);
+    await ev(c, `state.collapsedGroups.clear(); state.collapsedTopHost = false; renderSessionList('')`);
     await ev(c, `[...document.querySelectorAll('.asset-item')].find((x) => x.textContent.includes('T-A')).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     let connected = false;
     for (let i = 0; i < 40; i++) {

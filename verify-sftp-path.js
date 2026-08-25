@@ -59,12 +59,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
 (async () => {
   console.log('\n=== SFTP 下载保存路径显示验证 ===\n');
   try {
-    const ts = await targets();
-    const lockT = ts.find((t) => /解锁/.test(t.title || ''));
+    let lockT = null;
+    for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
+    if (!lockT) throw new Error('解锁页未就绪');
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    await ev(lock, `document.getElementById('pw').value='x1234567'; document.getElementById('pw2').value='x1234567'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) { await sleep(500); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { main = m; break; } }
     c = await connect(main.webSocketDebuggerUrl);
@@ -101,7 +102,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (up) ok('上传行保持隐藏本地路径行'); else bad('上传行不应有本地路径行');
 
     // ---- 连 mock SSH,开 SFTP 面板,准备真实下载 ----
-    await ev(c, `(async()=>{ await window.api.createSession({name:'srvA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); state.collapsedGroups.clear(); state.settings.sessionView='list'; renderSessionList(''); return true; })()`);
+    await ev(c, `(async()=>{ await window.api.createSession({name:'srvA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); state.collapsedGroups.clear(); state.settings.sessionView='list'; state.settings.verifyHostKey = false; state.settings.autoTrustHostKey = true; renderSessionList(''); return true; })()`);
     await sleep(400);
     const aJson = await ev(c, `(function(){ const s=state.sessions.find(x=>x.name==='srvA'); return s?JSON.stringify(s):'NOTFOUND'; })()`);
     if (aJson === 'NOTFOUND') throw new Error('srvA 未创建');

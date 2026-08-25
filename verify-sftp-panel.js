@@ -51,12 +51,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
 (async () => {
   console.log('\n=== SFTP 面板选中行为验证 ===\n');
   try {
-    const ts = await targets();
-    const lockT = ts.find((t) => /解锁/.test(t.title || ''));
+    let lockT = null;
+    for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
+    if (!lockT) throw new Error('解锁页未就绪');
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }
     await sleep(400);
-    await ev(lock, `document.getElementById('pw').value='x1234'; document.getElementById('pw2').value='x1234'; document.getElementById('btn').click();`);
+    await ev(lock, `document.getElementById('pw').value='x1234567'; document.getElementById('pw2').value='x1234567'; document.getElementById('btn').click();`);
     let main = null, c = null;
     for (let i = 0; i < 30; i++) { await sleep(500); const t2 = await targets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { main = m; break; } }
     c = await connect(main.webSocketDebuggerUrl);
@@ -66,7 +67,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     await ev(c, `(async()=>{ await window.api.createSession({name:'srvA', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await window.api.createSession({name:'srvB', host:'127.0.0.1', port:${SSH}, username:'admin', password:'admin123', protocol:'ssh'}); await loadSessions(); return true; })()`);
     await sleep(400);
     // 展开分组 + 列表视图(默认树形分组折叠,主机行不显示)
-    await ev(c, `state.collapsedGroups.clear(); state.settings.sessionView='list'; renderSessionList(''); true`);
+    await ev(c, `state.collapsedGroups.clear(); state.collapsedTopHost = false; state.settings.sessionView='list'; renderSessionList(''); true`);
     await sleep(300);
 
     // 连接 srvA
@@ -86,13 +87,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (vis1 && lab1 === 'srvA · 127.0.0.1:' + SSH) ok(`面板打开,工具栏显示当前连接「${lab1}」`);
     else bad(`面板打开但连接标签异常: visible=${vis1} label=${JSON.stringify(lab1)}(期望 srvA · 127.0.0.1:${SSH})`, null);
 
-    // ② 点击侧边栏"未打开"的 srvB → SFTP 面板收起,标签清空
+    // ② 点击侧边栏"未打开"的 srvB → SFTP 面板保持(各标签 SFTP 独立,互不影响),标签不变
     await ev(c, `(function(){ const row=[...document.querySelectorAll('.asset-item.host-item')].find(el=>el.querySelector('.name').textContent==='srvB'); if(!row) return 'NOROW'; row.click(); return 'OK'; })()`);
     await sleep(400);
-    const vis2 = await ev(c, `els.sftpPanel.classList.contains('hidden')`);
+    const vis2 = await ev(c, `!els.sftpPanel.classList.contains('hidden')`);
     const lab2 = await ev(c, `els.sftpConn.textContent`);
-    if (vis2 && lab2 === '') ok(`选中未打开的会话 → SFTP 面板收起(不再显示),连接标签清空`);
-    else bad(`选中未打开会话后面板未收起: hidden=${vis2} label=${JSON.stringify(lab2)}`, null);
+    if (vis2 && lab2 === 'srvA · 127.0.0.1:' + SSH) ok(`选中未打开的会话 → SFTP 面板保持(各标签独立),连接标签不变「${lab2}」`);
+    else bad(`选中未打开会话后面板状态异常: visible=${vis2} label=${JSON.stringify(lab2)}`, null);
 
     // ③ 点击侧边栏"已打开"的 srvA → 切回该标签(activeSessionId = srvA 的 tab)
     await ev(c, `(function(){ const row=[...document.querySelectorAll('.asset-item.host-item')].find(el=>el.querySelector('.name').textContent==='srvA'); if(!row) return 'NOROW'; row.click(); return 'OK'; })()`);
@@ -101,8 +102,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (activeId === sidA) ok(`选中已打开的 srvA → 切到该标签(activeSessionId=${activeId})`);
     else bad(`选中已打开会话未切换标签: active=${JSON.stringify(activeId)} 期望=${sidA}`, null);
 
-    // 再次打开面板,确认标签仍正确(回归:面板重开绑定当前连接)
-    await ev(c, `toggleSftpPanel(); true`);
+    // ④ 再次开关面板:先关(sftpA 仍开着)→ 再开,标签应仍正确(回归:面板重开绑定当前连接)
+    await ev(c, `toggleSftpPanel(); true`); // 关
+    await sleep(400);
+    await ev(c, `toggleSftpPanel(); true`); // 开
     await sleep(600);
     const lab3 = await ev(c, `els.sftpConn.textContent`);
     if (lab3 === 'srvA · 127.0.0.1:' + SSH) ok(`面板重新打开仍显示「${lab3}」`);
