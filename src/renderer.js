@@ -5253,10 +5253,16 @@ function injectBastionAssetHook(requireStable) {
             rootNames.forEach(function(rn){ p = p.then(function(){ return fetchPathDevs([rn]); }); });
             return p;
           }
-          // 无树接口 → 用观察到的目录补拉;一个目录都没有(页面还没打开资产视图)则跳过设备拉取
+          // 无树接口 → 用观察到的目录补拉;一个目录都没有(webview 没打开过资产视图,
+          // 停在 RIS 等非资产页)则试空 paths 拉全量 —— 部分版本空 paths 返回全部设备,
+          // 至少让左侧有资产(先未分组,打开资产视图后按请求体 paths 自动补目录)。
           var paths2 = observedPaths();
           var p2 = Promise.resolve();
-          paths2.forEach(function(pth){ p2 = p2.then(function(){ return fetchPathDevs(pth); }); });
+          if (paths2.length) {
+            paths2.forEach(function(pth){ p2 = p2.then(function(){ return fetchPathDevs(pth); }); });
+          } else {
+            p2 = p2.then(function(){ return fetchPathDevs([]); });
+          }
           return p2;
         }).catch(function(){ return true; }); // 树接口请求失败(不存在/未登录)不中断,继续收藏等后续步骤
         return fetchPlan.then(function(){
