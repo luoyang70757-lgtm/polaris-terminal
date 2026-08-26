@@ -2125,13 +2125,33 @@ async function getSftp(sessionId) {
         throw e;
       }
     };
+    // 探测独立 SFTP 是否真能用:某些设备(H3C OTP 复用)独立连接能认证通过,但该连接上
+    // SFTP 操作全被拒(General failure)——连接打开成功不代表可用。readdir('.') 探测一次,
+    // 报 General failure 即判定独立连接不可用,回退主连接。超时按可用处理(慢设备不误判)。
+    const probeSftp = (sftp) => new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
+      const timer = setTimeout(() => finish(true), 5000);
+      try {
+        sftp.readdir('.', (err) => { clearTimeout(timer); finish(!err || !String((err && err.message) || err).includes('General failure')); });
+      } catch { clearTimeout(timer); finish(true); }
+    });
     try {
       try {
-        s.sftp = await Promise.race([
+        const sep = await Promise.race([
           openSeparate(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 独立连接超时(20s)')), 20000)),
         ]);
-        __sftpLog('SFTP 独立连接成功', { sessionId, ms: Date.now() - t0 });
+        const usable = await probeSftp(sep);
+        if (!usable) {
+          // 独立连接认证通过但 SFTP 不可用(H3C OTP 复用)→ 关闭它,回退主连接 SFTP
+          __sftpLog('独立 SFTP 探测失败(General failure),回退主连接', { sessionId, ms: Date.now() - t0 });
+          closeSftpConn(sessionId); // 关掉不可用的独立连接
+          await openOnMain();
+          __sftpLog('SFTP 回退主连接成功', { sessionId, ms: Date.now() - t0 });
+        } else {
+          __sftpLog('SFTP 独立连接成功', { sessionId, ms: Date.now() - t0 });
+        }
       } catch (e) {
         // 独立连接失败(OTP 复用被拒/设备限制/超时)→ 回退主连接 SFTP,不阻断功能
         __sftpLog('SFTP 独立连接失败,回退主连接', { sessionId, error: e && e.message, ms: Date.now() - t0 });
