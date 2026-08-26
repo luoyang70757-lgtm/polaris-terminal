@@ -394,6 +394,15 @@ input[type="checkbox"] {
   border-right: none;
   margin-right: 0;
 }
+/* 堡垒机资产行与分组头:靠左紧凑,宽度贴合内容(不占满整行)——用户反馈左侧目录树每行不要撑满屏幕 */
+.asset-item.jms-asset-item,
+.asset-group-head {
+  width: max-content;
+  max-width: 100%; /* 超长名字回退省略,不把面板撑出横向滚动 */
+}
+.asset-item.jms-asset-item .name {
+  flex: 0 1 auto; /* 紧凑宽度下 name 不再拉伸占满 */
+}
 
 .asset-item .icon { color: var(--green); font-size: 14px; }
 .asset-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
@@ -841,6 +850,8 @@ input[type="checkbox"] {
   padding: 4px 0 2px;
   margin-top: 4px;
   letter-spacing: 0.3px;
+  width: max-content;
+  max-width: 100%;
 }
 .bastion-bar {
   display: flex; gap: 5px; align-items: center; padding: 6px 8px;
@@ -1501,6 +1512,13 @@ input[type="checkbox"] {
 .sftp-conn-menu .ctx-item { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 
 .sftp-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+/* SFTP 面板文字可选中复制(路径/文件名/连接名/空提示):默认 user-select:none 会让用户选不中、无法复制 */
+.sftp-path, .sftp-row .name, .sftp-row .sftp-row-size, .sftp-empty,
+.sftp-conn, .sftp-log, .sftp-path-label, .sftp-transfers-list {
+  user-select: text;
+  -webkit-user-select: text;
+}
 
 .sftp-row {
   display: flex;

@@ -110,17 +110,15 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
       ok(`分组头右侧竖线已去掉(border-right ${ghead.w}),不再是「}」大括号`);
     } else bad('分组头仍有右侧竖线: ' + JSON.stringify(ghead), null);
 
-    // 三个视图切换按钮:带文字标签,均分整行,总宽与分组头一致(协调美观)
+    // 三个视图切换按钮:带文字标签,间距 4px(分组头已改为紧凑靠左,不再要求宽度与按钮行一致)
     const vs = JSON.parse(await ev(c, `JSON.stringify({
       texts: [...document.querySelectorAll('.vs-btn')].map(b=>b.textContent.trim()),
-      totalW: (()=>{ const bs=[...document.querySelectorAll('.vs-btn')]; if(!bs.length) return 0; const r=bs[0].getBoundingClientRect(); return Math.round((bs[bs.length-1].getBoundingClientRect().right - r.left)); })(),
       gap: getComputedStyle(document.querySelector('.view-switch')).gap,
       headW: Math.round(document.querySelector('.asset-group-head').getBoundingClientRect().width),
     })`));
     const hasLabels = vs.texts.length === 3 && vs.texts[0].includes('网格') && vs.texts[1].includes('列表') && vs.texts[2].includes('树形');
-    const matchesHead = vs.totalW >= vs.headW - 30 && vs.totalW <= vs.headW + 10;
-    if (hasLabels && matchesHead && vs.gap === '4px') {
-      ok(`三个视图按钮:${vs.texts.join(' / ')},总宽 ${vs.totalW}px ≈ 分组头 ${vs.headW}px,间距 ${vs.gap}(协调美观)`);
+    if (hasLabels && vs.gap === '4px') {
+      ok(`三个视图按钮:${vs.texts.join(' / ')},间距 ${vs.gap}(分组头紧凑靠左 ${vs.headW}px)`);
     } else bad('视图按钮布局异常: ' + JSON.stringify(vs), null);
 
     // 列表视图:同样紧凑条(有 host-item)

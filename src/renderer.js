@@ -2383,6 +2383,14 @@ function showCtxMenu(x, y, items) {
   els.ctxMenu.style.left = `${x}px`;
   els.ctxMenu.style.top = `${y}px`;
   els.ctxMenu.classList.remove('hidden');
+  // 菜单不能超出视口:搜索出的主机在屏幕最下方/最右侧时,若 x/y 靠近边缘,
+  // 菜单会跑到屏幕外 → 用户看不到功能项。测尺寸后往上/往左翻,保证完整可见。
+  try {
+    const rect = els.ctxMenu.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (rect.right > vw - 4) els.ctxMenu.style.left = `${Math.max(4, x - rect.width)}px`;
+    if (rect.bottom > vh - 4) els.ctxMenu.style.top = `${Math.max(4, y - rect.height)}px`;
+  } catch { /* 测量失败忽略,保持原位置 */ }
   dlog('MENU', `open: ${items.map((i) => (i.separator ? '---' : i.label)).join(' | ')}`);
   // 诊断:排查"菜单一闪而过"(close:blur)时,记录打开瞬间的焦点/面板状态
   const wv = els.bastionWebview;
@@ -5987,7 +5995,7 @@ async function refreshFavGroups() {
 async function createFavGroup(name, parentId) {
   if (!name || !name.trim()) return;
   const r = await window.api.bastionCreateFavGroup(name.trim(), parentId || null);
-  if (r && r.ok) { await refreshFavGroups(); renderSessionList(els.inputSessionSearch.value); }
+  if (r && r.ok) { await refreshFavGroups(); renderSessionList(els.inputSessionSearch.value); return r.id; }
 }
 async function renameFavGroup(id, name) {
   if (!name || !name.trim()) return;
@@ -6073,6 +6081,30 @@ function unsetAssetFavGroup(a) {
   if (a._favJms && a._favServer) cacheJmsAssets(a._favServer, a._favServer.assets);
   else persistBastionAssets();
   renderSessionList(els.inputSessionSearch.value);
+}
+
+// 批量把一组主机加入某个收藏分组(选已有组 / 新建并加入)
+async function batchFavoriteAssets(assets) {
+  if (!assets || !assets.length) return;
+  const addTo = (path) => { for (const a of assets) setAssetFavGroup(a, path); };
+  const walk = (nodes, depth) => {
+    const out = [];
+    for (const n of nodes) {
+      out.push({ label: `${'　'.repeat(depth)}📁 ${n.name}`, action: () => addTo(favGroupPath(n.id)) });
+      out.push(...walk(n.children, depth + 1));
+    }
+    return out;
+  };
+  const items = [];
+  const treeItems = walk(favGroupTree(), 0);
+  if (treeItems.length) items.push(...treeItems);
+  else items.push({ label: '(还没有收藏分组,先新建一个)', action: () => {} });
+  items.push({ separator: true });
+  items.push({ label: '➕ 新建收藏分组并加入…', action: () => showPrompt({
+    title: '新建收藏分组', label: '分组名称', value: '', password: false,
+    onOk: (name) => { createFavGroup(name, null).then((id) => { if (id != null) addTo(favGroupPath(id)); }); },
+  }) });
+  showCtxMenu(140, 90, items);
 }
 
 function makeBastionAssetItem(a) {
@@ -6515,6 +6547,7 @@ function renderBastionInSessionList(container, f) {
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
       { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
+      ...(kw ? [{ label: `⭐ 收藏搜索到的 ${list.length} 台…`, action: () => batchFavoriteAssets(list) }] : []),
       { label: '🧹 收起全部分组', action: () => collapseAllBastionGroups() },
       { label: '🔄 拉取全部资产', action: manualBastionPull },
       { label: '📤 导出诊断包', action: () => exportBastionDiag() },
@@ -6670,7 +6703,12 @@ function renderBastionInSessionList(container, f) {
           });
           container.appendChild(head);
           if (gCollapsed) continue;
-          for (const a of child.assets) container.appendChild(makeBastionAssetItem(a));
+          // 资产行也按组深度缩进,体现"收藏目录 → 主机"的层级(父组头已缩进,主机在组下再缩进一档)
+          for (const a of child.assets) {
+            const row = makeBastionAssetItem(a);
+            row.style.paddingLeft = (10 + depth * 14 + 24) + 'px';
+            container.appendChild(row);
+          }
           renderFavNode(child.children, childPath, depth + 1);
         }
       };
@@ -10345,6 +10383,19 @@ document.addEventListener('click', (e) => {
 els.btnSftpUp.addEventListener('click', sftpGoUp);
 // 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
 els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
+// 路径栏右键:复制完整路径 / 粘贴路径并跳转(SFTP 界面复制粘贴;粘贴任意远程路径直接导航过去)
+els.sftpPath.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const cur = state.sftp.path || '/';
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: '📋 复制完整路径', action: () => { window.api.copyText(cur); setStatus(`已复制路径: ${cur}`, 'var(--green)'); } },
+    { separator: true },
+    { label: '📥 粘贴路径并跳转…', action: () => showPrompt({
+      title: '跳转到远程目录', label: '远程路径(可直接粘贴)', value: cur, password: false,
+      onOk: (p) => { const np = String(p || '').trim(); if (np) { state.sftp.path = normPath(np); loadSftpList(); } },
+    }) },
+  ]);
+});
 els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
 els.btnSftpUpload.addEventListener('click', (e) => {
   // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
