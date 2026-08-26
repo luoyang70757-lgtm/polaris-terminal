@@ -125,7 +125,7 @@ contextBridge.exposeInMainWorld('api', {
   bastionClearAllAssets: () => ipcRenderer.invoke('bastion:clearAllAssets'),
   // 手动收藏分组(堡垒机收藏:用户自建组 + 主机加入分组)
   bastionListFavGroups: () => ipcRenderer.invoke('bastion:listFavGroups'),
-  bastionCreateFavGroup: (name, parentId) => ipcRenderer.invoke('bastion:createFavGroup', { name, parentId }),
+  bastionCreateFavGroup: (name, parentId, bastionKey) => ipcRenderer.invoke('bastion:createFavGroup', { name, parentId, bastionKey }),
   bastionRenameFavGroup: (id, name) => ipcRenderer.invoke('bastion:renameFavGroup', { id, name }),
   bastionDeleteFavGroup: (id) => ipcRenderer.invoke('bastion:deleteFavGroup', id),
 

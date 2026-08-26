@@ -870,8 +870,8 @@ ipcMain.handle('bastion:clearAllAssets', () => {
 ipcMain.handle('bastion:listFavGroups', () => {
   try { return { ok: true, groups: sessionStore.listBastionFavGroups() }; } catch (err) { return { ok: false, error: err.message }; }
 });
-ipcMain.handle('bastion:createFavGroup', (_e, { name, parentId }) => {
-  try { const id = sessionStore.createBastionFavGroup(name, parentId); schedulePersist(); return { ok: true, id }; } catch (err) { return { ok: false, error: err.message }; }
+ipcMain.handle('bastion:createFavGroup', (_e, { name, parentId, bastionKey }) => {
+  try { const id = sessionStore.createBastionFavGroup(name, parentId, bastionKey); schedulePersist(); return { ok: true, id }; } catch (err) { return { ok: false, error: err.message }; }
 });
 ipcMain.handle('bastion:renameFavGroup', (_e, { id, name }) => {
   try { sessionStore.renameBastionFavGroup(id, name); schedulePersist(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
