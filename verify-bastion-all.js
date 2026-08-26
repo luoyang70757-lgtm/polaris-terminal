@@ -163,19 +163,18 @@ function mockFetchByUrl(routes) {
     assert.ok(assets.some((a) => a.name === 'dev-3'), '第二页设备应合并进来');
   });
 
-  await ok('收藏设备解析(favorite 标记 + favSet)', async () => {
-    const fav = {
-      content: [
-        { id: 100, dev: { id: 100, name: 'DLitim01', ip: '10.204.241.246', services: { services: { ssh: { port: 22 } } }, accounts: { accounts: [{ name: 'root' }] } }, recent: { account: 'root' } },
-      ],
+  await ok('收藏设备解析(手动收藏后 webview 不再自动拉收藏)', async () => {
+    const dev = {
+      content: [{ id: 100, dev: { id: 100, name: 'DLitim01', ip: '10.204.241.246', services: { services: { ssh: { port: 22 } } }, accounts: { accounts: [{ name: 'root' }] } }, recent: { account: 'root' } }],
       last: true, totalPages: 1,
     };
     const tree = { children: [{ name: 'rootA', id: 'r1', empty: false, path: ['rootA'] }] };
-    const w4 = runInjected(mockFetchByUrl({ getAccessViewTree: JSON.stringify(tree), getFavoriteDevices: JSON.stringify(fav) }));
+    // getAccessViewDevs 是 __bastionFetchAll 主动拉的;getFavoriteDevices 手动收藏后不再主动拉
+    const w4 = runInjected(mockFetchByUrl({ getAccessViewTree: JSON.stringify(tree), getAccessViewDevs: JSON.stringify(dev) }));
     await w4.__bastionFetchAll();
-    assert.strictEqual(w4.__bastionAssets.length, 1, '应有 1 台收藏设备');
-    assert.strictEqual(w4.__bastionAssets[0].favorite, true, '收藏设备应带 favorite=true');
-    assert.ok(w4.__bastionFavSet.has('100'), 'favSet 应含 devId 100');
+    assert.strictEqual(w4.__bastionAssets.length, 1, '应有 1 台设备(来自目录拉取),实际 ' + w4.__bastionAssets.length);
+    assert.strictEqual(w4.__bastionAssets[0].favorite, false, '收藏改为手动:webview 拉取不再自动置 favorite');
+    assert.strictEqual(w4.__bastionFavSet ? w4.__bastionFavSet.size : 0, 0, 'favSet 应为空(手动收藏,不来自 webview 拉取)');
   });
 
   if (har.tree) {

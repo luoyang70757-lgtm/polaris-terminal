@@ -612,9 +612,10 @@ ipcMain.handle('jms:mfa', async (_e, { baseUrl, cookie, challengeUrl, type, code
   }
 });
 // 拉取当前用户可见资产:GET /api/v1/assets/assets/(普通用户可用 user-assets,按版本调整)
-ipcMain.handle('jms:assets', async (_e, { baseUrl, token }) => {
+// cachedById: 增量同步用 —— Map<assetId, cachedAsset>,已缓存且有账号的主机跳过 N+1 详情
+ipcMain.handle('jms:assets', async (_e, { baseUrl, token, cachedById }) => {
   try {
-    const assets = await jmsApi.fetchAssets(baseUrl, token);
+    const assets = await jmsApi.fetchAssets(baseUrl, token, cachedById);
     return { ok: true, assets };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -828,9 +829,10 @@ ipcMain.handle('diag:exportBastion', (_e, data) => {
 
 // ---------- IPC:堡垒机资产缓存(SQLite 持久化,重启不丢) ----------
 // 渲染层捕获/刷新资产后整批写入;启动时读出恢复上次的资产列表。
-ipcMain.handle('bastion:saveAssets', (_e, { url, assets }) => {
+// source: 'h3c'(webview 捕获,默认) | 'jms'(REST API 缓存);JMS 用服务器 origin 当 url。
+ipcMain.handle('bastion:saveAssets', (_e, { url, assets, source }) => {
   try {
-    const n = sessionStore.saveBastionAssets(url, assets);
+    const n = sessionStore.saveBastionAssets(url, assets, source);
     schedulePersist();
     return { ok: true, count: n };
   } catch (err) {
@@ -862,6 +864,20 @@ ipcMain.handle('bastion:clearAllAssets', () => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// ---- 手动收藏分组(堡垒机收藏:用户自建组 + 主机加入分组,不依赖 H3C webview 收藏夹) ----
+ipcMain.handle('bastion:listFavGroups', () => {
+  try { return { ok: true, groups: sessionStore.listBastionFavGroups() }; } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('bastion:createFavGroup', (_e, { name, parentId }) => {
+  try { const id = sessionStore.createBastionFavGroup(name, parentId); schedulePersist(); return { ok: true, id }; } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('bastion:renameFavGroup', (_e, { id, name }) => {
+  try { sessionStore.renameBastionFavGroup(id, name); schedulePersist(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('bastion:deleteFavGroup', (_e, id) => {
+  try { sessionStore.deleteBastionFavGroup(id); schedulePersist(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
 });
 
 // 批量上传:选一个本地文件,上传到每个选中主机的远程目录

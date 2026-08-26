@@ -119,10 +119,15 @@ contextBridge.exposeInMainWorld('api', {
   // 导出堡垒机资产诊断包(排查"资产不完整"用)
   exportBastionDiag: (data) => ipcRenderer.invoke('diag:exportBastion', data),
   // 堡垒机资产持久化(SQLite 整库加密):整批保存 / 读出 / 删除
-  bastionSaveAssets: (url, assets) => ipcRenderer.invoke('bastion:saveAssets', { url, assets }),
+  bastionSaveAssets: (url, assets, source) => ipcRenderer.invoke('bastion:saveAssets', { url, assets, source }),
   bastionLoadAssets: () => ipcRenderer.invoke('bastion:loadAssets'),
   bastionDeleteAssets: (url) => ipcRenderer.invoke('bastion:deleteAssets', url),
   bastionClearAllAssets: () => ipcRenderer.invoke('bastion:clearAllAssets'),
+  // 手动收藏分组(堡垒机收藏:用户自建组 + 主机加入分组)
+  bastionListFavGroups: () => ipcRenderer.invoke('bastion:listFavGroups'),
+  bastionCreateFavGroup: (name, parentId) => ipcRenderer.invoke('bastion:createFavGroup', { name, parentId }),
+  bastionRenameFavGroup: (id, name) => ipcRenderer.invoke('bastion:renameFavGroup', { id, name }),
+  bastionDeleteFavGroup: (id) => ipcRenderer.invoke('bastion:deleteFavGroup', id),
 
   // ---- 快速命令(命令收藏) ----
   quickList: () => ipcRenderer.invoke('quick:list'),

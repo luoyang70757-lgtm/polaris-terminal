@@ -651,11 +651,13 @@ const state = {
   jmsActiveId: null, // 当前正在管理/登录的服务器 id
   jmsSeq: 0,         // 合成会话 id 全局计数器
   jmsRestoreDone: false, // 是否已做过持久登录恢复(避免重复登录)
+  jmsAssetCache: new Map(), // JMS 资产缓存(origin → Map<assetId, cachedAsset>);从 SQLite 恢复,登录增量同步用
   bastionAssets: [], // H3C 堡垒机资产(从 webview 拦截的资产 API 捕获)
   bastionUrls: [], // 数据库里已有资产的堡垒机 URL(下拉/快捷加载用;从 SQLite 恢复 + 捕获时累计)
   bastionTree: [],   // H3C 堡垒机目录树(getAccessViewTree 捕获: [{name,id,path,empty,...}])
-  bastionFavSet: new Set(), // 收藏设备 devId 集合(getFavoriteDevices / userFav 捕获)
-  bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})
+  bastionFavSet: new Set(), // 收藏设备 devId 集合(getFavoriteDevices / userFav 捕获;手动收藏也维护)
+  bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})(仅历史捕获,手动收藏不再依赖)
+  bastionFavGroups: [],     // 手动收藏分组(用户自建:[{id, name, parent_id}] from bastion_fav_groups 表)
   bastionDirCollapsed: new Set(), // 折叠的业务目录名(分组视图)
   bastionDirsInit: false,   // 分组视图是否已完成"首次默认折叠"初始化
   bastionGrouping: false,   // 是否正在后台逐目录补充分组
@@ -1465,6 +1467,13 @@ async function restoreBastionAssets() {
     for (const u of urls) {
       const favs = new Set(r.byUrl[u].filter((a) => a.favorite).map((a) => a.devId));
       for (const a of r.byUrl[u]) {
+        // JMS 资产走独立缓存(jmsAssetCache,登录增量同步用),不混进 H3C 主列表
+        if (a.source === 'jms') {
+          const byId = state.jmsAssetCache.get(u) || new Map();
+          byId.set(a.devId, a);
+          state.jmsAssetCache.set(u, byId);
+          continue;
+        }
         const key = a.devId || (a.name + a.ip);
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1475,6 +1484,23 @@ async function restoreBastionAssets() {
       }
       if (!state.bastionUrl) state.bastionUrl = bastionOrigin(u) || u;
     }
+    // JMS 缓存回填到已配置的 JMS 服务器(state.jmsServers),重启后资产不空跑(不用先拉取)
+    for (const s of state.jmsServers) {
+      const origin = jmsOrigin(s);
+      if (!origin) continue;
+      const byId = state.jmsAssetCache.get(origin);
+      if (byId && byId.size && (!s.assets || !s.assets.length)) {
+        s.assets = [...byId.values()].map((c) => ({
+          id: c.devId, name: c.name, address: c.ip, protocols: [{ name: c.proto || 'ssh', port: c.port }],
+          accounts: c.accounts || [], nodes: (c.dirs || []).map((n) => ({ name: n })),
+        }));
+      }
+    }
+    // 载入手动收藏分组(用户自建,非 webview)
+    try {
+      const g = await window.api.bastionListFavGroups();
+      if (g && g.ok && Array.isArray(g.groups)) state.bastionFavGroups = g.groups;
+    } catch { /* 收藏分组读取失败不阻断 */ }
     if (all.length && stableJson(all) !== stableJson(state.bastionAssets)) {
       // 恢复资产 → H3C 区块默认折叠(左侧分组收起,展开才看)
       state.bastionCollapsed = true;
@@ -4121,12 +4147,58 @@ async function jmsDoMfa() {
   }
 }
 
+// ---- JMS 资产缓存(SQLite,source='jms'):登录增量同步 + 重启恢复 ----
+// 缓存形状与 H3C bastion_assets 一致:devId=asset.id、ip=address、dirs/dirPath=业务目录 nodes
+function jmsOrigin(s) { const b = (s && (s.baseUrl || s.url)) || ''; try { return bastionOrigin(b); } catch { return b.replace(/\/+$/, ''); } }
+
+function jmsAssetsToCacheShape(assets) {
+  return (assets || []).map((a) => ({
+    devId: String(a.id != null ? a.id : ''),
+    name: a.name || '',
+    ip: a.address || a.ip || '',
+    port: (a.protocols && a.protocols[0] && a.protocols[0].port) || 22,
+    proto: (a.protocols && a.protocols[0] && a.protocols[0].name) || 'ssh',
+    accounts: Array.isArray(a.accounts) ? a.accounts : [],
+    recentAccount: '',
+    dir: (a.nodes && a.nodes[0] && a.nodes[0].name) || '',
+    dirs: (a.nodes || []).map((n) => n.name).filter(Boolean),
+    dirPath: (a.nodes || []).map((n) => n.name).filter(Boolean),
+    favorite: !!a.favorite,
+    favGroup: a.favGroup || '',
+  }));
+}
+
+// 把 JMS 资产写进 SQLite 缓存 + 更新内存 jmsAssetCache(整批覆盖:已消失的主机自然从缓存清除)
+async function cacheJmsAssets(s, assets) {
+  try {
+    const origin = jmsOrigin(s);
+    if (!origin) return;
+    const shape = jmsAssetsToCacheShape(assets);
+    await window.api.bastionSaveAssets(origin, shape, 'jms');
+    const byId = new Map();
+    for (const c of shape) byId.set(c.devId, c);
+    state.jmsAssetCache.set(origin, byId);
+  } catch (e) { console.log('[JMS] 缓存资产失败:', e && e.message); }
+}
+
+// 增量同步:已缓存且有账号的主机 → 传给 jms:assets 跳过 N+1 详情(减少对 JMS 的请求)
+function jmsCachedById(s) {
+  const origin = jmsOrigin(s);
+  const map = origin && state.jmsAssetCache.get(origin);
+  if (!map || !map.size) return undefined;
+  const out = new Map();
+  for (const [id, c] of map) if (c && Array.isArray(c.accounts) && c.accounts.length) out.set(id, { accounts: c.accounts });
+  return out.size ? out : undefined;
+}
+
 async function jmsLoadAssets() {
   const s = jmsActive();
   if (!s || !s.token) return;
-  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
+  // 增量:有缓存账号的主机跳过详情;登录后自动刷新只拉新/变
+  const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token, cachedById: jmsCachedById(s) });
   if (!r.ok) { showJmsMsg(`拉取资产失败: ${r.error}`); return; }
   s.assets = r.assets || [];
+  cacheJmsAssets(s, s.assets); // 缓存落 SQLite(整批覆盖,删缓存中已消失的主机)
   els.jmsModal.classList.add('hidden'); // 登录成功 → 资产整合进会话列表
   jmsPersistConfig();
   jmsRenderServerSelect();
@@ -4136,9 +4208,11 @@ async function jmsLoadAssets() {
 async function jmsRefreshActive() {
   const s = jmsActive();
   if (!s || !s.token) return;
+  // 手动刷新=全量重拉(不传 cachedById,详情全部重取)
   const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
   if (!r.ok) { showJmsMsg(`刷新失败: ${r.error}`); return; }
   s.assets = r.assets || [];
+  cacheJmsAssets(s, s.assets);
   renderSessionList(els.inputSessionSearch.value);
 }
 
@@ -5301,22 +5375,8 @@ function injectBastionAssetHook(requireStable) {
           return p2;
         }).catch(function(){ return true; }); // 树接口请求失败(不存在/未登录)不中断,继续收藏等后续步骤
         return fetchPlan.then(function(){ return fetchRecent(0); }).then(function(){
-          // 收藏设备主动拉一次(真实接口是 PUT + body {favId:null},不是 GET ——
-          // 用 GET 会被拒/返回空,收藏永远拉不到;来自 10.204.240.4-5.har 实测)
-          var favBody = JSON.stringify({ page: 0, size: 100, favId: null });
-          return bget('/shterm/api/asset/getFavoriteDevices?page=0&size=100&sort=dev.name,asc', { method: 'PUT', body: favBody }).then(function(t){
-            var j = null; try { j = JSON.parse(t); } catch (e) {}
-            if (j && Array.isArray(j.content) && j.content.length) window.__bastionFetchState.gotAny = true;
-            return t;
-          }).catch(function(){ return ''; });
-        }).then(function(){
-          // 收藏夹树(userFav/getTree)主动拉一次,前端不一定每次都会发;结果存下来供收藏分组映射
-          return bget('/shterm/api/userFav/getTree', { method: 'GET' }).then(function(t){
-            var j = null; try { j = JSON.parse(t); } catch (e) {}
-            if (j && (j.children || j.name)) window.__bastionFavTree = j;
-            return t;
-          }).catch(function(){ return ''; });
-        }).then(function(){
+          // 手动收藏后:不再主动拉收藏设备(getFavoriteDevices)和收藏树(userFav/getTree)——
+          // 收藏由用户在 app 里自建分组,去掉这两处请求能减少对 H3C 控制台的调用。
           (window.__bastionDiag = window.__bastionDiag || []).push({ ts: Date.now(), ev: 'full-fetch-done' });
           window.__bastionFetchState.running = false;
           window.__bastionAllLoading = false;
@@ -5573,7 +5633,9 @@ function mergeBastionCapture(prev, fresh) {
     else if (old.dir) union.add(old.dir);
     m.dirs = Array.from(union);
     if (!m.dirPath || !m.dirPath.length) m.dirPath = old.dirPath ? old.dirPath.slice() : [];
-    if (!m.favGroup && old.favGroup && old.favGroup.indexOf('undefined') !== 0) m.favGroup = old.favGroup;
+    // 收藏为**手动**:保留旧(本地缓存/手动分配)的 favGroup/favorite,不被 webview 捕获覆盖
+    m.favGroup = (old.favGroup && old.favGroup.indexOf('undefined') !== 0) ? old.favGroup : '';
+    m.favorite = !!old.favorite;
     return m;
   });
 }
@@ -5723,27 +5785,20 @@ function pollBastionAssets(force) {
         state.bastionGrouping = false;
         changed = true;
       }
+      // 收藏树仅作参考记录(手动收藏后不再据此映射分组);webview 收藏分组不再自动拉取,
+      // 避免给 H3C 控制台加请求,也避免覆盖用户手动建的收藏分组。
       const favTreeJson = stableJson(r.favTree);
       if (favTreeJson !== stableJson(state.bastionFavTree)) {
         state.bastionFavTree = r.favTree;
         changed = true;
-        // 收藏树变化 → 后台按分组拉设备,映射 favGroup(左侧收藏按分组展示)
-        if (!(r.fetchState && r.fetchState.favRunning)) {
-          try { wv.executeJavaScript('try { window.__bastionFetchFavGroups && window.__bastionFetchFavGroups() } catch(e) { false }').then(() => setTimeout(() => pollBastionAssets(true), 2500)); } catch { /* ignore */ }
-        }
       }
-      // 收藏树/全量资产**不做自动拉取**(持续请求易触发堡垒机账号锁定):
-      // 资产只被动捕获(页面自身请求)+ 用户手动点「🔄 拉取全部资产」时全量拉。
-      if (r.favs && r.favs.length) {
-        const favSet = new Set(r.favs);
-        // 对比用"排序后的内容",不能只比 size:数量不变但收藏内容变了(如 A→B)也要更新(M7)
-        const favKey = [...favSet].sort().join(',');
-        if (favKey !== [...state.bastionFavSet].sort().join(',')) {
-          state.bastionFavSet = favSet;
-          state.bastionAssets = state.bastionAssets.map((a) => ({ ...a, favorite: favSet.has(a.devId) || !!a.favorite }));
-          persistBastionAssets();
-          changed = true;
-        }
+      // 收藏集合:以**手动收藏**为准(state.bastionAssets 里 favorite/favGroup 标记),
+      // 不再同步 webview 的 __bastionFavSet(那会让网页收藏覆盖手动收藏)。
+      const manualFavSet = new Set(state.bastionAssets.filter((a) => a.favorite || a.favGroup).map((a) => a.devId));
+      const favKey = [...manualFavSet].sort().join(',');
+      if (favKey !== [...state.bastionFavSet].sort().join(',')) {
+        state.bastionFavSet = manualFavSet;
+        changed = true;
       }
       // 左侧空状态提示携带实时诊断:用户不开调试面板,直接看提示文字就能定位断在哪一环。
       // URL 非 /shterm/根 → isH3c 拒绝;捕获=0 → 钩子/页面没触发资产接口;钩子✗ → 注入丢了。
@@ -5919,6 +5974,105 @@ function exportBastionDiag() {
 
 // 会话列表里的"🌐 H3C 堡垒机"资产区(双击连 SSH;右键:连接/账号/SFTP/断开)
 // 单个堡垒机资产行(双击连 SSH;右键:连接/账号/SFTP/断开)
+// ---- 手动收藏分组(用户自建组 + 把主机加入分组;不依赖 H3C webview 收藏夹) ----
+// 资产上的 favGroup 存"组路径"(如 "组1/组2");分组定义在 bastion_fav_groups 表。
+async function refreshFavGroups() {
+  try {
+    const r = await window.api.bastionListFavGroups();
+    if (r && r.ok && Array.isArray(r.groups)) state.bastionFavGroups = r.groups;
+  } catch { /* 读取失败不阻断 */ }
+}
+async function createFavGroup(name, parentId) {
+  if (!name || !name.trim()) return;
+  const r = await window.api.bastionCreateFavGroup(name.trim(), parentId || null);
+  if (r && r.ok) { await refreshFavGroups(); renderSessionList(els.inputSessionSearch.value); }
+}
+async function renameFavGroup(id, name) {
+  if (!name || !name.trim()) return;
+  const r = await window.api.bastionRenameFavGroup(id, name.trim());
+  if (r && r.ok) { await refreshFavGroups(); renderSessionList(els.inputSessionSearch.value); }
+}
+async function deleteFavGroup(id) {
+  const path = favGroupPath(id);
+  const r = await window.api.bastionDeleteFavGroup(id);
+  if (!r || !r.ok) return;
+  await refreshFavGroups();
+  if (path) {
+    // 清掉内存里指向被删组(或其子组)的资产 favGroup(SQLite 已被数据层清掉)
+    for (const a of state.bastionAssets) {
+      if (a.favGroup === path || (a.favGroup || '').startsWith(path + '/')) { a.favGroup = ''; a.favorite = false; }
+    }
+    for (const s of [...state.jmsServers, ...(bastionServers() || [])]) {
+      for (const a of (s.assets || [])) {
+        if (a.favGroup === path || (a.favGroup || '').startsWith(path + '/')) { a.favGroup = ''; a.favorite = false; }
+      }
+    }
+  }
+  persistBastionAssets();
+  renderSessionList(els.inputSessionSearch.value);
+}
+// 由分组 id 算全路径(如 "组1/组2");递归走父链
+function favGroupPath(gid) {
+  const g = state.bastionFavGroups.find((x) => x.id === gid);
+  if (!g) return '';
+  const parentPath = g.parent_id != null ? favGroupPath(g.parent_id) : '';
+  return parentPath ? parentPath + '/' + g.name : g.name;
+}
+// 分组树:由 bastion_fav_groups(id/name/parent_id)建树,供收藏区渲染
+function favGroupTree() {
+  const roots = [];
+  const byParent = new Map();
+  for (const g of state.bastionFavGroups) {
+    const node = { id: g.id, name: g.name, parentId: g.parent_id, children: [], assets: [] };
+    if (g.parent_id == null) roots.push(node); else { if (!byParent.has(g.parent_id)) byParent.set(g.parent_id, []); byParent.get(g.parent_id).push(node); }
+  }
+  const attach = (nodes) => { for (const n of nodes) { n.children = byParent.get(n.id) || []; attach(n.children); } };
+  attach(roots);
+  return roots;
+}
+// 把资产放进分组树:按 favGroup 路径逐段匹配;路径里没有对应手动组的分段 → 临时建节点(旧/孤立组仍可见)
+function placeAssetInFavTree(root, a) {
+  const segs = (a.favGroup || '').split('/').filter(Boolean);
+  let node = null;
+  for (const seg of segs) {
+    let child = node ? node.children.find((c) => c.name === seg) : root.find((c) => c.name === seg);
+    if (!child) { child = { id: null, name: seg, parentId: node ? node.id : null, children: [], assets: [] }; if (node) node.children.push(child); else root.push(child); }
+    node = child;
+  }
+  if (node) node.assets.push(a);
+  else root.push({ id: null, name: a.name, parentId: null, children: [], assets: [a] });
+}
+// 收集分组下全部资产(含后代;按 devId 去重)
+function collectFavAssets(node, out = [], seen = new Set()) {
+  for (const a of node.assets) { const k = a.devId || a.name + a.ip; if (!seen.has(k)) { seen.add(k); out.push(a); } }
+  for (const c of node.children) collectFavAssets(c, out, seen);
+  return out;
+}
+function favTotal(node) { return node.assets.length + node.children.reduce((s, c) => s + favTotal(c), 0); }
+// 收藏的资产(手动):H3C 的 state.bastionAssets + JMS 各服务器资产里,带 favGroup/favorite 的
+function favAssets() {
+  const out = [];
+  for (const a of state.bastionAssets) if (a.favorite || a.favGroup) out.push(a);
+  for (const s of [...state.jmsServers, ...(bastionServers() || [])]) {
+    for (const a of (s.assets || [])) if (a.favorite || a.favGroup) out.push(Object.assign({}, a, { _favJms: true, _favServer: s }));
+  }
+  return out;
+}
+// 把主机加入/移出收藏分组(改资产 favGroup + favorite,按来源持久化)
+function setAssetFavGroup(a, path) {
+  if (!path) return;
+  a.favGroup = path; a.favorite = true;
+  if (a._favJms && a._favServer) cacheJmsAssets(a._favServer, a._favServer.assets);
+  else persistBastionAssets();
+  renderSessionList(els.inputSessionSearch.value);
+}
+function unsetAssetFavGroup(a) {
+  a.favGroup = ''; a.favorite = false;
+  if (a._favJms && a._favServer) cacheJmsAssets(a._favServer, a._favServer.assets);
+  else persistBastionAssets();
+  renderSessionList(els.inputSessionSearch.value);
+}
+
 function makeBastionAssetItem(a) {
   const item = document.createElement('div');
   item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '');
@@ -5950,9 +6104,41 @@ function makeBastionAssetItem(a) {
     items.push({ separator: true });
     items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
     items.push({ separator: true });
+    // 手动收藏:加入分组 / 移出收藏
+    if (a.favorite || a.favGroup) {
+      items.push({ label: '⭐ 移出收藏', action: () => unsetAssetFavGroup(a) });
+      items.push({ label: '⭐ 加入收藏分组', separatorLabel: true });
+    } else {
+      items.push({ label: '⭐ 加入收藏分组', separatorLabel: true });
+    }
+    // 展平手动收藏分组(含子组,带缩进)供选择;空则提示先建组
+    const flat = [];
+    const walk = (nodes, depth) => {
+      for (const n of nodes) {
+        flat.push({ label: `${'　'.repeat(depth)}📁 ${n.name}`, action: () => setAssetFavGroup(a, favGroupPath(n.id)) });
+        walk(n.children, depth + 1);
+      }
+    };
+    walk(favGroupTree(), 0);
+    if (!flat.length) flat.push({ label: '(还没有收藏分组,点组头右键可新建)', action: () => {} });
+    items.push(...flat);
+    items.push({ separator: true });
+    items.push({ label: '➕ 新建收藏分组…', action: () => showPrompt({
+      title: '新建收藏分组', label: '分组名称', value: '', password: false,
+      onOk: (name) => createFavGroup(name, null),
+    }) });
+    items.push({ separator: true });
     items.push({ label: '🔄 刷新资产', action: () => triggerBastionFullFetch() });
     showCtxMenu(e.clientX, e.clientY, items);
   });
+  // 拖放到收藏分组:资产行可拖(普通会话行同款),收藏组头可投放
+  item.draggable = true;
+  item.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', 'bastion-fav:' + (a.devId || a.name + a.ip) + '|' + (a.name || ''));
+    e.dataTransfer.effectAllowed = 'move';
+    item.classList.add('dragging');
+  });
+  item.addEventListener('dragend', () => item.classList.remove('dragging'));
   return item;
 }
 
@@ -6243,9 +6429,11 @@ async function bastionLoadSavedAssets(s) {
       if (!lg || !lg.ok || !lg.token) { fail((lg && lg.error) || '登录失败'); return; }
       s.token = lg.token; s.user = lg.user;
     }
-    const r = await window.api.jmsAssets({ baseUrl: s.url, token: s.token });
+    // 增量:已缓存账号的主机跳过详情(登录自动刷新);结果缓存到 SQLite(整批覆盖删消失主机)
+    const r = await window.api.jmsAssets({ baseUrl: s.url, token: s.token, cachedById: jmsCachedById(s) });
     if (r && r.ok && r.assets) {
       s.assets = r.assets || [];
+      cacheJmsAssets(s, s.assets);
       s.assetsLoadFailed = false;
     } else {
       // token 过期是常见原因:清掉,下次自动重新登录
@@ -6424,46 +6612,50 @@ function renderBastionInSessionList(container, f) {
     for (const g of groupKeys) state.bastionDirCollapsed.add(g.dir);
     state.bastionDirCollapsed.add('__ungrouped__');
   }
-  // 收藏组(置顶,独立分组,可折叠;内部再按收藏分组 favGroup 展示,嵌套分组按 "/" 段缩进)
-  const favs = all.filter((a) => a.favorite);
-  if (favs.length) {
+  // 收藏组(置顶,独立分组,可折叠;手动收藏分组树 + 用户把主机放入分组,不依赖 H3C webview 收藏夹)
+  const favs = favAssets();
+  if (favs.length || state.bastionFavGroups.length) {
     const collapsed = state.bastionDirCollapsed.has('__fav__');
     container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(els.inputSessionSearch.value); },
-      [{ label: '🔗 批量连接', action: () => batchBastionConnect(favs) }]));
+      [
+        { label: '🔗 批量连接', action: () => batchBastionConnect(favs) },
+        { separator: true },
+        { label: '➕ 新建收藏分组…', action: () => showPrompt({ title: '新建收藏分组', label: '分组名称', value: '', password: false, onOk: (name) => createFavGroup(name, null) }) },
+      ]));
     if (!collapsed) {
-      const gmap = new Map();
-      for (const a of favs) {
-        // 收藏分组优先用 favGroup(有 userFav/getTree 时映射);此 H3C 版本无收藏树接口
-        // → favGroup 恒空,改用业务目录 dir 分组展示(收藏主机也归到各自业务目录,与浏览器一致)。
-        const raw = (a.favGroup && a.favGroup.indexOf('undefined') !== 0) ? a.favGroup : (a.dir || '默认收藏');
-        if (!gmap.has(raw)) gmap.set(raw, []);
-        gmap.get(raw).push(a);
-      }
-      // 按 favGroup 的 "/" 段建树:设备挂在叶子组;父组头显示后代总数并缩进
-      const favRoot = { children: new Map() };
-      for (const [g, arr] of gmap) {
-        let node = favRoot;
-        for (const seg of g.split('/')) {
-          if (!node.children.has(seg)) node.children.set(seg, { children: new Map(), assets: [] });
-          node = node.children.get(seg);
-        }
-        node.assets.push(...arr);
-      }
-      const favTotal = (n) => n.assets.length + [...n.children.values()].reduce((s, c) => s + favTotal(c), 0);
-      const collectFavAssets = (n) => n.assets.concat(...[...n.children.values()].map(collectFavAssets));
-      const renderFavNode = (node, path, depth) => {
-        for (const [name, child] of node.children) {
-          const gk = '__fav__' + (path ? path + '/' : '') + name;
+      const favRoot = favGroupTree();
+      for (const a of favs) placeAssetInFavTree(favRoot, a);
+      const renderFavNode = (nodes, path, depth) => {
+        for (const child of nodes) {
+          const gk = '__fav__' + (path ? path + '/' : '') + child.name;
           const gCollapsed = state.bastionDirCollapsed.has(gk);
-          const head = makeSectionHead(`📁 ${name}(${favTotal(child)})`, gCollapsed,
+          const childPath = (path ? path + '/' : '') + child.name;
+          const head = makeSectionHead(`📁 ${child.name}(${favTotal(child)})`, gCollapsed,
             () => { gCollapsed ? state.bastionDirCollapsed.delete(gk) : state.bastionDirCollapsed.add(gk); renderSessionList(els.inputSessionSearch.value); },
-            [{ label: '🔗 批量连接', action: () => batchBastionConnect(collectFavAssets(child)) }]);
+            [
+              { label: '🔗 批量连接', action: () => batchBastionConnect(collectFavAssets(child)) },
+              { separator: true },
+              { label: '➕ 新建子分组…', action: () => showPrompt({ title: `在「${child.name}」下建子分组`, label: '子分组名称', value: '', password: false, onOk: (name) => createFavGroup(name, child.id) }) },
+              { label: '✏️ 重命名…', action: () => showPrompt({ title: `重命名「${child.name}」`, label: '新名称', value: child.name, password: false, onOk: (name) => renameFavGroup(child.id, name) }) },
+              { label: '🗑 删除分组', danger: true, action: () => { if (confirm(`删除收藏分组「${childPath}」及其中主机收藏吗?(不影响堡垒机里的主机)`) ) deleteFavGroup(child.id); } },
+            ]);
           if (depth > 0) head.style.paddingLeft = (8 + depth * 14) + 'px';
+          // 收藏组头可投放:把拖来的主机加入本组
+          head.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; head.classList.add('drag-over'); });
+          head.addEventListener('dragleave', () => head.classList.remove('drag-over'));
+          head.addEventListener('drop', (e) => {
+            e.preventDefault(); head.classList.remove('drag-over');
+            const dt = (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+            if (!dt.startsWith('bastion-fav:')) return;
+            const devId = dt.slice('bastion-fav:'.length).split('|')[0];
+            const target = favs.find((a) => (a.devId || a.name + a.ip) === devId);
+            if (target) setAssetFavGroup(target, childPath);
+          });
           container.appendChild(head);
           if (gCollapsed) continue;
           for (const a of child.assets) container.appendChild(makeBastionAssetItem(a));
-          renderFavNode(child, (path ? path + '/' : '') + name, depth + 1);
+          renderFavNode(child.children, childPath, depth + 1);
         }
       };
       renderFavNode(favRoot, '', 0);
