@@ -6555,7 +6555,19 @@ function renderBastionInSessionList(container, f) {
     ]));
   if (state.bastionCollapsed) return;
   if (kw) {
-    // 搜索:平铺匹配项(星标保留)
+    // 搜索:平铺匹配项;顶部给"批量收藏"快捷按钮(把搜索到的 N 台加入收藏分组)
+    if (list.length) {
+      const bar = document.createElement('div');
+      bar.className = 'bastion-search-bar';
+      bar.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 10px;font-size:12px;color:var(--text-dim);';
+      const btn = document.createElement('button');
+      btn.className = 'btn-mini';
+      btn.textContent = `⭐ 批量收藏这 ${list.length} 台…`;
+      btn.title = '把搜索到的全部主机加入一个收藏分组(可新建)';
+      btn.addEventListener('click', () => batchFavoriteAssets(list));
+      bar.appendChild(btn);
+      container.appendChild(bar);
+    }
     for (const a of list) container.appendChild(makeBastionAssetItem(a));
     return;
   }
