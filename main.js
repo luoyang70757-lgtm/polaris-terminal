@@ -2080,50 +2080,65 @@ async function getSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (!s) throw new Error('SSH 连接不存在或已断开');
   if (!s.sftp) {
-    // H3C 等单通道设备:在 shell 同一条连接上开 SFTP 子系统会顶掉 shell(终端会话失效)。
-    // 像批量上传一样,SFTP 走独立连接(connectRaw 不开 shell),shell 留在原连接互不干扰。
-    // 独立连接用保存的连接参数重连:JMS/KoKo 是直连网关的复合用户名,直接复用即可。
     const t0 = Date.now();
-    __sftpLog('打开独立 SFTP 连接', { sessionId, t0 });
-    const opts = { ...s.connOpts };
-    delete opts.sock; // 旧连接的跳板隧道 socket 不能复用
-    delete opts.hostVerifier; // 指纹校验按需重建
-    if (opts.verifyHostKey !== false) {
-      opts.hostVerifier = makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
-    }
-    const openWithRetry = async () => {
-      // 跳板机:重新开隧道到目标(独立连接需要自己的隧道)
-      if (opts.jump && opts.jump.host) opts.sock = await openJumpTunnel(sessionId, opts);
-      const raw = await sshClient.connectRaw(opts);
-      try {
-        const sftp = await sshClient.openSftp(raw);
-        s.sftpConn = raw; s.sftp = sftp;
-        return sftp;
-      } catch (e) {
-        try { raw.end(); } catch { /* ignore */ }
-        throw e;
-      }
+    // 优先独立 SFTP 连接:H3C 等单通道设备在 shell 同连接开 SFTP 会顶掉 shell(终端失效)。
+    // 但 H3C 用一次性 OTP,独立连接复用 OTP 可能失败/顶掉主连接 → 失败时回退主连接 SFTP。
+    // 回退后的行为 = v1.0.20 前:SFTP 走主连接,保证功能可用。
+    __sftpLog('打开 SFTP(优先独立连接)', { sessionId, t0 });
+    const openOnMain = async () => {
+      const raw = await Promise.race([
+        sshClient.openSftp(s.conn),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
+      ]);
+      s.sftp = raw; // 主连接上的 SFTP:不加 sftpConn(随主连接一起关)
+      return raw;
     };
-    const openWithRetryAndFallback = async () => {
+    const openSeparate = async () => {
+      const opts = { ...s.connOpts };
+      delete opts.sock; // 旧连接的跳板隧道 socket 不能复用
+      delete opts.hostVerifier; // 指纹校验按需重建
+      if (opts.verifyHostKey !== false) {
+        opts.hostVerifier = makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
+      }
+      const connectOnce = async () => {
+        if (opts.jump && opts.jump.host) opts.sock = await openJumpTunnel(sessionId, opts);
+        const raw = await sshClient.connectRaw(opts);
+        try {
+          const sftp = await sshClient.openSftp(raw);
+          s.sftpConn = raw; s.sftp = sftp;
+          return sftp;
+        } catch (e) {
+          try { raw.end(); } catch { /* ignore */ }
+          throw e;
+        }
+      };
       try {
-        return await openWithRetry();
+        return await connectOnce();
       } catch (e) {
         const msg = String((e && e.message) || e);
-        // 通道打开被限流(H3C channelOpen too offen):等 1s 重试一次,限流通常是瞬时的
+        // 通道打开被限流(too offen):等 1s 重试一次
         if (/channel open|too offen|too often|Channel open failure/i.test(msg)) {
-          __sftpLog('SFTP 通道打开被限流,1s 后重试', { sessionId, error: msg });
+          __sftpLog('SFTP 通道被限流,1s 后重试', { sessionId, error: msg });
           await new Promise((r) => setTimeout(r, 1000));
-          return openWithRetry();
+          return connectOnce();
         }
         throw e;
       }
     };
     try {
-      s.sftp = await Promise.race([
-        openWithRetryAndFallback(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(20s),堡垒机网关可能未响应')), 20000)),
-      ]);
-      __sftpLog('独立 SFTP 连接成功', { sessionId, ms: Date.now() - t0 });
+      try {
+        s.sftp = await Promise.race([
+          openSeparate(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 独立连接超时(20s)')), 20000)),
+        ]);
+        __sftpLog('SFTP 独立连接成功', { sessionId, ms: Date.now() - t0 });
+      } catch (e) {
+        // 独立连接失败(OTP 复用被拒/设备限制/超时)→ 回退主连接 SFTP,不阻断功能
+        __sftpLog('SFTP 独立连接失败,回退主连接', { sessionId, error: e && e.message, ms: Date.now() - t0 });
+        s.sftpConn = null; s.sftp = null; // 清掉独立连接残留(如有)
+        await openOnMain();
+        __sftpLog('SFTP 回退主连接成功', { sessionId, ms: Date.now() - t0 });
+      }
     } catch (e) {
       __sftpLog('SFTP 连接失败', { sessionId, ms: Date.now() - t0, error: e && e.message });
       throw e;
