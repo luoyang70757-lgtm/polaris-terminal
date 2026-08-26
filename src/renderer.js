@@ -1641,6 +1641,8 @@ function renderSessionList(filter) {
             { separator: true },
             { label: '🌐 H3C(浏览器登录)', action: openBastionPanel },
             { separator: true },
+            { label: '⭐ 新建收藏分组', action: () => showPrompt({ title: '新建收藏分组', label: '分组名称', value: '', password: false, onOk: (name) => createFavGroup(name, null) }) },
+            { separator: true },
             { label: '🧹 清除堡垒机历史', action: () => els.bastionClear.click() },
           ];
       showCtxMenu(e.clientX, e.clientY, items);
@@ -6613,8 +6615,9 @@ function renderBastionInSessionList(container, f) {
     state.bastionDirCollapsed.add('__ungrouped__');
   }
   // 收藏组(置顶,独立分组,可折叠;手动收藏分组树 + 用户把主机放入分组,不依赖 H3C webview 收藏夹)
+  // 始终显示(即便空),让"新建收藏分组"入口一直可见;空时给提示
   const favs = favAssets();
-  if (favs.length || state.bastionFavGroups.length) {
+  {
     const collapsed = state.bastionDirCollapsed.has('__fav__');
     container.appendChild(makeSectionHead(`⭐ 收藏(${favs.length})`, collapsed,
       () => { collapsed ? state.bastionDirCollapsed.delete('__fav__') : state.bastionDirCollapsed.add('__fav__'); renderSessionList(els.inputSessionSearch.value); },
@@ -6626,6 +6629,19 @@ function renderBastionInSessionList(container, f) {
     if (!collapsed) {
       const favRoot = favGroupTree();
       for (const a of favs) placeAssetInFavTree(favRoot, a);
+      if (!favs.length && !state.bastionFavGroups.length) {
+        // 空收藏:给清晰入口(右键主机"加入收藏分组"或直接新建)
+        const empty = document.createElement('div');
+        empty.className = 'bastion-fav-empty';
+        empty.textContent = '还没有收藏分组。右键主机「加入收藏分组」,或';
+        empty.style.cssText = 'padding:6px 10px;color:var(--text-dim);font-size:12px;cursor:pointer;';
+        const link = document.createElement('span');
+        link.textContent = '新建收藏分组';
+        link.style.cssText = 'color:var(--accent);text-decoration:underline;';
+        link.addEventListener('click', () => showPrompt({ title: '新建收藏分组', label: '分组名称', value: '', password: false, onOk: (name) => createFavGroup(name, null) }));
+        empty.appendChild(link);
+        container.appendChild(empty);
+      }
       const renderFavNode = (nodes, path, depth) => {
         for (const child of nodes) {
           const gk = '__fav__' + (path ? path + '/' : '') + child.name;
