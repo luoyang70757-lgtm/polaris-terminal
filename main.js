@@ -2369,9 +2369,12 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
       const isDir = !!it.attrs.isDirectory();
       let size = it.attrs.size || 0;
       const fullPath = joinRemote(remotePath, it.filename);
-      if (!isDir && size === 0) {
+      // 已知上传大小覆盖:H3C 等设备 readdir 报 0 或错误的非零大小,上传记录的真实大小
+      // 是权威 —— 只要已知存在且设备报的 ≠ 已知(含 0),就用已知覆盖显示。
+      if (!isDir) {
         const known = sftpKnownSizes.get(`${sessionId}|${fullPath}`);
-        if (known) size = known;
+        if (known && (size === 0 || size !== known)) size = known;
+        else if (size === 0) __sftpLog('列表 size=0 无已知大小(诊断键)', { sessionId, path: fullPath });
       }
       entries.push({ name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null });
     }
