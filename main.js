@@ -2482,10 +2482,137 @@ function emitSftpProgress(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', payload);
 }
 
-ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
+// ---- SFTP 传输 job(仿 WinSCP:发起即返回 jobId,后台跑,进度/完成事件驱动,可取消) ----
+const sftpJobs = new Map(); // jobId → { cancelled }
+let sftpJobSeq = 0;
+function sftpJobDone(jobId, payload) {
+  sftpJobs.delete(jobId);
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:done', { jobId, ...payload }); } catch { /* ignore */ }
+}
+function makeShouldCancel(jobId) {
+  return () => { const j = sftpJobs.get(jobId); return !!(j && j.cancelled); };
+}
+ipcMain.handle('sftp:cancel', (_e, jobId) => {
+  const j = sftpJobs.get(jobId);
+  if (j) j.cancelled = true;
+  return { ok: true };
+});
+
+// 上传单个本地路径(文件或目录)到 remoteDir;对话框/拖拽共用。返回结果对象。
+// jobId: 传输 job 标识(进度事件带它,便于渲染层按 job 管理行 + 取消)
+async function runUpload(sessionId, remoteDir, localPath, jobId) {
   const _t0 = Date.now();
+  const sftp = await getSftp(sessionId);
+  const isDir = fs.statSync(localPath).isDirectory();
+  __sftpLog('上传开始', { sessionId, remoteDir, localPath, isDir });
+  const prog = (p) => emitSftpProgress(Object.assign({ op: 'upload', jobId }, p));
+  const shouldCancel = makeShouldCancel(jobId);
+  if (isDir) {
+    const target = joinRemote(remoteDir, path.basename(localPath));
+    // 目录内每个文件各自断点续传:中断点判定 + 失败时记录
+    const { uploaded, failed } = await sshClient.uploadDir(
+      sftp, localPath, target, prog,
+      (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
+      (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp),
+      shouldCancel
+    );
+    // 记录本次上传文件的真实大小(设备 stat 可能报 0,面板列目录时用它覆盖显示)
+    for (const u of uploaded) sftpKnownSizes.set(`${sessionId}|${u.rp}`, u.size);
+    __sftpLog('上传结束(目录)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length, ms: Date.now() - _t0 });
+    if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
+    return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
+  }
+  const remotePath = joinRemote(remoteDir, path.basename(localPath));
+  const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
+  if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
   try {
-    const sftp = await getSftp(sessionId);
+    __sftpLog('上传文件开始', { sessionId, remotePath, size: fs.statSync(localPath).size, resumeFrom });
+    await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
+    sftpKnownSizes.set(`${sessionId}|${remotePath}`, fs.statSync(localPath).size); // 同上:记录真实大小
+    __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
+    return { ok: true, remotePath, resumedFrom: resumeFrom };
+  } catch (err) {
+    recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
+    __sftpLog('上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
+// 在后台执行一批上传(不阻塞调用方),完成时发 sftp:done
+function startUploadJob(sessionId, remoteDir, localPaths) {
+  const jobId = 'u' + (++sftpJobSeq);
+  sftpJobs.set(jobId, { cancelled: false });
+  setImmediate(async () => {
+    try {
+      const results = [];
+      for (const p of localPaths) {
+        if (makeShouldCancel(jobId)()) break;
+        results.push(await runUpload(sessionId, remoteDir, p, jobId));
+      }
+      const ok = results.filter((r) => r.ok);
+      const failed = results.filter((r) => !r.ok);
+      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, failed, cancelled: makeShouldCancel(jobId)() });
+    } catch (err) {
+      sftpJobDone(jobId, { sessionId, op: 'upload', ok: false, error: err && err.message, cancelled: makeShouldCancel(jobId)() });
+    }
+  });
+  return { ok: true, jobId };
+}
+
+// 在后台执行下载(不阻塞调用方),完成时发 sftp:done;kind='single' 下载单文件,'many' 批量
+function startDownloadJob(sessionId, kind, args) {
+  const jobId = 'd' + (++sftpJobSeq);
+  sftpJobs.set(jobId, { cancelled: false });
+  setImmediate(async () => {
+    const shouldCancel = makeShouldCancel(jobId);
+    const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId }, p));
+    try {
+      let ok = false, failed, localPath;
+      const sftp = await getSftp(sessionId);
+      if (kind === 'single') {
+        const { remotePath, localPath: lp, resumeFrom } = args;
+        if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', lp));
+        const _t0 = Date.now();
+        __sftpLog('下载开始', { sessionId, remotePath, localPath: lp, resumeFrom });
+        await sshClient.downloadFile(sftp, remotePath, lp, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
+        __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
+        ok = true; localPath = lp;
+      } else {
+        const { plans } = args;
+        const total = plans.reduce((s, p) => s + (p.size || 0), 0);
+        let done = 0, finished = 0;
+        const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
+          if (shouldCancel()) return { ok: false, remotePath: p.rp, error: '已取消' };
+          const resumeFrom = resolveDownloadResume(sessionId, p.lp);
+          if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', p.lp));
+          let fDone = resumeFrom;
+          try {
+            fs.mkdirSync(path.dirname(p.lp), { recursive: true });
+            await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
+            return { ok: true, remotePath: p.rp, localPath: p.lp };
+          } catch (err) {
+            recordDownloadPartial(sessionId, p.lp);
+            return { ok: false, remotePath: p.rp, error: err.message };
+          } finally { finished++; }
+        });
+        ok = results.some((r) => r.ok);
+        failed = results.filter((r) => !r.ok);
+        // 把每个文件的本地路径带回,渲染层盖到传输行(📂 打开所在文件夹用)
+        sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath: undefined, results, failed, cancelled: shouldCancel() });
+        return;
+      }
+      sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath, failed, cancelled: shouldCancel() });
+    } catch (err) {
+      resetSftpIfBroken(sessionId, err);
+      sftpJobDone(jobId, { sessionId, op: 'download', ok: false, error: err && err.message, cancelled: shouldCancel() });
+    }
+  });
+  return { ok: true, jobId };
+}
+
+ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
+  try {
     // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)。
     // mode='file'/'dir' 时分开只选对应类型(macOS 上 openFile+openDirectory 混开会退化成只能选文件夹)。
     const properties = mode === 'file' ? ['openFile'] : (mode === 'dir' ? ['openDirectory'] : ['openFile', 'openDirectory']);
@@ -2494,43 +2621,20 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
       properties,
     });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
-    const localPath = pick.filePaths[0];
-    __sftpLog('上传开始', { sessionId, remoteDir, localPath, isDir: fs.statSync(localPath).isDirectory() });
-    const prog = (p) => emitSftpProgress({ op: 'upload', ...p });
-    if (fs.statSync(localPath).isDirectory()) {
-      const target = joinRemote(remoteDir, path.basename(localPath));
-      // 目录内每个文件各自断点续传:中断点判定 + 失败时记录
-      const { uploaded, failed } = await sshClient.uploadDir(
-        sftp, localPath, target, prog,
-        (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
-        (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp)
-      );
-      // 记录本次上传文件的真实大小(设备 stat 可能报 0,面板列目录时用它覆盖显示)
-      for (const u of uploaded) sftpKnownSizes.set(`${sessionId}|${u.rp}`, u.size);
-      __sftpLog('上传结束(目录)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length, ms: Date.now() - _t0 });
-      if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
-      return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
-    }
-    const remotePath = joinRemote(remoteDir, path.basename(localPath));
-    const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
-    if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
-    try {
-      __sftpLog('上传文件开始', { sessionId, remotePath, size: fs.statSync(localPath).size, resumeFrom });
-      await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
-      sftpKnownSizes.set(`${sessionId}|${remotePath}`, fs.statSync(localPath).size); // 同上:记录真实大小
-      __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
-      return { ok: true, remotePath, resumedFrom: resumeFrom };
-    } catch (err) {
-      recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
-      resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-      __sftpLog('上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-      return { ok: false, error: err.message };
-    }
+    // 后台跑传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动)
+    return startUploadJob(sessionId, remoteDir, [pick.filePaths[0]]);
   } catch (err) {
     resetSftpIfBroken(sessionId, err);
-    __sftpLog('上传异常', { sessionId, remoteDir, ms: Date.now() - _t0, error: err && err.message });
+    __sftpLog('上传异常', { sessionId, remoteDir, error: err && err.message });
     return { ok: false, error: err.message };
   }
+});
+
+// 拖拽上传:直接给本地路径列表,跳过文件对话框(拖进 SFTP 面板 → 传当前目录);后台 job 执行
+ipcMain.handle('sftp:uploadPaths', async (_e, { sessionId, remoteDir, localPaths }) => {
+  const paths = (Array.isArray(localPaths) ? localPaths : []).filter(Boolean);
+  if (!paths.length) return { ok: false, error: '没有可上传的文件' };
+  return startUploadJob(sessionId, remoteDir, paths);
 });
 
 // 下载:弹出保存对话框 → 流式下载到本地(带进度),再次存到同一路径时断点续传
@@ -2557,20 +2661,8 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
       return { ok: false, error: hint };
     }
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
-    if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', localPath)); // 这次从偏移续传,旧的记录作废
-    const prog = (p) => emitSftpProgress({ op: 'download', ...p });
-    const _t0 = Date.now();
-    __sftpLog('下载开始', { sessionId, remotePath, localPath, resumeFrom });
-    try {
-      await sshClient.downloadFile(sftp, remotePath, localPath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom);
-      __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
-      return { ok: true, localPath, resumedFrom: resumeFrom };
-    } catch (err) {
-      recordDownloadPartial(sessionId, localPath); // 又失败:用最新的真实落盘大小更新中断点
-      resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-      __sftpLog('下载失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-      return { ok: false, error: err.message };
-    }
+    // 后台跑传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
+    return startDownloadJob(sessionId, 'single', { remotePath, localPath, resumeFrom });
   } catch (err) {
     resetSftpIfBroken(sessionId, err);
     return { ok: false, error: err.message };
@@ -2615,26 +2707,8 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
         plans.push({ rp: e.remotePath, lp: path.join(dir, path.basename(e.remotePath)), size: 0 });
       }
     }
-    const total = plans.reduce((s, p) => s + (p.size || 0), 0);
-    const prog = (p) => emitSftpProgress({ op: 'download', ...p });
-    let done = 0, finished = 0;
-    // 并发下载:一次多个文件同时传;done 各 worker 增量累加(单线程无竞争),filesDone 取已完成的文件数
-    const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
-      const resumeFrom = resolveDownloadResume(sessionId, p.lp);
-      if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', p.lp));
-      let fDone = resumeFrom; // 续传时首块增量只算新写的部分,避免把续传字节重复计入累计
-      try {
-        fs.mkdirSync(path.dirname(p.lp), { recursive: true });
-        await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: finished, filesTotal: plans.length }); }, resumeFrom);
-        return { ok: true, remotePath: p.rp, localPath: p.lp };
-      } catch (err) {
-        recordDownloadPartial(sessionId, p.lp); // 又失败:更新本地中断点
-        return { ok: false, remotePath: p.rp, error: err.message };
-      } finally {
-        finished++;
-      }
-    });
-    return { ok: true, dir, results };
+    // 后台跑批量传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
+    return startDownloadJob(sessionId, 'many', { plans });
   } catch (err) {
     return { ok: false, error: err.message };
   }

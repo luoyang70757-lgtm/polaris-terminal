@@ -9095,30 +9095,18 @@ function sftpMakeDir() {
 
 // ---- 右键菜单操作:单条目下载 / 重命名 / 删除 ----
 // 下载单个文件/目录:单文件走保存对话框(能看见目标路径),目录走"选文件夹"递归下载
+// 仿 WinSCP:发起即返回,后台跑,完成/进度由事件驱动
 async function downloadSftpEntry(remotePath, isDir) {
   const sid = sftpSession();
-  if (!isDir) {
-    const res = await window.api.sftpDownload(sid, remotePath);
-    sftpTransferFinish(res.ok ? new Set() : new Set([remotePath]), res.error === '已取消');
-    sftpRefocusTerminal();
-    if (!res.ok) {
-      if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
-      return;
-    }
-    setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
-    return;
-  }
-  // 目录:复用"多条目下载"流程(只传它一个)
-  const res = await window.api.sftpDownloadMany(sid, [{ remotePath, isDir: true }]);
-  sftpTransferFinish(res.ok ? new Set(res.results.filter((r) => !r.ok).map((r) => r.remotePath)) : new Set([remotePath]), res.error === '已取消');
+  const res = isDir
+    ? await window.api.sftpDownloadMany(sid, [{ remotePath, isDir: true }])
+    : await window.api.sftpDownload(sid, remotePath);
   sftpRefocusTerminal();
-  if (!res.ok) {
-    if (res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+  if (!res || !res.ok) {
+    if (res && res.error && res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
     return;
   }
-  const r = res.results[0];
-  setStatus(r.ok ? `已下载 → ${r.localPath}` : `下载失败: ${r.error}`, r.ok ? 'var(--green)' : 'var(--orange)');
-  if (!r.ok) addLog(`⬇ 下载失败 ${remotePath}: ${r.error}`, true);
+  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
 }
 
 // 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
@@ -9177,11 +9165,11 @@ async function sftpDeleteSelected() {
 async function sftpUpload(mode) {
   // macOS 对话框 openFile+openDirectory 同开会退化成只能选文件夹 → 先让用户选文件/文件夹,
   // 各用单一属性打开(mode: 'file' 只选文件 | 'dir' 只选文件夹 | 省略=都允许,兼容旧调用)
+  // 仿 WinSCP:对话框选完后立即返回(job 后台跑),进度/完成/取消由事件驱动
   const res = await window.api.sftpUpload(sftpSession(), state.sftp.path, mode);
-  sftpTransferFinish(res.ok ? new Set((res.failed || []).map((f) => f.rp)) : new Set(), res.error === '已取消'); // 行留在历史里
   sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res.ok) {
-    if (res.error !== '已取消') {
+  if (!res || !res.ok) {
+    if (res && res.error && res.error !== '已取消') {
       addLog(`⬆ 上传失败: ${res.error}`, true);
       alert(`上传失败: ${res.error}`);
       // alert 是原生模态框,关闭后焦点/输入法状态可能被打乱(日志:上传失败后终端空格全吞、
@@ -9192,95 +9180,33 @@ async function sftpUpload(mode) {
     }
     return;
   }
-  // 明确告诉用户传到了哪个目录(路径栏当前目录),并记住名字用于列表高亮定位
-  setStatus(`上传成功 → ${res.remotePath}(当前目录 ${state.sftp.path})`, 'var(--green)');
-  state.sftpUploadFlash.add(String(res.remotePath || '').replace(/\/+$/, '').split('/').pop() || res.remotePath); // 无 Node path 模块,手写 basename
-  if (res.failed && res.failed.length) {
-    for (const f of res.failed) addLog(`⬆ 上传失败 ${f.rp}: ${f.error}`, true);
-    alert(`有 ${res.failed.length} 个文件上传失败:\n${res.failed.map((f) => f.rp).join('\n')}`);
-  }
-  loadSftpList();
-  // 3 秒后取消"刚上传"高亮(重新渲染一次去掉闪烁)
-  setTimeout(() => {
-    state.sftpUploadFlash.clear();
-    if (state.sftp.visible) loadSftpList();
-  }, 3000);
+  // job 已启动,立即反馈"已开始";完成/失败/取消由 onSftpDone 处理(刷新+标记+状态)
+  setStatus(`上传已开始 → ${state.sftp.path}…`, 'var(--accent)');
 }
 
 async function sftpDownload() {
   // 文件 + 目录都能选:目录递归下载到本地同名子文件夹
+  // 仿 WinSCP:对话框选完即返回,后台跑,进度/完成/取消由事件驱动
   const selected = sftpSelectedEntries();
   if (selected.length === 0) { alert('先选中要下载的文件/目录(可点「全选」一次选完)'); return; }
-
-  // 只选了一个文件 → 沿用旧流程:弹"保存到哪"对话框
-  if (selected.length === 1 && !selected[0].isDir) {
-    const remote = sftpJoin(selected[0].name); // 条目没有 remotePath,拼出完整路径
-    const res = await window.api.sftpDownload(sftpSession(), remote);
-    sftpTransferFinish(res.ok ? new Set() : new Set([remote]), res.error === '已取消'); // 行留在历史里
-    sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-    if (!res.ok) {
-      if (res.error !== '已取消') {
-        addLog(`⬇ 下载失败 ${remote}: ${res.error}`, true);
-        dlog('SFTP', `⬇ 下载失败 ${remote}: ${res.error}`);
-        const permTip = /EPERM|EACCES|operation not permitted|permission denied/i.test(res.error)
-          ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):换个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 里添加 Polaris(Electron)'
-          : '';
-        alert(`下载失败: ${res.error}${permTip}`);
-      }
-      return;
-    }
-    setStatus(`已下载 → ${res.localPath}`, 'var(--green)');
-    // 单文件走保存对话框,没有 sftp:progress 事件 → 没记录行;补一条"已完成"记录,
-    // 这样保存路径能一直看见,还能点 📂 打开所在文件夹
-    let row = sftpTransfer.rows.get(remote);
-    if (!row) {
-      row = makeSftpTransferRow({ file: remote, op: 'download' });
-      sftpTransfer.rows.set(remote, row);
-      const list = document.getElementById('sftp-transfers-list');
-      if (list) list.prepend(row.el);
-      row.el.classList.remove('active');
-      row.el.classList.add('done');
-      row.meta.textContent = '✓';
-      if (els.sftpProgress) els.sftpProgress.classList.remove('hidden');
-    }
-    if (row.setLocal) row.setLocal(res.localPath);
-    return;
-  }
-
-  // 多个(或单个目录)→ 只弹一次"选文件夹";目录在 main 递归下载,进度统一走 sftp:progress
-  const entries = selected.map((f) => ({ remotePath: sftpJoin(f.name), isDir: !!f.isDir }));
-  const res = await window.api.sftpDownloadMany(sftpSession(), entries);
-  sftpTransferFinish(res.ok ? new Set(res.results.filter((r) => !r.ok).map((r) => r.remotePath)) : new Set(), res.error === '已取消'); // 行留在历史里
+  const res = (selected.length === 1 && !selected[0].isDir)
+    ? await window.api.sftpDownload(sftpSession(), sftpJoin(selected[0].name))
+    : await window.api.sftpDownloadMany(sftpSession(), selected.map((f) => ({ remotePath: sftpJoin(f.name), isDir: !!f.isDir })));
   sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res.ok) {
-    if (res.error !== '已取消') { addLog(`⬇ 下载失败: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
+  if (!res || !res.ok) {
+    if (res && res.error && res.error !== '已取消') {
+      addLog(`⬇ 下载失败: ${res.error}`, true);
+      const permTip = /EPERM|EACCES|operation not permitted|permission denied/i.test(res.error)
+        ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):换个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 里添加 Polaris(Electron)'
+        : '';
+      alert(`下载失败: ${res.error}${permTip}`);
+    }
     return;
   }
-  const ok = res.results.filter((r) => r.ok).length;
-  const fail = res.results.filter((r) => !r.ok);
-  setStatus(`已下载 ${ok} 个文件 → ${res.dir}`, 'var(--green)');
-  // 把每个文件的本地保存路径盖到对应传输记录行上(行上有 📂 打开所在文件夹)
-  res.results.filter((r) => r.ok).forEach((r) => {
-    const row = sftpTransfer.rows.get(r.remotePath);
-    if (row && row.setLocal) row.setLocal(r.localPath);
-  });
-  fail.forEach((r) => {
-    addLog(`⬇ 下载失败 ${r.remotePath}: ${r.error}`, true);
-    dlog('SFTP', `⬇ 下载失败 ${r.remotePath}: ${r.error}`); // 进调试面板,排查真实错误
-  });
-  if (fail.length) {
-    // macOS TCC:桌面/文稿/下载目录受系统保护,未授权 app 写入会 EPERM/EACCES。
-    // 给出明确指引,而不是让用户对着"operation not permitted"发懵。
-    const permErr = fail.some((r) => /EPERM|EACCES|operation not permitted|permission denied/i.test(r.error || ''));
-    const tip = permErr
-      ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):\n'
-      + '· 方法1:换个普通文件夹(如 ~/Downloads/ 下的子目录需授权,建议用非受保护目录,如 ~/sftp)\n'
-      + '· 方法2:系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 添加 Polaris(Electron)\n'
-      + '· 方法3:如果本目录不是系统保护目录,请检查磁盘剩余空间和写入权限'
-      : '';
-    alert(`${fail.length} 个文件下载失败:\n${fail.map((r) => `${r.remotePath}: ${r.error}`).join('\n')}${tip}`);
-  }
+  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
 }
+
+// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
 
 // =====================================================================
 // 窗口尺寸变化 → 所有终端重新适配
@@ -10455,6 +10381,33 @@ els.sftpPath.addEventListener('contextmenu', (e) => {
   ]);
 });
 els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
+// 拖拽上传(仿 WinSCP):本地文件/文件夹拖进 SFTP 面板 → 传到当前目录
+els.sftpList.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    els.sftpPanel.classList.add('sftp-drop-over');
+  }
+});
+els.sftpList.addEventListener('dragleave', () => els.sftpPanel.classList.remove('sftp-drop-over'));
+els.sftpList.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  els.sftpPanel.classList.remove('sftp-drop-over');
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  if (!files.length) return;
+  // contextIsolation 下 webUtils.getPathForFile 经 preload 桥拿真实路径
+  const paths = [];
+  for (const f of files) {
+    try { const p = await window.api.getPathForFile(f); if (p) paths.push(p); } catch { /* 忽略单个失败 */ }
+  }
+  if (!paths.length) { setStatus('未能读取拖入文件的路径', 'var(--red)'); return; }
+  const target = state.sftp.path || '/';
+  setStatus(`正在上传 ${paths.length} 个本地项到 ${target}…`, 'var(--accent)');
+  const res = await window.api.sftpUploadPaths(sftpSession(), target, paths);
+  if (res && res.ok) setStatus(`上传完成: ${res.count} 个到 ${target}`, 'var(--green)');
+  else if (res && !res.ok) setStatus(`上传部分失败: ${(res.failed || []).map((f) => f.error).join('; ')}`, 'var(--red)');
+  loadSftpList();
+});
 els.btnSftpUpload.addEventListener('click', (e) => {
   // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
   showCtxMenu(e.clientX, e.clientY, [
@@ -10686,11 +10639,11 @@ function filterWrite(text) {
 
 // ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
 // 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
-const sftpTransfer = { rows: new Map(), active: new Set() }; // path → { el, fill, meta, setLocal }; active = 当前批次里出现过的文件
+const sftpTransfer = { rows: new Map(), jobs: new Map() }; // rows: path → { el, fill, meta, setLocal }; jobs: jobId → Set<path>(该传输批次出现的文件,完成/取消时标记)
 function makeSftpTransferRow(p) {
   const el = document.createElement('div');
   el.className = 'sftp-transfer-row active';
-  // 第一行:方向 / 远程名 / 进度条 / 进度 / 删除
+  // 第一行:方向 / 远程名 / 进度条 / 进度 / 取消 / 删除
   const main = document.createElement('div'); main.className = 'st-main';
   const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
   const name = document.createElement('span'); name.className = 'st-name'; name.textContent = p.file.split('/').filter(Boolean).pop() || p.file; name.title = p.file;
@@ -10698,9 +10651,12 @@ function makeSftpTransferRow(p) {
   const fill = document.createElement('div'); fill.className = 'st-fill';
   track.appendChild(fill);
   const meta = document.createElement('span'); meta.className = 'st-meta'; meta.textContent = '0B';
+  // 取消按钮(仿 WinSCP):传输中显示,点击中止该 job;完成后自动隐藏
+  const cancel = document.createElement('button'); cancel.className = 'st-cancel'; cancel.title = '取消该传输'; cancel.textContent = '⏹';
+  cancel.addEventListener('click', () => { if (p.jobId) { window.api.sftpCancel(p.jobId); cancel.disabled = true; cancel.textContent = '…'; } });
   const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
   del.addEventListener('click', () => { sftpTransfer.rows.delete(p.file); el.remove(); });
-  main.append(dir, name, track, meta, del);
+  main.append(dir, name, track, meta, cancel, del);
   // 第二行:本地保存路径 + 「📂 打开所在文件夹」(仅下载完成后盖上去,上传不显示)
   const localRow = document.createElement('div'); localRow.className = 'st-local-row hidden';
   const open = document.createElement('button'); open.className = 'st-open'; open.title = '在文件管理器中显示'; open.textContent = '📂';
@@ -10715,7 +10671,7 @@ function makeSftpTransferRow(p) {
     local.title = lp;
     localRow.classList.remove('hidden');
   };
-  return { el, fill, meta, setLocal };
+  return { el, fill, meta, setLocal, cancel, jobId: p.jobId };
 }
 window.api.onSftpProgress((p) => {
   if (!p || !els.sftpProgress) return;
@@ -10724,7 +10680,11 @@ window.api.onSftpProgress((p) => {
   els.sftpProgress.classList.remove('hidden');
   let row = sftpTransfer.rows.get(p.file);
   if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(p.file, row); list.prepend(row.el); } // 新的在最上面
-  sftpTransfer.active.add(p.file);
+  // 按 jobId 记录该批次的文件(完成/取消时只标记本批次的行,避免重叠批次误标记)
+  if (p.jobId) {
+    if (!sftpTransfer.jobs.has(p.jobId)) sftpTransfer.jobs.set(p.jobId, new Set());
+    sftpTransfer.jobs.get(p.jobId).add(p.file);
+  }
   const fpct = p.fileTotal > 0 ? Math.min(100, Math.round((p.fileDone / p.fileTotal) * 100)) : 100;
   row.fill.style.width = fpct + '%';
   row.meta.textContent = `${formatSize(p.fileDone)}/${formatSize(p.fileTotal)} · ${fpct}%`;
@@ -10732,21 +10692,44 @@ window.api.onSftpProgress((p) => {
   const dir = p.op === 'upload' ? '⬆ 上传' : '⬇ 下载';
   els.sftpProgressLabel.textContent = `${dir} ${p.filesDone}/${p.filesTotal} 个文件 · ${bpct}%`;
 });
-// 批次结束:把当前批次的行从"进行中"标成 完成/失败/已取消(行保留在历史里)
-function sftpTransferFinish(failedPaths, cancelled) {
-  for (const path of sftpTransfer.active) {
-    const row = sftpTransfer.rows.get(path);
+// 批次结束(仿 WinSCP):后台 job 完成 → 把该批次的行标 完成/失败/已取消,刷新列表
+window.api.onSftpDone((d) => {
+  if (!d || !d.jobId) return;
+  const paths = sftpTransfer.jobs.get(d.jobId) || [];
+  sftpTransfer.jobs.delete(d.jobId);
+  // 下载成功 → 本地路径:单文件用 d.localPath,批量用 d.results[].localPath
+  const localByPath = new Map();
+  if (d.op === 'download' && d.ok && Array.isArray(d.results)) {
+    d.results.filter((r) => r.ok).forEach((r) => localByPath.set(r.remotePath, r.localPath));
+  }
+  for (const p of paths) {
+    const row = sftpTransfer.rows.get(p);
     if (!row) continue;
     row.el.classList.remove('active');
-    if (cancelled) { row.el.classList.add('fail'); row.meta.textContent = '已取消'; }
-    else if (failedPaths && failedPaths.has(path)) { row.el.classList.add('fail'); row.meta.textContent = '✗ 失败'; }
-    else { row.el.classList.add('done'); row.meta.textContent = (row.meta.textContent || '') + ' ✓'; }
+    if (row.cancel) row.cancel.style.display = 'none'; // 传输结束,隐藏取消按钮
+    if (d.cancelled) { row.el.classList.add('fail'); row.meta.textContent = '已取消'; }
+    else if (!d.ok) { row.el.classList.add('fail'); row.meta.textContent = '✗ 失败'; }
+    else {
+      row.el.classList.add('done'); row.meta.textContent = (row.meta.textContent || '') + ' ✓';
+      if (row.setLocal) {
+        const lp = d.localPath && !d.results ? d.localPath : (localByPath.get(p) || '');
+        if (lp) row.setLocal(lp);
+      }
+    }
   }
-  sftpTransfer.active.clear();
-}
+  // 上传成功 → 刷新列表 + 高亮定位;失败/取消 → 提示
+  if (d.op === 'upload' && d.ok && !d.cancelled) {
+    if (state.sftp.visible) loadSftpList();
+    setStatus(`上传完成(${d.count ?? ''} 个)`, 'var(--green)');
+  } else if (d.op === 'download' && d.ok && !d.cancelled && (d.localPath || d.results)) {
+    setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
+  } else if (!d.cancelled && d.error) {
+    setStatus(`传输失败: ${d.error}`, 'var(--red)');
+  }
+});
 function clearSftpTransfers() {
   sftpTransfer.rows.clear();
-  sftpTransfer.active.clear();
+  sftpTransfer.jobs.clear();
   const list = document.getElementById('sftp-transfers-list');
   if (list) list.innerHTML = '';
   if (els.sftpProgress) els.sftpProgress.classList.add('hidden');

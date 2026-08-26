@@ -1420,6 +1420,19 @@ input[type="checkbox"] {
   padding: 0 2px;
 }
 .sftp-transfer-row .st-del:hover { color: #ff5f57; }
+/* 取消传输按钮:传输中显示,完成后隐藏 */
+.sftp-transfer-row .st-cancel {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 3px;
+  opacity: 0.85;
+}
+.sftp-transfer-row .st-cancel:hover { color: var(--accent, #6ea8fe); opacity: 1; }
+.sftp-transfer-row .st-cancel:disabled { cursor: default; opacity: 0.4; }
 .sftp-transfer-row.active { background: rgba(45, 212, 254, 0.06); }
 /* 第二行:本地保存路径 + 📂 打开所在文件夹(仅下载完成后显示) */
 .sftp-transfer-row .st-local-row {
@@ -1512,6 +1525,13 @@ input[type="checkbox"] {
 .sftp-conn-menu .ctx-item { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 
 .sftp-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+/* 拖拽上传高亮(仿 WinSCP):本地文件拖进面板时给提示 */
+.sftp-panel.sftp-drop-over .sftp-list {
+  outline: 2px dashed var(--accent, #6ea8fe);
+  outline-offset: -4px;
+  background: rgba(110, 168, 254, 0.06);
+}
 
 /* SFTP 面板文字可选中复制(路径/文件名/连接名/空提示):默认 user-select:none 会让用户选不中、无法复制 */
 .sftp-path, .sftp-row .name, .sftp-row .sftp-row-size, .sftp-empty,

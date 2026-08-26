@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld('api', {
   sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
   sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
   sftpUpload: (sessionId, remoteDir, mode) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir, mode }),
+  sftpUploadPaths: (sessionId, remoteDir, localPaths) => ipcRenderer.invoke('sftp:uploadPaths', { sessionId, remoteDir, localPaths }),
   sftpDownload: (sessionId, remotePath) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath }),
   // entries = [{ remotePath, isDir }] —— 支持文件+目录混合下载(目录递归)
   sftpDownloadMany: (sessionId, entries) => ipcRenderer.invoke('sftp:downloadMany', { sessionId, entries }),
@@ -96,6 +97,10 @@ contextBridge.exposeInMainWorld('api', {
   sftpBatchDownload: (sessions, remotePath) => ipcRenderer.invoke('sftp:batchDownload', { sessions, remotePath }),
   // 上传/下载进度事件(主进程推送,驱动进度条)
   onSftpProgress: (cb) => ipcRenderer.on('sftp:progress', (_e, p) => cb(p)),
+  // 传输 job 完成/取消事件(仿 WinSCP:后台传输完成时刷新)
+  onSftpDone: (cb) => ipcRenderer.on('sftp:done', (_e, d) => cb(d)),
+  // 取消某个传输 job
+  sftpCancel: (jobId) => ipcRenderer.invoke('sftp:cancel', jobId),
 
   // ---- 批量执行结果面板 ----
   batchExec: (data) => ipcRenderer.invoke('batch:exec', data),
