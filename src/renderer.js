@@ -10227,6 +10227,11 @@ for (const f of [els.fName, els.fHost, els.fPassword]) {
 // =====================================================================
 // ---- OS 系统识别(参考 Netcatty):连接成功后探测,结果给 AI 助手用 ----
 async function detectOsForTab(t) {
+  // 堡垒机会话(H3C accessclient / JMS 经 KoKo 网关)跳过 OS 探测:
+  // 探测会另开一条 SSH 连接到网关 —— 批量连接 N 台 = 2N 条连接,成倍增加堡垒机负载;
+  // 且 H3C 用一次性 OTP 探测必然失败(OTP 已被主连接用掉)、JMS 经 KoKo 探测意义不大。
+  // t.os 仅作记录、无任何功能依赖(标签/编码/SFTP 都不用),跳过无损。
+  if (t.session && (t.session.bastionKey || t.session.jmsKey || /^(jms|bastion)-/.test(t.session.id || ''))) return;
   const res = await window.api.detectOs({
     host: t.session.host,
     port: t.session.port || 22,
