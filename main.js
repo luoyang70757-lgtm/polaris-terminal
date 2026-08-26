@@ -2086,10 +2086,22 @@ async function getSftp(sessionId) {
     // 回退后的行为 = v1.0.20 前:SFTP 走主连接,保证功能可用。
     __sftpLog('打开 SFTP(优先独立连接)', { sessionId, t0 });
     const openOnMain = async () => {
-      const raw = await Promise.race([
+      // 主连接开 SFTP 子系统同样可能被通道限流(too offen,H3C 单通道设备)→ 等 1s 重试一次
+      const openOnce = () => Promise.race([
         sshClient.openSftp(s.conn),
         new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
       ]);
+      let raw;
+      try {
+        raw = await openOnce();
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        if (/channel open|too offen|too often|Channel open failure/i.test(msg)) {
+          __sftpLog('主连接 SFTP 通道被限流,1s 后重试', { sessionId, error: msg });
+          await new Promise((r) => setTimeout(r, 1000));
+          raw = await openOnce();
+        } else { throw e; }
+      }
       s.sftp = raw; // 主连接上的 SFTP:不加 sftpConn(随主连接一起关)
       return raw;
     };
@@ -2173,6 +2185,24 @@ function closeSftpConn(sessionId) {
   if (s) {
     try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
     s.sftpConn = null; s.sftp = null;
+  }
+}
+
+// SFTP 操作失败(General failure 等设备级拒绝)时重置连接:清掉坏 sftp/sftpConn,
+// 下次 getSftp 会重走「独立连接→探测→回退」逻辑重新建一个可用的。
+function resetSftp(sessionId) {
+  const s = sshSessions.get(sessionId);
+  if (s) {
+    try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
+    s.sftpConn = null; s.sftp = null;
+  }
+}
+
+// 条件重置:错误是"连接已坏"类(General failure/通道关闭/连接丢失)才重置,其余不动
+function resetSftpIfBroken(sessionId, err) {
+  const msg = String((err && (err.message || err)) || '');
+  if (/General failure|not connected|channel.{0,12}close|connection lost/i.test(msg)) {
+    resetSftp(sessionId);
   }
 }
 
@@ -2332,6 +2362,10 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
     return { ok: true, entries, cwd };
   } catch (err) {
     __sftpLog('readdir 失败', { sessionId, path: remotePath, ms: Date.now() - _t0, error: err && err.message });
+    // 设备级拒绝(General failure/H3C OTP 复用等)→ SFTP 连接已坏,重置让它下次自动重建
+    if (err && /General failure|not connected|channel.*close|connection lost/i.test(String(err.message || err))) {
+      resetSftp(sessionId);
+    }
     return { ok: false, error: err.message };
   }
 });
@@ -2352,6 +2386,7 @@ ipcMain.handle('sftp:readFile', async (_e, { sessionId, remotePath }) => {
     try { content = enc === 'utf8' ? buf.toString('utf8') : iconv.decode(buf, enc); } catch { content = buf.toString('utf8'); }
     return { ok: true, content, size: stat.size };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2369,6 +2404,7 @@ ipcMain.handle('sftp:writeFile', async (_e, { sessionId, remotePath, content }) 
     );
     return { ok: true };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2380,6 +2416,7 @@ ipcMain.handle('sftp:mkdir', async (_e, { sessionId, remotePath }) => {
     await new Promise((resolve, reject) => sftp.mkdir(remotePath, (err) => (err ? reject(err) : resolve())));
     return { ok: true };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2391,6 +2428,7 @@ ipcMain.handle('sftp:rmdir', async (_e, { sessionId, remotePath }) => {
     await sshClient.rmdirRecursive(sftp, remotePath);
     return { ok: true };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2402,6 +2440,7 @@ ipcMain.handle('sftp:delete', async (_e, { sessionId, remotePath }) => {
     await new Promise((resolve, reject) => sftp.unlink(remotePath, (err) => (err ? reject(err) : resolve())));
     return { ok: true };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2413,6 +2452,7 @@ ipcMain.handle('sftp:rename', async (_e, { sessionId, from, to }) => {
     await new Promise((resolve, reject) => sftp.rename(from, to, (err) => (err ? reject(err) : resolve())));
     return { ok: true };
   } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
 });
@@ -2463,10 +2503,12 @@ ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
       return { ok: true, remotePath, resumedFrom: resumeFrom };
     } catch (err) {
       recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
+      resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
       __sftpLog('上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
       return { ok: false, error: err.message };
     }
   } catch (err) {
+    resetSftpIfBroken(sessionId, err);
     __sftpLog('上传异常', { sessionId, remoteDir, ms: Date.now() - _t0, error: err && err.message });
     return { ok: false, error: err.message };
   }
@@ -2506,10 +2548,12 @@ ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
       return { ok: true, localPath, resumedFrom: resumeFrom };
     } catch (err) {
       recordDownloadPartial(sessionId, localPath); // 又失败:用最新的真实落盘大小更新中断点
+      resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
       __sftpLog('下载失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
       return { ok: false, error: err.message };
     }
   } catch (err) {
+    resetSftpIfBroken(sessionId, err);
     return { ok: false, error: err.message };
   }
 });
