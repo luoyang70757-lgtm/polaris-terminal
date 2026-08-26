@@ -1871,6 +1871,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       conn, stream, encoding: enc,
       sessionUser: uname.split('@').pop(),
       hostId: `${uname ? uname + '@' : ''}${finalOpts.host || ''}:${finalOpts.port || 22}`,
+      connOpts: finalOpts, // 存完整连接参数:SFTP 走独立连接重连用(含 KoKo 复合用户名/跳板)
     });
     // 会话日志:设置里开着(默认开)就为这次连接建日志文件
     if (finalOpts.sessionLog !== false) {
@@ -1895,6 +1896,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
         closedBroadcast.add(sessionId);
         broadcast('ssh:status', sessionId, { status: 'closed' });
       }
+      closeSftpConn(sessionId); // 先关独立的 SFTP 连接(记录还在)
       sshSessions.delete(sessionId);
       clearSftpKnownSizes(sessionId);
     });
@@ -1906,6 +1908,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       finalizeSessionLog(sessionId); // 幂等:已收尾则空操作
       stopTunnelsForSession(sessionId); // 幂等:已停的隧道这里也是空操作
       closeJump(sessionId); // 幂等:已收的跳板连接这里也是空操作
+      closeSftpConn(sessionId); // 先关独立的 SFTP 连接(记录还在)
       if (!closedBroadcast.has(sessionId)) {
         closedBroadcast.add(sessionId);
         broadcast('ssh:status', sessionId, { status: 'closed' });
@@ -2077,22 +2080,65 @@ async function getSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (!s) throw new Error('SSH 连接不存在或已断开');
   if (!s.sftp) {
-    // 堡垒机(经 KoKo 等网关)的 SFTP 子系统可能迟迟不应答(路由/认证慢或挂起):
-    // 加超时兜底,避免 sftp:list 永久 pending → 面板一直空白无任何提示。
+    // H3C 等单通道设备:在 shell 同一条连接上开 SFTP 子系统会顶掉 shell(终端会话失效)。
+    // 像批量上传一样,SFTP 走独立连接(connectRaw 不开 shell),shell 留在原连接互不干扰。
+    // 独立连接用保存的连接参数重连:JMS/KoKo 是直连网关的复合用户名,直接复用即可。
     const t0 = Date.now();
-    __sftpLog('打开 SFTP 通道', { sessionId, t0 });
+    __sftpLog('打开独立 SFTP 连接', { sessionId, t0 });
+    const opts = { ...s.connOpts };
+    delete opts.sock; // 旧连接的跳板隧道 socket 不能复用
+    delete opts.hostVerifier; // 指纹校验按需重建
+    if (opts.verifyHostKey !== false) {
+      opts.hostVerifier = makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
+    }
+    const openWithRetry = async () => {
+      // 跳板机:重新开隧道到目标(独立连接需要自己的隧道)
+      if (opts.jump && opts.jump.host) opts.sock = await openJumpTunnel(sessionId, opts);
+      const raw = await sshClient.connectRaw(opts);
+      try {
+        const sftp = await sshClient.openSftp(raw);
+        s.sftpConn = raw; s.sftp = sftp;
+        return sftp;
+      } catch (e) {
+        try { raw.end(); } catch { /* ignore */ }
+        throw e;
+      }
+    };
+    const openWithRetryAndFallback = async () => {
+      try {
+        return await openWithRetry();
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        // 通道打开被限流(H3C channelOpen too offen):等 1s 重试一次,限流通常是瞬时的
+        if (/channel open|too offen|too often|Channel open failure/i.test(msg)) {
+          __sftpLog('SFTP 通道打开被限流,1s 后重试', { sessionId, error: msg });
+          await new Promise((r) => setTimeout(r, 1000));
+          return openWithRetry();
+        }
+        throw e;
+      }
+    };
     try {
       s.sftp = await Promise.race([
-        sshClient.openSftp(s.conn),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
+        openWithRetryAndFallback(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(20s),堡垒机网关可能未响应')), 20000)),
       ]);
-      __sftpLog('SFTP 通道打开成功', { sessionId, ms: Date.now() - t0 });
+      __sftpLog('独立 SFTP 连接成功', { sessionId, ms: Date.now() - t0 });
     } catch (e) {
-      __sftpLog('SFTP 通道打开失败', { sessionId, ms: Date.now() - t0, error: e && e.message });
+      __sftpLog('SFTP 连接失败', { sessionId, ms: Date.now() - t0, error: e && e.message });
       throw e;
     }
   }
   return s.sftp;
+}
+
+// 关掉会话的独立 SFTP 连接(会话断开/关标签时调用,幂等)
+function closeSftpConn(sessionId) {
+  const s = sshSessions.get(sessionId);
+  if (s) {
+    try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
+    s.sftpConn = null; s.sftp = null;
+  }
 }
 
 // 把目录和文件名拼成远程路径(统一用 / 分隔,处理 root 边界)
@@ -2342,14 +2388,16 @@ function emitSftpProgress(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', payload);
 }
 
-ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir }) => {
+ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
   const _t0 = Date.now();
   try {
     const sftp = await getSftp(sessionId);
-    // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)
+    // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)。
+    // mode='file'/'dir' 时分开只选对应类型(macOS 上 openFile+openDirectory 混开会退化成只能选文件夹)。
+    const properties = mode === 'file' ? ['openFile'] : (mode === 'dir' ? ['openDirectory'] : ['openFile', 'openDirectory']);
     const pick = await dialog.showOpenDialog(mainWindow, {
-      title: '选择要上传的本地文件或文件夹',
-      properties: ['openFile', 'openDirectory'],
+      title: mode === 'file' ? '选择要上传的本地文件' : (mode === 'dir' ? '选择要上传的本地文件夹' : '选择要上传的本地文件或文件夹'),
+      properties,
     });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
     const localPath = pick.filePaths[0];

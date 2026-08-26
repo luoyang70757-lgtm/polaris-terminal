@@ -76,7 +76,7 @@ contextBridge.exposeInMainWorld('api', {
   sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', { sessionId, from, to }),
   sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
   sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
-  sftpUpload: (sessionId, remoteDir) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir }),
+  sftpUpload: (sessionId, remoteDir, mode) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir, mode }),
   sftpDownload: (sessionId, remotePath) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath }),
   // entries = [{ remotePath, isDir }] —— 支持文件+目录混合下载(目录递归)
   sftpDownloadMany: (sessionId, entries) => ipcRenderer.invoke('sftp:downloadMany', { sessionId, entries }),

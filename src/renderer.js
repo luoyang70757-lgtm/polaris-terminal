@@ -8870,8 +8870,10 @@ async function sftpDeleteSelected() {
   sftpRefocusTerminal(); // 删除完焦点还给终端(按钮占焦点会吞空格)
 }
 
-async function sftpUpload() {
-  const res = await window.api.sftpUpload(sftpSession(), state.sftp.path);
+async function sftpUpload(mode) {
+  // macOS 对话框 openFile+openDirectory 同开会退化成只能选文件夹 → 先让用户选文件/文件夹,
+  // 各用单一属性打开(mode: 'file' 只选文件 | 'dir' 只选文件夹 | 省略=都允许,兼容旧调用)
+  const res = await window.api.sftpUpload(sftpSession(), state.sftp.path, mode);
   sftpTransferFinish(res.ok ? new Set((res.failed || []).map((f) => f.rp)) : new Set(), res.error === '已取消'); // 行留在历史里
   sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
   if (!res.ok) {
@@ -10136,7 +10138,13 @@ els.btnSftpUp.addEventListener('click', sftpGoUp);
 // 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
 els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
 els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
-els.btnSftpUpload.addEventListener('click', sftpUpload);
+els.btnSftpUpload.addEventListener('click', (e) => {
+  // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: '📄 上传文件…', action: () => sftpUpload('file') },
+    { label: '📁 上传文件夹…', action: () => sftpUpload('dir') },
+  ]);
+});
 els.btnSftpDownload.addEventListener('click', sftpDownload);
 els.btnSftpDelete.addEventListener('click', sftpDeleteSelected);
 els.btnSftpSelectAll.addEventListener('click', sftpToggleSelectAll);
