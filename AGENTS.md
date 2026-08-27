@@ -40,11 +40,11 @@ npm run dist   # → release/mac/Polaris.app（macOS，未签名）
 2. **SFTP 默认路径**：`sftp:home` IPC 探测家目录（exec `pwd` 拿真实 home → SFTP `readdir` 验证可访问 → 不可访问回退 `/tmp`）；终端 `cd` 命令被跟踪（`trackShellCwd`）更新 `tab.shellCwd`，SFTP 打开时优先跟随
 3. **堡垒机两条路径**：
    - **JumpServer（API 对接）**：`jmsConnect` 用复合用户名 `JMS用户@协议@账号@资产IP` 直连 KoKo 网关（sshHost:2222），网关路由到目标
-   - **H3C（Web 控制台）**：`bastionConnect` POST `/shterm/api/deviceAccess/accessUrl` 拿 `accessclient://` token → 解码（zlib）得 `hn/pn`（网关）、`sa`（账号）、`pw`（一次性 OTP）→ 直连网关
+   - **H3C（Web 登录 + 原生 API）**：webview 只做登录会话载体（`persist:bastion` partition cookie）；资产枚举/连接走主进程 `lib/h3c-api.js`（`ses.fetch` 带 partition cookie 直连 `/shterm/api/*`，IPC `h3c:tree/devs/recent/accessUrl`）；`bastionConnect` 拿 `accessclient://` token → 解码（zlib）得 `hn/pn`（网关）、`sa`（账号）、`pw`（一次性 OTP）→ 直连网关
 4. **SFTP chroot**：JumpServer 的 SFTP 会话被 chroot（sftp_home 配置，Linux 平台默认 /tmp）。修改 `protocol-settings/{id}` 的 `setting.sftp_home` 可改根目录（已把 Linux 平台从 /tmp 改为 /root）
 5. **堡垒机连接 CRUD 与资产直连**：堡垒机连接存 `state.settings.bastionServers`（type=`jms`/`h3c`），增删改查走 `bastion-cfg-modal`；双击资产用 `bastionConnectAsset`（复合用户名走 KoKo 网关，密码 `decryptSecret` 解密，未登录自动用保存账号登录）。会话列表「🛡 堡垒机」分组右键菜单统一入口：➕ 创建连接 / JumpServer API 对接 / JumpServer Web / H3C 浏览器登录 / 清除历史（原头部 🛡 按钮已删除并入）
 6. **右键菜单防刷屏**：菜单打开后 250ms 内的 click 视为"右键残留"忽略（`ctxMenuOpenedAt`）；空菜单数组不注册 contextmenu
-7. **堡垒机资产轮询**：`pollBastionAssets` 只对 H3C 站点（URL 含 `/shterm`）运行，15s 低频兜底 + 用户操作时事件驱动；数据无变化不刷新（`stableJson` 键序无关比较）
+7. **堡垒机资产轮询**：`pollBastionAssets` 只对 H3C 站点（URL 含 `/shterm`）运行，15s 低频兜底 + 用户操作时事件驱动；数据无变化不刷新（`stableJson` 键序无关比较）。**H3C 资产是主进程原生拉取**（`lib/h3c-api.js` + `h3c:*` IPC），不再注入 webview 钩子；登录成功自动最小化面板（`bastionLoginState`/`bastionLoginMode` 状态机），会话过期自动弹出重登
 8. **全量日志**：`lib/app-log.js` 把主进程 console + 渲染层 console + dlog + 异常写入 `数据目录/logs/app-YYYYMMDD.log`（按天轮转 10MB）；调试面板「⬇ 下载日志」导出完整日志
 
 ## 安全约定

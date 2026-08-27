@@ -19,6 +19,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib'); // H3C accessclient:// token(base64url(zlib(json)))
 const { Server: SSHServer } = require('ssh2');
 const { createFakeShell } = require('./fake-shell');
 const { createSftpServer, diskRoot: MOCK_DISK_ROOT } = require('./sftp-vfs'); // 内存虚拟磁盘 SFTP 服务
@@ -51,6 +52,51 @@ function assetsFor(username) {
 }
 
 const tokens = new Map(); // token -> username
+
+// ---------- H3C shterm mock(原生 h3c:* IPC 用;webview 与主进程 ses.fetch 同源共享 shterm_session cookie) ----------
+const H3C_TREE = {
+  children: [
+    { id: 'tree-1', name: '生产一', path: ['生产一'], children: [
+      { id: 'dev-1', name: 'web-node-1', ip: '192.168.10.99', path: ['生产一'] },
+      { id: 'dev-2', name: 'db-node-1', ip: '192.168.10.98', path: ['生产一'] },
+      { id: 'dev-3', name: 'app-node-1', ip: '192.168.10.97', path: ['生产一'] },
+    ]},
+    { id: 'tree-2', name: '生产二', path: ['生产二'], children: [
+      { id: 'dev-4', name: 'log-node-2', ip: '192.168.10.96', path: ['生产二'] },
+      { id: 'dev-5', name: 'nfs-node-2', ip: '192.168.10.95', path: ['生产二'] },
+    ]},
+  ],
+};
+const H3C_DEVICES = [
+  { id: 'dev-1', name: 'web-node-1', ip: '192.168.10.99', dir: '生产一' },
+  { id: 'dev-2', name: 'db-node-1', ip: '192.168.10.98', dir: '生产一' },
+  { id: 'dev-3', name: 'app-node-1', ip: '192.168.10.97', dir: '生产一' },
+  { id: 'dev-4', name: 'log-node-2', ip: '192.168.10.96', dir: '生产二' },
+  { id: 'dev-5', name: 'nfs-node-2', ip: '192.168.10.95', dir: '生产二' },
+];
+// getAccessViewDevs/getLoginUserRecentDevs 的 content 形状(与 parseDevs 对齐):
+// { content:[{ id, dev:{ id,name,ip,services:{services:{ssh:{port}}},accounts:{accounts:[{name}]} }, recent:{account} }] }
+function h3cDevsContent(dirs) {
+  const list = dirs && dirs.length ? H3C_DEVICES.filter((d) => dirs.includes(d.dir)) : H3C_DEVICES;
+  return list.map((d) => ({
+    id: d.id,
+    dev: { id: d.id, name: d.name, ip: d.ip, services: { services: { ssh: { port: 22 } } }, accounts: { accounts: [{ name: 'root' }, { name: 'admin' }] } },
+    recent: { account: 'root' },
+  }));
+}
+const h3cSessions = new Set(); // shterm_session 值集合(模拟 H3C 登录会话)
+function h3cAuthed(req) {
+  const m = /(?:^|;\s*)shterm_session=([^;]+)/.exec(req.headers.cookie || '');
+  return !!(m && h3cSessions.has(m[1]));
+}
+// accessUrl 响应:与真实 H3C 一致 —— accessclient://<base64url(zlib(json))>,内含一次性密码
+function makeH3CAccessUrl(dev) {
+  const d = H3C_DEVICES.find((x) => x.id === dev) || H3C_DEVICES[0];
+  const info = { mode: 'proxy', hn: '127.0.0.1', pn: SSH_PORT, sa: 'admin', pw: 'admin123', sn: d.name, st: d.name, sh: d.ip, cp: 'UTF-8' };
+  const buf = zlib.deflateSync(Buffer.from(JSON.stringify(info), 'utf8'));
+  return 'accessclient://' + buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 
 // ---------- HTTP API ----------
 function authHandler(req, res, body) {
@@ -119,6 +165,102 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ packEnabled: mockPackEnabled }));
       return;
     }
+
+    // ---- H3C shterm mock(原生 h3c:* IPC 走这条;webview 登录后与 ses.fetch 同源共享 cookie) ----
+    if (url.pathname === '/shterm/' || url.pathname === '/shterm') {
+      if (h3cAuthed(req)) {
+        // 已登录:控制台页(资产拉取已原生化,页面只需稳定存在,保证 /shterm 站点判定 + 会话保活)
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><head><title>H3C 控制台(mock)</title></head><body><h1>H3C 堡垒机控制台(mock)</h1><div class="asset-list"><span class="node_name">生产一</span><span class="node_name">生产二</span></div><p>已登录:资产由主进程 h3c:* 原生拉取</p></body></html>`);
+      } else {
+        // 登录页:用户名/密码 + 登录按钮(无验证码 → startBastionAutoFill 自动填并点登录)
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><head><title>H3C 登录(mock)</title></head><body>
+          <h1>H3C 堡垒机登录(mock: admin/admin123)</h1>
+          <form id="loginForm">
+            <input type="text" name="username" id="username" placeholder="用户名" />
+            <input type="password" name="password" id="password" placeholder="密码" />
+            <button type="submit">登 录</button>
+          </form>
+          <script>
+            document.getElementById('loginForm').addEventListener('submit', function(e){
+              e.preventDefault();
+              var f = new FormData(document.getElementById('loginForm'));
+              fetch('/shterm/login', { method:'POST', body: new URLSearchParams(f), credentials:'include' }).then(function(r){
+                window.location.href = '/shterm/';
+              });
+            });
+          </script>
+        </body></html>`);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/shterm/login') {
+      // 解析 urlencoded(username=..&password=..) 或 JSON(自动填充走的 fetch 是 urlencoded)
+      let username = '', password = '';
+      try {
+        if (raw.trim().startsWith('{')) { const j = JSON.parse(raw); username = j.username || ''; password = j.password || ''; }
+        else { const sp = new URLSearchParams(raw); username = sp.get('username') || ''; password = sp.get('password') || ''; }
+      } catch { /* ignore */ }
+      if (username !== 'admin' || password !== 'admin123') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '用户名或密码错误' }));
+        return;
+      }
+      const sid = crypto.randomBytes(16).toString('hex');
+      h3cSessions.add(sid);
+      res.writeHead(302, { 'Location': '/shterm/', 'Set-Cookie': `shterm_session=${sid}; Path=/; HttpOnly` });
+      res.end();
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/shterm/expire') {
+      // 验证脚本免页面导航触发会话过期(清 cookie 返回 200 JSON → 原生 needLogin 检测)
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'shterm_session=; Path=/; Max-Age=0' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (url.pathname.startsWith('/shterm/api/')) {
+      if (!h3cAuthed(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 401, msg: '未登录或会话已过期' }));
+        return;
+      }
+      if (url.pathname === '/shterm/api/asset/getAccessViewTree') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(H3C_TREE));
+        return;
+      }
+      // 小页(PAGE_SIZE=2)触发客户端翻页逻辑(真实设备 870 台/44 页,这里模拟多页)
+      if (url.pathname === '/shterm/api/asset/getAccessViewDevs' && req.method === 'PUT') {
+        const page = parseInt(url.searchParams.get('page') || '0', 10) || 0;
+        const dirs = (body && Array.isArray(body.paths)) ? body.paths : [];
+        const all = h3cDevsContent(dirs);
+        const start = page * 2;
+        const chunk = all.slice(start, start + 2);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: chunk,
+          last: start + chunk.length >= all.length,
+          totalPages: Math.max(1, Math.ceil(all.length / 2)),
+          totalElements: all.length,
+        }));
+        return;
+      }
+      if (url.pathname === '/shterm/api/asset/getLoginUserRecentDevs' && req.method === 'PUT') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content: h3cDevsContent(['生产一']).slice(0, 2), last: true, totalPages: 1 }));
+        return;
+      }
+      if (url.pathname === '/shterm/api/deviceAccess/accessUrl' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ url: makeH3CAccessUrl((body && body.dev) || '') }));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'mock H3C API: not found' }));
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'mock API: not found' }));
   });

@@ -119,6 +119,11 @@ contextBridge.exposeInMainWorld('api', {
   cryptoDecrypt: (text) => ipcRenderer.invoke('crypto:decrypt', text),
   // H3C 堡垒机:解码 accessclient:// token
   bastionDecode: (url) => ipcRenderer.invoke('bastion:decode', url),
+  // H3C 原生 API(主进程用 persist:bastion 会话 cookie 直连 /shterm/api/*,webview 只做登录)
+  h3cTree: (baseUrl) => ipcRenderer.invoke('h3c:tree', baseUrl),
+  h3cDevs: (cfg) => ipcRenderer.invoke('h3c:devs', cfg),
+  h3cRecent: (cfg) => ipcRenderer.invoke('h3c:recent', cfg),
+  h3cAccessUrl: (cfg) => ipcRenderer.invoke('h3c:accessUrl', cfg),
   // 目标连通性探测(TCP + SSH banner),诊断"无法连接"用
   bastionProbe: (p) => ipcRenderer.invoke('bastion:probe', p),
   // 导出堡垒机资产诊断包(排查"资产不完整"用)

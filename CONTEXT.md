@@ -90,7 +90,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 5. **webview 焦点**：`bastionFocusCheck` 只在用户 3s 内操作过 guest 且宿主无更近点击时 `wv.focus()`；菜单打开时暂停——否则 webview 抢焦点触发 window blur，菜单闪关、点 ✕ 无效"无法退回"
 6. **右键菜单防抖**：打开后 250ms 内 click 一律忽略（含菜单项），防 macOS 右键残留 click 误触
 7. **JumpServer SFTP chroot**：由平台协议 `setting.sftp_home` 控制（`PATCH /api/v1/assets/protocol-settings/{id}/`，内置平台不可整体 PUT，403 Internal platform）；Linux 平台已改 /root
-8. **堡垒机入口整合**：头部「🛡 堡垒机」按钮与「会话列表 🛡 堡垒机分组」是重复入口，合并为一——删头部按钮，其 JumpServer API / Web / H3C 三项并入分组右键菜单；右侧浏览器面板不动（webview 是 H3C 唯一入口）
+8. **堡垒机入口整合**：头部「🛡 堡垒机」按钮与「会话列表 🛡 堡垒机分组」是重复入口，合并为一——删头部按钮，其 JumpServer API / Web / H3C 三项并入分组右键菜单；右侧浏览器面板保留。**H3C 资产枚举/连接已改主进程原生**（`lib/h3c-api.js` + `h3c:*` IPC，`ses.fetch` 带 `persist:bastion` cookie；webview 只做登录会话载体，登录成功自动最小化，会话过期自动弹出重登）—— 不再注入 webview 钩子捕获 `/shterm/api/*`
 9. **会话上下文**：`.polaris-data/`、`*.har`、probe 脚本、含真实凭据的 verify 脚本、虚拟机资产导出 csv 不入库（.gitignore）
 10. **SFTP 上传校验**（lib/ssh-client.js `uploadFile`）：传完 `statSize` 对账远端大小（三态：`null`=一致 / `{unverifiable}`=设备不支持 stat 无法对账按成功 / 数值=真实不符——**0 字节是真实不符而非成功**）；不符全量重传一次；再不符**读回远端逐字节对比本地**（`verifyByReadback`）——区分"设备 stat 骗人（如 H3C 网络设备恒报 0 但数据已落盘）"和"真没传上"，前者视为成功，后者删远端残缺 + 明确报错。**绝不静默丢数据**
 11. **自动重连防死循环**（renderer.js）：connected 后**延迟 15s** 才清零重连计数——"握手成功→立刻被服务端关闭"（瞬连瞬断）计数不归零，MAX_RECONNECT 正常触发；否则每轮 connected 都清零，每 3 秒连一次永不停

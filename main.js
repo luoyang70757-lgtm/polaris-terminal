@@ -49,6 +49,7 @@ var recorder = __req('./lib/recorder', 'recorder');
 var sessionLog = __req('./lib/session-log', 'session-log');
 var tunnelLib = __req('./lib/tunnel', 'tunnel');
 var jmsApi = __req('./lib/jms-api', 'jms-api');
+var h3cApi = __req('./lib/h3c-api', 'h3c-api'); // H3C shterm 原生客户端(ses.fetch 走 persist:bastion 会话 cookie)
 var XLSX = __req('xlsx', 'xlsx');
 var appLog = __req('./lib/app-log', 'app-log');
 var tar = __req('tar', 'tar'); // 纯 JS tar:目录打包上传用,不依赖系统 tar(Windows 无系统 tar)
@@ -726,6 +727,20 @@ ipcMain.handle('debug:save', (_e, text) => {
     return { ok: false, error: err.message };
   }
 });
+
+// ---------- H3C shterm 原生 API(资产枚举/连接;webview 只做登录会话载体) ----------
+// 与 jms:* 平行的 h3c:* 通道:主进程用 persist:bastion 会话 cookie 直接调 /shterm/api/*,
+// 不再依赖 webview 注入钩子。needLogin 字段由 lib/h3c-api.js 判定(401/403、HTML 登录页等)。
+function h3cHandle(fn) {
+  return async (_e, args) => {
+    try { return await fn(args); }
+    catch (err) { return { ok: false, error: (err && err.message) || String(err), needLogin: false }; }
+  };
+}
+ipcMain.handle('h3c:tree',      h3cHandle((baseUrl) => h3cApi.getTree(baseUrl)));
+ipcMain.handle('h3c:devs',      h3cHandle(({ baseUrl, paths, page }) => h3cApi.getDevs(baseUrl, paths, page)));
+ipcMain.handle('h3c:recent',    h3cHandle(({ baseUrl, page }) => h3cApi.getRecent(baseUrl, page)));
+ipcMain.handle('h3c:accessUrl', h3cHandle(({ baseUrl, dev, account, proto }) => h3cApi.accessUrl(baseUrl, { dev, account, proto })));
 
 ipcMain.handle('bastion:decode', (_e, url) => {
   try {
