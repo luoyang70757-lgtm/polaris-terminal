@@ -93,12 +93,15 @@ function resolveDir(node, parts) {
 }
 
 // 节点 → SFTP 属性对象(mode 里的 0o4xxxx = 目录位,0o10xxxx = 普通文件位)
+// 模拟 H3C 设备:readdir/stat 对文件恒报 size 0(数据其实在)。verify 用它测 sftp-sizes 覆盖显示。
+const LIE_SIZES = process.env.MOCK_LIE_SIZES === '1';
 function toAttrs(node) {
+  const realSize = node.type === 'dir' ? 0 : node.content.length;
   return {
     mode: node.type === 'dir' ? 0o40755 : 0o100644,
     uid: 1000,
     gid: 1000,
-    size: node.type === 'dir' ? 0 : node.content.length,
+    size: (LIE_SIZES && node.type === 'file') ? 0 : realSize,
     atime: node.mtime,
     mtime: node.mtime,
   };
@@ -282,4 +285,4 @@ function createSftpServer(sftpStream) {
   });
 }
 
-module.exports = { createSftpServer };
+module.exports = { createSftpServer, diskRoot: SEED_DIR };

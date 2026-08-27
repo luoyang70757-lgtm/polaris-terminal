@@ -1097,7 +1097,14 @@ async function encryptSecret(plain) {
 }
 async function decryptSecret(secret) {
   if (secret && secret.startsWith('enc:v1:')) {
-    try { const r = await window.api.cryptoDecrypt(secret); return (r && r.value) || secret; } catch { return secret; }
+    try {
+      const r = await window.api.cryptoDecrypt(secret);
+      // 解密失败(main 返回空值)时返回空 —— 绝不能把 enc:v1 密文当密码拿去认证。
+      // 跨平台/换机(如 macOS 密文到 Windows)safeStorage 解不开时,旧逻辑 `|| secret`
+      // 会把密文字符串当密码发给 JumpServer/SSH → 认证必败且掩盖真实原因。
+      if (!r || !r.value) console.warn('[凭据] enc:v1 密码解密失败(可能由其他平台/系统加密),按空密码处理');
+      return (r && r.value) || '';
+    } catch (e) { console.warn('[凭据] enc:v1 密码解密异常:', e); return ''; }
   }
   return secret || ''; // 老明文/空串原样返回
 }
@@ -4402,7 +4409,13 @@ async function batchSavedAssetConnect(s, assets) {
     setStatus(`正在登录「${s.name}」…`, 'var(--accent)');
     try {
       const pw = await decryptSecret(s.password || '');
-      if (!s.account || !pw) { alert(`「${s.name}」未配置账号密码,无法登录`); return; }
+      if (!s.account) { alert(`「${s.name}」未配置账号,无法登录`); return; }
+      if (!pw) {
+        alert((s.password && s.password.startsWith('enc:v1:'))
+          ? `「${s.name}」保存的密码无法在本机解密(可能由其他平台加密),请右键连接→「✏️ 编辑连接」重新输入密码`
+          : `「${s.name}」未配置密码,无法登录`);
+        return;
+      }
       const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
       if (!lg.ok || !lg.token) { alert(`登录「${s.name}」失败: ${lg.error || '未知错误'}`); return; }
       s.token = lg.token; s.user = lg.user;
@@ -4828,7 +4841,7 @@ function bastionSwitchTab(id) {
   bastionActiveTabId = id;
   els.bastionUrl.value = s.url || '';
   if (s.url) loadBastion(s.url);
-  bastionPendingFill = (s.account || s.password) ? s : null; // 加载后自动填充账号密码
+  startBastionAutoFill((s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null); // 加载后自动填充账号密码(SPA 轮询重试)
   bastionRenderTabs();
 }
 
@@ -4904,7 +4917,7 @@ function bastionSelectServer(id) {
   els.bastionUrl.value = s.url;
   loadBastion(s.url);
   // JMS 服务器用其保存的账号密码自动登录;堡垒机配置同前
-  bastionPendingFill = (s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null;
+  startBastionAutoFill((s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null);
   closeBastionCfg();
 }
 
@@ -4917,14 +4930,14 @@ function bastionLoadSelected() {
   else alert('请先选一个已保存的堡垒机,或输入 Web 地址');
 }
 
-// 在堡垒机登录页自动填充账号密码(尽力而为:H3C 等浏览器登录)
+// 在堡垒机登录页自动填充账号密码(尽力而为:H3C 等浏览器登录)。
+// 返回是否真的填进了密码框 —— SPA 登录页(JumpServer)表单渲染得晚,调用方据此决定是否重试。
 async function bastionAutoFill(s) {
-  const wv = els.bastionWebview;
-  if (!wv || !wv.executeJavaScript) return;
+  if (!els.bastionWebview || !els.bastionWebview.executeJavaScript) return false;
   // 存的密码是 safeStorage 密文,填充前先解密(老明文无前缀直接通过)
   const password = await decryptSecret(s.password || '');
-  try {
-    wv.executeJavaScript(`(function(){
+  // 用 jmsWebExec 带超时兜底:executeJavaScript 在页面导航中可能长期不 settle,裸调用会挂死
+  const filled = await jmsWebExec(`(function(){
       try {
         const pwList = document.querySelectorAll('input[type=password]');
         if (!pwList.length) return false;
@@ -4939,19 +4952,52 @@ async function bastionAutoFill(s) {
         if (user) { user.value = ${JSON.stringify(s.account || '')}; user.dispatchEvent(new Event('input', {bubbles:true})); }
         pw.value = ${JSON.stringify(password || '')};
         pw.dispatchEvent(new Event('input', {bubbles:true}));
-        // 二次认证:填完账号密码自动点登录按钮(常见 H3C 登录页;找不到按钮则用户手点,不误点)
-        try {
-          const btns = Array.from(document.querySelectorAll('button, input[type=button], input[type=submit]'));
-          const lb = btns.find(function(b){
-            var t = String(b.textContent || b.value || '').replace(/\\s+/g, '').toLowerCase();
-            return t.indexOf('登录') !== -1 || t.indexOf('login') !== -1 || t.indexOf('登入') !== -1 || t.indexOf('logon') !== -1;
-          });
-          if (lb) lb.click();
-        } catch (e) {}
+        // 二次认证:填完账号密码自动点登录按钮(常见 H3C 登录页;找不到按钮则用户手点,不误点)。
+        // 有验证码的登录页不自动点:缺验证码提交必失败,服务端重渲染会清空已填输入,等用户输完验证码手动登录。
+        if (!document.querySelector('input[name*=captcha], input[id*=captcha], input[name*=verify]')) {
+          try {
+            const btns = Array.from(document.querySelectorAll('button, input[type=button], input[type=submit]'));
+            const lb = btns.find(function(b){
+              var t = String(b.textContent || b.value || '').replace(/\\s+/g, '').toLowerCase();
+              return t.indexOf('登录') !== -1 || t.indexOf('login') !== -1 || t.indexOf('登入') !== -1 || t.indexOf('logon') !== -1;
+            });
+            if (lb) lb.click();
+          } catch (e) {}
+        }
         return true;
       } catch(e) { return false; }
-    })()`).then((r) => { if (r && r.result && r.result.value) console.log('[堡垒机] 已自动填充账号密码'); }).catch(() => {});
-  } catch { /* ignore */ }
+    })()`, 3000);
+  if (filled) console.log('[堡垒机] 已自动填充账号密码');
+  return !!filled;
+}
+
+// 自动填充账号密码:SPA 登录页(如 JumpServer)首屏先加载 /ui/ 再跳 /core/auth/login/,登录表单
+// 渲染得晚。一次性填充会落在无密码框的中间页 → 账号密码永远填不进去(实测 2026-08-27)。这里
+// 轮询重试直到真的填进密码框(或 ~45s 超时放弃);期间切到别的堡垒机/手动导航到其他站点会取消。
+let bastionFillTimer = null;
+let bastionFillToken = 0;
+function startBastionAutoFill(s) {
+  if (!s || (!s.account && !s.password)) { bastionPendingFill = null; return; }
+  bastionPendingFill = s;
+  clearTimeout(bastionFillTimer);
+  const token = ++bastionFillToken;
+  let tries = 0;
+  const attempt = async () => {
+    if (token !== bastionFillToken || bastionPendingFill !== s) return; // 已切换目标/被取消 → 停
+    if (++tries > 30) { if (bastionPendingFill === s) bastionPendingFill = null; return; } // ~45s 超时放弃
+    // 只在同源页面填充;异源(用户手动导航到别的站点)跳过本次继续等 —— 避免往无关页面塞账号密码,
+    // 也避免切换瞬间 getURL 还是旧页/空白页时误停。
+    const curOrigin = (() => { try { return new URL(jmsWebUrl()).origin; } catch { return ''; } })();
+    const wantOrigin = (() => { try { return new URL(s.url).origin; } catch { return ''; } })();
+    if (curOrigin && wantOrigin && curOrigin !== wantOrigin) {
+      bastionFillTimer = setTimeout(attempt, 1500);
+      return;
+    }
+    const ok = await bastionAutoFill(s).catch(() => false);
+    if (ok) { if (bastionPendingFill === s) bastionPendingFill = null; return; }
+    bastionFillTimer = setTimeout(attempt, 1500);
+  };
+  attempt();
 }
 
 function openBastionCfg() {
@@ -6419,6 +6465,11 @@ async function bastionConnectAsset(bastionServer, asset, accountName) {
   const sshHost = s.sshHost || (() => { try { return new URL(s.url).hostname; } catch { return ''; } })();
   // 密码是 safeStorage 密文(enc:v1:),连接前必须解密——否则 KoKo 收到密文 → 认证失败
   const password = await decryptSecret(s.password || '');
+  // 保存了密码但本机解不开(跨平台密文)→ 直接拦截,让用户先重输,别把空密码发去认证
+  if (!password && s.password && s.password.startsWith('enc:v1:')) {
+    alert(`「${s.name}」保存的密码无法在本机解密(可能由其他平台加密),请先右键连接→「✏️ 编辑连接」重新输入密码`);
+    return;
+  }
   const session = {
     id: `jms-${++state.jmsSeq}`,
     name: asset.name,
@@ -6470,7 +6521,13 @@ async function bastionLoadSavedAssets(s) {
     // 已有 token 直接用;否则用保存的账号密码登录
     if (!s.token) {
       const pw = await decryptSecret(s.password || '');
-      if (!s.account || !pw) { fail('未配置账号或密码,无法登录'); return; }
+      if (!s.account) { fail('未配置账号,无法登录'); return; }
+      if (!pw) {
+        fail((s.password && s.password.startsWith('enc:v1:'))
+          ? '保存的密码无法在本机解密(密文可能由其他平台加密),请右键该连接→「✏️ 编辑连接」重新输入密码'
+          : '未配置密码,无法登录');
+        return;
+      }
       const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
       // MFA 双因素账号:弹验证码输入框,输对后完成登录再拉资产(复用 jms:mfa 链路)
       if (lg && lg.mfaRequired) {
@@ -7067,11 +7124,8 @@ function initBastionWebview() {
     setTimeout(() => { if (!bastionWebviewLoading()) pollBastionAssets(true); }, 1200);
     // 页面就绪后主动拉一次全量(不依赖前端是否请求过资产 API;未登录时接口会失败,静默跳过)
     setTimeout(() => { if (!bastionWebviewLoading()) triggerBastionFullFetch(); }, 3500);
-    if (bastionPendingFill) {
-      const s = bastionPendingFill;
-      setTimeout(() => { bastionAutoFill(s); }, 800);
-      bastionPendingFill = null;
-    }
+    // 自动填充账号密码由 startBastionAutoFill 的轮询重试负责(SPA 登录页表单渲染晚,
+    // 一次性填充会落在无密码框的中间页);这里不再消费 bastionPendingFill。
   });
   // 地址栏显示当前地址 + 页面标题(诊断空白页:能看到加载到哪个地址/标题)
   // 记录页面跳转路由(全量/SPA hash 跳转都记):导出抓包时用于定位资产视图的 #/… 路由
@@ -10720,7 +10774,7 @@ window.api.onSftpDone((d) => {
   // 上传成功 → 刷新列表 + 高亮定位;失败/取消 → 提示
   if (d.op === 'upload' && d.ok && !d.cancelled) {
     if (state.sftp.visible) loadSftpList();
-    setStatus(`上传完成(${d.count ?? ''} 个)`, 'var(--green)');
+    setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
   } else if (d.op === 'download' && d.ok && !d.cancelled && (d.localPath || d.results)) {
     setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
   } else if (!d.cancelled && d.error) {

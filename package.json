@@ -1,6 +1,6 @@
 {
   "name": "polaris-terminal",
-  "version": "1.0.33",
+  "version": "1.0.34",
   "description": "Polaris(北极星)· 科幻风 SSH/SFTP 终端工具",
   "main": "main.js",
   "scripts": {
@@ -19,6 +19,7 @@
   "dependencies": {
     "iconv-lite": "^0.7.3",
     "ssh2": "^1.17.0",
+    "tar": "^7.5.22",
     "xlsx": "^0.18.5",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0",

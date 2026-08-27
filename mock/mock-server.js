@@ -21,11 +21,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { Server: SSHServer } = require('ssh2');
 const { createFakeShell } = require('./fake-shell');
-const { createSftpServer } = require('./sftp-vfs'); // 内存虚拟磁盘 SFTP 服务
+const { createSftpServer, diskRoot: MOCK_DISK_ROOT } = require('./sftp-vfs'); // 内存虚拟磁盘 SFTP 服务
 
 // ---------- 配置 ----------
 const HTTP_PORT = parseInt(process.env.MOCK_HTTP_PORT || '8080', 10);
 const SSH_PORT = parseInt(process.env.MOCK_SSH_PORT || '2222', 10);
+let mockPackEnabled = process.env.MOCK_PACK_DISABLED !== '1'; // 打包上传探测开关(verify 可经 HTTP 翻转)
 const LOG_DIR = path.join(__dirname, '..', 'logs');
 
 // ---------- mock 数据:用户与资产 ----------
@@ -110,6 +111,13 @@ const server = http.createServer((req, res) => {
     // JumpServer v4 资产端点:app 的 lib/jms-api.js 拉"当前用户资产"用这个(列表带 accounts,免逐台详情 N+1)
     if (req.method === 'GET' && url.pathname === '/api/v1/perms/users/my/assets/') {
       return assetsHandler(req, res, bearer);
+    }
+    // 打包上传开关(verify-pack-upload 用):翻转后新会话走回退递归路径
+    if (req.method === 'POST' && url.pathname === '/mock/pack') {
+      mockPackEnabled = !body || body.enabled !== false;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ packEnabled: mockPackEnabled }));
+      return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'mock API: not found' }));
@@ -303,8 +311,33 @@ const sshd = new SSHServer({ hostKeys: [fs.readFileSync(path.join(__dirname, 'ho
     session.on('exec', (accept, reject, info) => {
       // 支持 exec 命令模式(真实 KoKo 网关也支持):app 的 SFTP 家目录探测靠 exec('pwd')
       // 拿登录目录。这里 pwd 返回与 SFTP VFS 根一致的 '/',其余命令回显演示。
+      // 另模拟"打包上传"的三条命令:探测 / 远端解压 / 清理压缩包。VFS 是磁盘后备的,
+      // 远端绝对路径 → 磁盘绝对路径后对真实文件跑 tar,让 verify-pack-upload 能全链路验证。
       const stream = accept();
       const cmd = String(info.command || '').trim();
+      const toDisk = (rp) => (rp === '/' ? MOCK_DISK_ROOT : path.join(MOCK_DISK_ROOT, rp.replace(/^\/+/, '')));
+      const q = (p) => `'${p.replace(/'/g, `'\\''`)}'`;
+      if (mockPackEnabled && /^command -v tar\b/.test(cmd)) {
+        // 打包上传探测:远端有 tar+gzip → 回显标记(真实 Linux 上由 command -v 判断)
+        stream.write('POLARIS_PACK_OK\r\n');
+        stream.exit(0); stream.end(); return;
+      }
+      const rmM = cmd.match(/^rm -f '([^']*)'$/);
+      if (rmM) {
+        try { fs.rmSync(toDisk(rmM[1]), { force: true }); } catch { /* ignore */ }
+        stream.exit(0); stream.end(); return;
+      }
+      const xt = cmd.match(/^mkdir -p '([^']*)' && tar -xzf '([^']*)' -C '\1' && rm -f '\2'$/);
+      if (xt) {
+        const dir = toDisk(xt[1]), archive = toDisk(xt[2]);
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          require('child_process').execSync(`tar -xzf ${q(archive)} -C ${q(dir)}`, { stdio: 'ignore' });
+          fs.rmSync(archive, { force: true }); // 解压成功删压缩包(与真实命令一致)
+          stream.exit(0);
+        } catch { stream.exit(1); } // 解压失败 → app 会清压缩包 + 回退递归上传
+        stream.end(); return;
+      }
       if (cmd === 'pwd' || cmd === 'pwd -L' || cmd === 'pwd -P') {
         stream.write('/\r\n'); // 与 sftp-vfs 根一致:家目录探测 → '/' 可访问
       } else {

@@ -51,6 +51,8 @@ var tunnelLib = __req('./lib/tunnel', 'tunnel');
 var jmsApi = __req('./lib/jms-api', 'jms-api');
 var XLSX = __req('xlsx', 'xlsx');
 var appLog = __req('./lib/app-log', 'app-log');
+var tar = __req('tar', 'tar'); // 纯 JS tar:目录打包上传用,不依赖系统 tar(Windows 无系统 tar)
+var sftpSizes = __req('./lib/sftp-sizes', 'sftp-sizes'); // H3C 等设备上传文件真实大小持久化(覆盖显示 0)
 __startupLog('模块加载完成');
 
 // ---------- 安全日志 ----------
@@ -1914,7 +1916,6 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       }
       closeSftpConn(sessionId); // 先关独立的 SFTP 连接(记录还在)
       sshSessions.delete(sessionId);
-      clearSftpKnownSizes(sessionId);
     });
     conn.on('close', () => {
       if (!sshSessions.has(sessionId)) return; // 流 close / ssh:close 已收尾并广播,这里只兜底
@@ -2323,14 +2324,15 @@ ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
 
 // 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
 // 某些设备(H3C 网络设备等)SFTP 对刚写入的文件 readdir/stat 恒报 size 0,但数据已落盘。
-// 记录本次会话成功上传文件的真实大小(sessionId|remotePath → size),面板列目录时
-// 若读到 0 就用真实值覆盖 —— 否则上传完面板里全是 0,用户误以为传坏了。
-const sftpKnownSizes = new Map();
-// 会话关闭时清掉该会话的上传大小记录,防 Map 无限增长
-function clearSftpKnownSizes(sessionId) {
-  const prefix = sessionId + '|';
-  for (const k of sftpKnownSizes.keys()) if (k.startsWith(prefix)) sftpKnownSizes.delete(k);
-}
+// 上传成功后把真实大小持久化(lib/sftp-sizes.js,键=稳定 hostId|路径,仿 sftp-partials),
+// 面板列目录读到 0 就用真实值覆盖 —— 重连/重启后仍正确(H3C 是主要目标,这是关键)。
+// hostId 由 ssh:connect 存进 sshSessions(如 admin@ssh@root@192.168.1.254@192.168.1.250:2222),
+// 同资产重连 hostId 不变,尺寸记录跨会话稳定;取不到时回退 sessionId(至少本会话内覆盖)。
+const knownSizeKey = (sessionId, remotePath) => {
+  const s = sshSessions.get(sessionId);
+  const hostId = (s && s.hostId) || sessionId;
+  return `${hostId}|${remotePath}`;
+};
 
 ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
   const _t0 = Date.now();
@@ -2372,8 +2374,8 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
       // 已知上传大小覆盖:H3C 等设备 readdir 报 0 或错误的非零大小,上传记录的真实大小
       // 是权威 —— 只要已知存在且设备报的 ≠ 已知(含 0),就用已知覆盖显示。
       if (!isDir) {
-        const known = sftpKnownSizes.get(`${sessionId}|${fullPath}`);
-        if (known && (size === 0 || size !== known)) size = known;
+        const known = sftpSizes.get(knownSizeKey(sessionId, fullPath));
+        if (known && known.size && (size === 0 || size !== known.size)) size = known.size;
         else if (size === 0) __sftpLog('列表 size=0 无已知大小(诊断键)', { sessionId, path: fullPath });
       }
       entries.push({ name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null });
@@ -2498,6 +2500,117 @@ ipcMain.handle('sftp:cancel', (_e, jobId) => {
   return { ok: true };
 });
 
+// ---- 目录上传:打包为主(Linux)+ 递归兜底(H3C) ----
+// Linux 目录上传走打包:本地 tar.gz → 单文件上传 → 远端 exec 解压 → 清理,省掉逐文件 mkdir/OPEN/CLOSE 的
+// N 次 RTT。H3C 是主要目标,但 Comware 无 GNU tar/gzip/exec 解压能力 → 探测不过时回退逐文件递归上传,
+// 保证文件夹上传在 H3C 上照常可用(不是冗余,是 H3C 的唯一路径)。
+// 打包用纯 JS 的 npm tar(不 spawn 系统 tar):macOS/Windows 行为一致,Windows 上无系统 tar。
+let packSeq = 0; // 打包临时文件序号(防同批多目录/重名冲突)
+const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"; // POSIX 单引号转义,防 shell 注入
+// 在会话主连接上 exec 一条命令,等退出码返回(参考 sftp:home 的 exec 用法)。超时/通道异常都兜底。
+function execOnSession(sessionId, command, timeoutMs) {
+  return new Promise((resolve) => {
+    const s = sshSessions.get(sessionId);
+    if (!s || !s.conn) return resolve({ ok: false, error: '连接不存在' });
+    let settled = false;
+    let timer = null;
+    const done = (r) => { if (!settled) { settled = true; if (timer) clearTimeout(timer); resolve(r); } };
+    timer = setTimeout(() => done({ ok: false, timedOut: true, error: '远端命令超时' }), timeoutMs || 60000);
+    try {
+      s.conn.exec(command, (err, stream) => {
+        if (err || !stream) return done({ ok: false, error: (err && err.message) || '远端命令通道失败' });
+        let out = '', errOut = '';
+        stream.on('data', (d) => { out += d; });
+        stream.stderr.on('data', (d) => { errOut += d; });
+        stream.on('exit', (code) => done({ ok: code === 0, code, stdout: out, stderr: errOut }));
+        stream.on('error', (e) => done({ ok: false, error: e && e.message }));
+        // 正常流程 exit 先到;个别实现不报退出码,通道关闭兜底(此时不知成败,按失败处理走回退)
+        stream.on('close', () => done({ ok: false, code: -1, stdout: out, stderr: errOut, error: '远端命令通道提前关闭(未收到退出码)' }));
+      });
+    } catch (e) { done({ ok: false, error: e && e.message }); }
+  });
+}
+// 探测当前会话能否走打包上传(exec 可用 + 远端有 tar 和 gzip)。结果按会话缓存,断开随对象释放。
+async function probeRemotePack(sessionId) {
+  const s = sshSessions.get(sessionId);
+  if (!s) return false;
+  if (s._packProbed !== undefined) return s._packProbed;
+  const r = await execOnSession(sessionId, 'command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 && echo POLARIS_PACK_OK', 10000);
+  // 精确匹配整行:真实 Linux 只输出 POLARIS_PACK_OK 一行;回显/噪声(如 mock 的 "(mock) exec:...")不误判
+  const ok = !!(r.ok && String(r.stdout || '').trim() === 'POLARIS_PACK_OK');
+  s._packProbed = ok;
+  __sftpLog('打包上传探测', { sessionId, canPack: ok, code: r.code, stderr: (r.stderr || '').slice(0, 120) });
+  return ok;
+}
+// 逐文件递归上传目录(H3C/无打包能力主机的兜底):并发池 + 每文件断点续传 + 单文件失败隔离。
+// H3C 是主要目标:Comware 无 GNU tar/gzip,打包路径探测不过,文件夹上传靠这条保证可用。
+async function uploadDirRecursive(sessionId, sftp, localPath, target, prog, shouldCancel) {
+  const { uploaded, failed } = await sshClient.uploadDir(
+    sftp, localPath, target, prog,
+    (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
+    (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp),
+    shouldCancel
+  );
+  for (const u of uploaded) sftpSizes.set(knownSizeKey(sessionId, u.rp), u.size);
+  __sftpLog('上传结束(目录,递归)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length });
+  if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
+  return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
+}
+// 打包上传目录(Linux 主路径):本地 tar.gz → 单文件上传(不续传,每次重打)→ 远端解压 + 清理压缩包。
+// 打包/远端解压环节失败返回 null(调用方回退逐文件递归,保证 H3C 之外的目录上传不因单点失败挂掉);
+// 压缩包上传失败直接报错(连接/传输问题,递归也会失败,不回退)。
+async function uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, target, prog, shouldCancel, jobId) {
+  const remoteArchive = joinRemote(remoteDir, baseName + '.tar.gz');
+  const tmpFile = path.join(app.getPath('temp'), `polaris-pack-${jobId}-${++packSeq}.tar.gz`);
+  const _t0 = Date.now();
+  let created = false;
+  try {
+    if (shouldCancel && shouldCancel()) return { ok: false, error: '已取消' };
+    // 1. 本地打包(纯 JS tar,流式写临时文件;空目录/符号链接/权限位由 tar 保真)
+    try {
+      await tar.c({ gzip: true, cwd: path.dirname(localPath), file: tmpFile }, [baseName]);
+      created = true;
+    } catch (err) {
+      // 打包失败(Windows 路径/权限/临时盘等)→ 回退递归上传
+      __sftpLog('本地打包失败,回退递归上传', { sessionId, localPath, error: err && err.message });
+      return null;
+    }
+    const size = fs.statSync(tmpFile).size;
+    __sftpLog('打包完成', { sessionId, localPath, tmpFile, size });
+    // 2. 上传单文件(进度文件=目标目录,面板显示目录名而不是压缩包名)
+    prog({ done: 0, total: size, file: target, fileDone: 0, fileTotal: size, filesDone: 0, filesTotal: 1 });
+    try {
+      await sshClient.uploadFile(sftp, tmpFile, remoteArchive, (done) => prog({ done, total: size, file: target, fileDone: done, fileTotal: size, filesDone: 0, filesTotal: 1 }), 0, shouldCancel);
+    } catch (err) {
+      // 压缩包上传失败:连接/传输问题,递归也会失败,直接报错(不回退,也别记续传——临时文件马上删)
+      resetSftpIfBroken(sessionId, err);
+      __sftpLog('压缩包上传失败', { sessionId, remoteArchive, ms: Date.now() - _t0, error: err && err.message });
+      return { ok: false, error: '压缩包上传失败: ' + ((err && err.message) || err) };
+    }
+    sftpSizes.set(knownSizeKey(sessionId, remoteArchive), size);
+    // 3. 远端解压 + 清理压缩包(一条命令;失败命令已结束 → 清压缩包后回退递归;
+    //    超时可能仍在解压 → 不动压缩包,提示用户手动处理)
+    const cmd = `mkdir -p ${shq(remoteDir)} && tar -xzf ${shq(remoteArchive)} -C ${shq(remoteDir)} && rm -f ${shq(remoteArchive)}`;
+    const ex = await execOnSession(sessionId, cmd, 180000);
+    if (!ex.ok) {
+      __sftpLog('远端解压失败', { sessionId, remoteArchive, code: ex.code, timedOut: ex.timedOut, stderr: (ex.stderr || '').slice(0, 200) });
+      if (!ex.timedOut) {
+        await execOnSession(sessionId, `rm -f ${shq(remoteArchive)}`, 15000).catch(() => {});
+        return null; // 命令已结束(确实失败),清掉压缩包后回退递归上传
+      }
+      return { ok: false, error: `远端解压超时,压缩包留在 ${remoteArchive}(可能仍在解压,可稍后手动 tar -xzf)` };
+    }
+    __sftpLog('打包上传完成', { sessionId, target, archive: remoteArchive, ms: Date.now() - _t0 });
+    return { ok: true, remotePath: target, isDir: true, packed: true, count: 1 };
+  } finally {
+    // 清理本地临时压缩包;Windows 上文件被占用/杀软扫描会删不掉 → 重试一次,再失败就容忍(不阻断)
+    if (created) {
+      try { fs.unlinkSync(tmpFile); }
+      catch { setTimeout(() => { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }, 500); }
+    }
+  }
+}
+
 // 上传单个本地路径(文件或目录)到 remoteDir;对话框/拖拽共用。返回结果对象。
 // jobId: 传输 job 标识(进度事件带它,便于渲染层按 job 管理行 + 取消)
 async function runUpload(sessionId, remoteDir, localPath, jobId) {
@@ -2508,19 +2621,18 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
   const prog = (p) => emitSftpProgress(Object.assign({ op: 'upload', jobId }, p));
   const shouldCancel = makeShouldCancel(jobId);
   if (isDir) {
-    const target = joinRemote(remoteDir, path.basename(localPath));
-    // 目录内每个文件各自断点续传:中断点判定 + 失败时记录
-    const { uploaded, failed } = await sshClient.uploadDir(
-      sftp, localPath, target, prog,
-      (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
-      (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp),
-      shouldCancel
-    );
-    // 记录本次上传文件的真实大小(设备 stat 可能报 0,面板列目录时用它覆盖显示)
-    for (const u of uploaded) sftpKnownSizes.set(`${sessionId}|${u.rp}`, u.size);
-    __sftpLog('上传结束(目录)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length, ms: Date.now() - _t0 });
-    if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
-    return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
+    const baseName = path.basename(localPath);
+    const target = joinRemote(remoteDir, baseName);
+    // 目录上传:Linux 走打包(方案 B,不分大小一律打包),H3C 等无 tar/gzip/exec 的主机回退逐文件递归。
+    // 打包环节失败(null)同样回退递归——文件夹上传必须尽量成功,H3C 是主要目标。
+    if (await probeRemotePack(sessionId)) {
+      const r = await uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, target, prog, shouldCancel, jobId);
+      if (r) return r; // 打包路径给出结论(成功或压缩包上传失败)就返回;r===null → 回退递归
+      __sftpLog('打包路径失败,回退递归上传', { sessionId, remoteDir, localPath });
+    } else {
+      __sftpLog('主机不支持打包上传,改用逐文件递归', { sessionId, remoteDir, localPath });
+    }
+    return uploadDirRecursive(sessionId, sftp, localPath, target, prog, shouldCancel);
   }
   const remotePath = joinRemote(remoteDir, path.basename(localPath));
   const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
@@ -2528,7 +2640,7 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
   try {
     __sftpLog('上传文件开始', { sessionId, remotePath, size: fs.statSync(localPath).size, resumeFrom });
     await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
-    sftpKnownSizes.set(`${sessionId}|${remotePath}`, fs.statSync(localPath).size); // 同上:记录真实大小
+    sftpSizes.set(knownSizeKey(sessionId, remotePath), fs.statSync(localPath).size); // 同上:记录真实大小
     __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
     return { ok: true, remotePath, resumedFrom: resumeFrom };
   } catch (err) {
@@ -2552,7 +2664,9 @@ function startUploadJob(sessionId, remoteDir, localPaths) {
       }
       const ok = results.filter((r) => r.ok);
       const failed = results.filter((r) => !r.ok);
-      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, failed, cancelled: makeShouldCancel(jobId)() });
+      // error 带出首个失败原因:渲染层状态栏能显示具体错误(否则逐路径失败只有面板"✗ 失败",看不见原因)
+      const firstErr = (failed[0] && failed[0].error) || undefined;
+      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
     } catch (err) {
       sftpJobDone(jobId, { sessionId, op: 'upload', ok: false, error: err && err.message, cancelled: makeShouldCancel(jobId)() });
     }
@@ -3063,6 +3177,7 @@ app.whenReady().then(() => {
   buildMenu();
   migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
   sftpPartials.prune(); // 加载续传记录 + 裁剪过期中断点(7 天前的丢弃,防磁盘表无限增长)
+  sftpSizes.prune(); // 加载上传真实大小记录 + 裁剪过期条目(30 天前的丢弃,H3C 列表跨会话仍能覆盖显示 0)
   if (DEV_MODE) {
     try {
       require('./mock/mock-server').start();
