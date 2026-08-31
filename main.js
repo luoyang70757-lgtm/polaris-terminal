@@ -2495,14 +2495,26 @@ ipcMain.handle('sftp:rename', async (_e, { sessionId, from, to }) => {
 
 // 上传:弹出系统对话框选本地文件 → fastPut 到远程
 // 传输进度 → 渲染进程进度条(sftp:progress 事件)
-function emitSftpProgress(payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', payload);
-}
+//
+// 大文件进度节流:底层流按 64KB 块回调,若全量 IPC 会把渲染层主线程打满(高速链路下
+// 每秒上千次 DOM 更新 → 界面卡死、进度条定格,sftp:done 还会被排在几千条 progress
+// 后面、传输早完成却迟迟不刷新)。节流器每 100ms 最多发一条,窗口内新事件只记 pending;
+// 传输完成时 sftpJobDone → flushSftpProgress 补发最后一条,进度条既平滑又能走到真实终态。
+// 实现见 lib/sftp-progress-throttle.js(不依赖 electron,可单测)。
+const { createProgressThrottle } = require('./lib/sftp-progress-throttle');
+const sftpProgress = createProgressThrottle({
+  send: (p) => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', p); } catch { /* ignore */ } },
+  intervalMs: 100,
+});
+function emitSftpProgress(payload) { sftpProgress.emit(payload); }
+// job 完成/失败/取消时补发最后一条被节流的进度,然后删掉节流条目(防 Map 泄漏)
+function flushSftpProgress(jobId) { sftpProgress.flush(jobId); }
 
 // ---- SFTP 传输 job(仿 WinSCP:发起即返回 jobId,后台跑,进度/完成事件驱动,可取消) ----
 const sftpJobs = new Map(); // jobId → { cancelled }
 let sftpJobSeq = 0;
 function sftpJobDone(jobId, payload) {
+  flushSftpProgress(jobId); // 先补发最后的进度(节流期间积压的最新一条),再发完成事件,保证进度条走完/停在真实位置
   sftpJobs.delete(jobId);
   try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:done', { jobId, ...payload }); } catch { /* ignore */ }
 }
@@ -2676,6 +2688,7 @@ function startUploadJob(sessionId, remoteDir, localPaths) {
       for (const p of localPaths) {
         if (makeShouldCancel(jobId)()) break;
         results.push(await runUpload(sessionId, remoteDir, p, jobId));
+        flushSftpProgress(jobId); // 该文件已完成:补发被节流的最后一条进度再传下一个,避免行停在 <100%
       }
       const ok = results.filter((r) => r.ok);
       const failed = results.filter((r) => !r.ok);
