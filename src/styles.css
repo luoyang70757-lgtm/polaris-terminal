@@ -1985,3 +1985,36 @@ input[type="checkbox"] {
 #main-view .session-card .card-addr { font-size: var(--ui-font); }
 /* 右键菜单 */
 #main-view .ctx-item { font-size: var(--ui-font); }
+
+/* ---- 命令补全面板(输入提示) ----
+   输入命令前缀时在终端底部弹候选;Tab 补全第一个候选,点击项补全 */
+.cmd-complete-panel {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-panel, #23272e);
+  border: 1px solid var(--border, #3a3f47);
+  border-radius: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  min-width: 180px;
+  max-width: 440px;
+}
+.cmd-complete-panel .cc-item {
+  padding: 4px 10px;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmd-complete-panel .cc-item.cc-selected {
+  background: var(--accent);
+  color: #fff;
+}
+.cmd-complete-panel .cc-desc {
+  color: var(--text-dim);
+  margin-left: 8px;
+  font-size: 11px;
+}

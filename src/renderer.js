@@ -533,6 +533,9 @@ const els = {
   recommendList: $('recommend-list'),
   recommendHost: $('recommend-host'),
 
+  // 命令补全面板(输入提示)
+  cmdCompletePanel: $('cmd-complete-panel'),
+
   // 快速命令
   btnQuick: $('btn-quick'),
   quickModal: $('quick-modal'),
@@ -2655,6 +2658,87 @@ function setupImeGuard(term) {
   });
   return resetStuck;
 }
+
+// ---- 命令补全(输入提示) ----
+// 数据源:内置常用命令 + 该主机历史高频(recommendCmds) + 快捷命令。
+// 只在"命令词"(第一个词,无空格)且本地输入可信(!inputDirty)时触发;
+// Tab 补全第一个匹配候选(不自动执行,用户自己回车);点击候选直接补全。
+const COMPLETE_CMDS = ['ls','cd','pwd','cat','less','more','head','tail','grep','find','sed','awk','wc','echo','printf','cp','mv','rm','mkdir','rmdir','touch','ln','chmod','chown','tar','gzip','gunzip','zip','unzip','ps','top','htop','free','df','du','uptime','uname','whoami','id','who','w','last','date','cal','sudo','su','useradd','usermod','passwd','groupadd','apt','apt-get','yum','dnf','dpkg','rpm','systemctl','service','journalctl','docker','docker-compose','kubectl','git','vi','vim','nano','ssh','scp','rsync','curl','wget','ping','traceroute','netstat','ss','ip','ifconfig','route','nslookup','dig','kill','killall','pkill','nohup','screen','tmux','crontab','history','clear','exit','shutdown','reboot','mount','umount','fdisk','blkid','lsof','watch','tailf','mkdir','ln'];
+
+// 候选结构 [{cmd, desc}]:内置常用命令(无描述) + 该主机历史高频(带 desc) + 快捷命令
+function cmdCompCandidates(tab) {
+  const map = new Map();
+  for (const c of COMPLETE_CMDS) map.set(c, '');
+  for (const c of (tab.cmdCompCmds || [])) map.set(c.cmd, c.desc || '');
+  for (const q of (tab.cmdCompQuick || [])) { const w = String(q.command || '').trim().split(/\s+/)[0]; if (w && !map.has(w)) map.set(w, ''); }
+  return [...map.entries()].map(([cmd, desc]) => ({ cmd, desc }));
+}
+function maybeShowCmdComplete(tab, term) {
+  const comp = tab.cmdComp;
+  if (!comp) return;
+  const input = tab.inputBuf || '';
+  // 只在命令词前缀(无空格)且≥2字符时提示;dirty(行被服务器改写/方向键历史)不提示
+  if (!input || input.length < 2 || input.includes(' ') || tab.inputDirty) { hideCmdComplete(tab); return; }
+  const cands = cmdCompCandidates(tab)
+    .filter((c) => c.cmd.startsWith(input) && c.cmd !== input)
+    .sort((a, b) => a.cmd.localeCompare(b.cmd))
+    .slice(0, 8);
+  if (!cands.length) { hideCmdComplete(tab); return; }
+  comp.candidates = cands;
+  comp.selected = 0;
+  comp.visible = true;
+  renderCmdComplete(tab, term);
+}
+function hideCmdComplete(tab) {
+  if (!tab || !tab.cmdComp) return;
+  if (tab.cmdComp.visible) {
+    tab.cmdComp.visible = false;
+    if (els.cmdCompletePanel) els.cmdCompletePanel.classList.add('hidden');
+  }
+}
+function renderCmdComplete(tab, term) {
+  const comp = tab.cmdComp;
+  const panel = els.cmdCompletePanel;
+  if (!panel) return;
+  panel.innerHTML = '';
+  comp.candidates.forEach((item, i) => {
+    const it = document.createElement('div');
+    it.className = 'cc-item' + (i === comp.selected ? ' cc-selected' : '');
+    const t = document.createElement('span');
+    t.textContent = item.cmd;
+    it.appendChild(t);
+    if (item.desc) { const d = document.createElement('span'); d.className = 'cc-desc'; d.textContent = item.desc; it.appendChild(d); }
+    it.addEventListener('mousedown', (e) => { e.preventDefault(); comp.selected = i; applyCmdComplete(tab, term); });
+    panel.appendChild(it);
+  });
+  // 定位到当前终端面板底部上方(输入行附近)
+  const pane = tab.paneEl;
+  if (pane) {
+    const r = pane.getBoundingClientRect();
+    panel.style.left = Math.max(4, r.left + 8) + 'px';
+    panel.style.bottom = Math.max(4, window.innerHeight - r.bottom) + 'px';
+  }
+  panel.classList.remove('hidden');
+}
+// 补全:退格删掉已输入前缀 + 发送命令(带空格)。合并一次发送;不执行,用户自己回车。
+function applyCmdComplete(tab, term) {
+  const comp = tab.cmdComp;
+  if (!comp || !comp.visible) return false;
+  const item = comp.candidates[comp.selected];
+  if (!item || !item.cmd) return false;
+  hideCmdComplete(tab);
+  const len = tab.inputBuf.length;
+  const payload = (len > 0 ? '\x7f'.repeat(len) : '') + item.cmd + ' ';
+  sendInput(tab.sessionId, payload);
+  tab.inputBuf = item.cmd + ' ';
+  return true;
+}
+// 点击面板外任意处 → 关闭补全(切标签/点别处也走这里)
+document.addEventListener('mousedown', (e) => {
+  if (els.cmdCompletePanel && !els.cmdCompletePanel.contains(e.target)) {
+    for (const t of state.tabs.values()) hideCmdComplete(t);
+  }
+});
 
 // 全局兜底:窗口失焦 / 页面隐藏 时,把所有终端未结束的组合强制复位
 window.addEventListener('blur', () => {
@@ -7605,20 +7689,42 @@ async function connectToServer(session) {
   term.onData((data) => {
     // 始终跟踪输入行:①记录命令历史 ②生产环境危险命令确认
     let lineOnEnter = null;
+    // 命令补全:Tab 且补全面板可见 → 补全选中的候选并拦截 Tab(不发给远程 shell)
+    if (String(data).includes('\t') && tab.cmdComp && tab.cmdComp.visible) {
+      applyCmdComplete(tab, term);
+      dlog('SEND', `${sessionId} 补全:${JSON.stringify(tab.inputBuf.slice(0, 60))}`);
+      return;
+    }
+    // 命令补全:↑↓ 在补全面板可见时切换候选选择(不发远程,避免和 shell 历史冲突)
+    if (tab.cmdComp && tab.cmdComp.visible) {
+      const d = String(data);
+      const isUp = d === '\x1b[A' || d === '\x1bOA';
+      const isDown = d === '\x1b[B' || d === '\x1bOB';
+      if (isUp || isDown) {
+        const n = tab.cmdComp.candidates.length || 1;
+        tab.cmdComp.selected = (tab.cmdComp.selected + (isUp ? -1 : 1) + n) % n;
+        renderCmdComplete(tab, term);
+        return;
+      }
+    }
     // 转义序列(方向键/Home/End 等)或 Tab(补全)→ 行内容可能被服务器改写
     // (历史回显 / 自动补全),本地输入镜像不再可信,标记 dirty,回车时从缓冲区还原真实命令
     if (String(data).includes('\x1b') || String(data).includes('\t')) {
       tab.inputDirty = true;
       tab.inputBuf = '';
+      hideCmdComplete(tab); // 转义/远程 Tab 补全会改写行 → 隐藏本地补全
     }
     for (const ch of data) {
       if (ch === '\r' || ch === '\n') {
         lineOnEnter = tab.inputBuf.trim();
         tab.inputBuf = '';
+        hideCmdComplete(tab);
       } else if (ch === '\x7f' || ch === '\b') {
         tab.inputBuf = tab.inputBuf.slice(0, -1); // 退格
+        maybeShowCmdComplete(tab, term); // 退格后重新匹配候选
       } else if (ch === '\x03' || ch === '\x15') {
         tab.inputBuf = ''; // Ctrl+C / Ctrl+U 清空当前行
+        hideCmdComplete(tab);
       } else if (ch >= ' ' && ch !== '\x1b') {
         // 开始输入第一个字符时,快照当前缓冲区行作为提示符(此刻行里只有提示符)。
         // 这样即使是第一条命令、还没"学习过提示符",Tab 补全/历史回显也能正确还原命令。
@@ -7630,6 +7736,7 @@ async function connectToServer(session) {
           } catch { /* ignore */ }
         }
         tab.inputBuf += ch;
+        maybeShowCmdComplete(tab, term); // 输入命令前缀后弹候选
       }
     }
     // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
@@ -7722,8 +7829,14 @@ async function connectToServer(session) {
     inputDirty: false,      // 行是否被服务器改写(方向键历史等)→ 本地镜像不可信
     promptText: '',         // 学习到的 shell 提示符(用于从缓冲区还原被历史回显的命令)
     searchAddon,            // 终端内搜索插件
+    cmdComp: { visible: false, candidates: [], selected: 0 }, // 命令补全状态
+    cmdCompCmds: [],        // 该主机历史高频命令(首词),补全候选之一
+    cmdCompQuick: [],       // 快捷命令,补全候选之一
   };
   state.tabs.set(sessionId, tab);
+  // 命令补全候选:异步加载(该主机历史高频 + 快捷命令),一次缓存,不阻塞连接
+  try { window.api.recommendCmds(session.host).then((r) => { if (Array.isArray(r)) tab.cmdCompCmds = r.map((x) => ({ cmd: String(x.command || '').trim().split(/\s+/)[0], desc: x.desc || '' })).filter((x) => x.cmd); }).catch(() => {}); } catch { /* ignore */ }
+  try { window.api.quickList().then((r) => { if (r && r.ok) tab.cmdCompQuick = r.cmds || []; }).catch(() => {}); } catch { /* ignore */ }
   tab.__imeReset = setupImeGuard(term); // 输入法组合状态看护(见 setupImeGuard)
   // vim 等全屏 TUI 退出(备用屏切回普通 buffer)后,xterm 内部 _isComposing 可能残留卡死 →
   // 键盘被当组合吞掉(现象:保存退出后终端无法操作,点窗口外触发 blur 才恢复)。
