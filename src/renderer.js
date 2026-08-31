@@ -385,7 +385,6 @@ const els = {
   setAutoReconnect: $('set-autoreconnect'),
   setVerify: $('set-verify'),
   setAutoTrust: $('set-autotrust'),
-  setRestore: $('set-restore'),
   setClose: $('set-close'),
   ansiEditor: $('ansi-editor'),
   ansiReset: $('ansi-reset'),
@@ -634,8 +633,6 @@ const state = {
     fontFamily: '"SF Mono", Menlo, Consolas, "Courier New", monospace', // 终端字体
     autoReconnect: true,        // 断线自动重连开关
     verifyHostKey: true,        // 服务器指纹校验(known_hosts)
-    restoreOnStartup: false,    // 启动时恢复上次打开的会话(默认关,不自动连)
-    restoreSessions: [],        // 上次打开的会话 id 列表
     sessionLog: true,           // 会话日志落盘开关(默认开)
     settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
@@ -713,12 +710,6 @@ function loadSettings() {
     const raw = localStorage.getItem('jms-settings');
     if (raw) Object.assign(state.settings, JSON.parse(raw));
   } catch { /* ignore */ }
-  // v2 迁移:默认"不自动恢复上次连接的会话"(旧默认是 true,老用户一次改成 false)
-  if (!state.settings.settingsVersion || state.settings.settingsVersion < 2) {
-    state.settings.restoreOnStartup = false;
-    state.settings.settingsVersion = 2;
-    saveSettings();
-  }
   migrateAiVendors(); // 旧版单厂商配置 → 新版多厂商结构
   // v3 迁移:把"没配过 / 还是旧默认 Anthropic 地址"的厂商 url 修正为 DeepSeek Anthropic 兼容端点
   if (!state.settings.settingsVersion || state.settings.settingsVersion < 3) {
@@ -787,7 +778,6 @@ function openSettingsModal() {
   els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
   els.setVerify.checked = state.settings.verifyHostKey !== false;
   els.setAutoTrust.checked = state.settings.autoTrustHostKey === true;
-  els.setRestore.checked = state.settings.restoreOnStartup !== false;
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
@@ -1445,7 +1435,6 @@ async function loadSessions() {
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
-    restoreSessions(); // 数据就绪后恢复上次打开的会话(默认关闭,restoreOnStartup=false 时直接跳过)
     restoreBastionAssets(); // 恢复上次捕获的堡垒机资产(重启不丢;webview 连上后会刷新)
   } else {
     setStatus(`读取会话失败: ${res.error}`, 'var(--red)');
@@ -2097,22 +2086,6 @@ function findTabBySessionId(dbId) {
   return null;
 }
 
-// 保存当前打开的会话 id(用于下次启动恢复)
-function saveRestoreList() {
-  state.settings.restoreSessions = [...state.tabs.values()]
-    .map((t) => t.session && t.session.id)
-    .filter(Boolean);
-  saveSettings();
-}
-
-// 启动时恢复上次打开的会话(自动重连)
-function restoreSessions() {
-  if (state.settings.restoreOnStartup === false) return;
-  for (const id of state.settings.restoreSessions || []) {
-    const s = state.sessions.find((x) => x.id === id);
-    if (s && !findTabBySessionId(id)) connectToServer(s);
-  }
-}
 function batchClear() {
   state.selectedForBatch.clear();
   updateBatchBar();
@@ -7730,7 +7703,6 @@ async function connectToServer(session) {
       });
     }
   } catch { /* ignore */ }
-  saveRestoreList(); // 记录打开列表,用于启动恢复
   recordRecent(sessionId); // 记入"最近连接"
 
   renderLayout();
@@ -7947,6 +7919,7 @@ function closeTab(sessionId) {
   state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
   updateRecordBtn();
   window.api.sshClose(sessionId);
+  clearSftpTransfers(); // 关标签 = 关闭连接,清掉上传/下载记录
   kbdCancelSession(sessionId); // 关标签时取消该会话挂起的 keyboard-interactive 认证挑战
   // 批量/AI 面板里残留该标签的勾选与分屏尺寸,一并清掉,避免计数虚高/集合增长
   state.batchHosts.delete(sessionId);
@@ -7956,7 +7929,6 @@ function closeTab(sessionId) {
   try { t.term.dispose(); } catch { /* ignore */ }
   t.paneEl.remove();
   state.tabs.delete(sessionId);
-  saveRestoreList(); // 更新打开列表
   updateConnectBtn(); // 关闭标签 → 刷新"连接/中断"二合一按钮
   updateBastionSavedBadges(); // 关闭可能带走堡垒机连接的 🔗n 徽标
 
@@ -9733,10 +9705,6 @@ els.setAutoTrust.addEventListener('change', () => {
   state.settings.autoTrustHostKey = els.setAutoTrust.checked;
   saveSettings();
 });
-els.setRestore.addEventListener('change', () => {
-  state.settings.restoreOnStartup = els.setRestore.checked;
-  saveSettings();
-});
 els.setCmdRecord.addEventListener('change', () => {
   state.settings.cmdRecord = els.setCmdRecord.checked;
   saveSettings();
@@ -10541,6 +10509,7 @@ window.api.onSshStatus((sessionId, status) => {
     setStatus('连接已断开', 'var(--red)');
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
     updateRecordBtn();
+    clearSftpTransfers(); // 连接断开 → 传输已不可能继续,清掉本次会话的上传/下载记录
     // 非用户主动关闭、非手动断开 → 自动重连
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   } else if (status.status === 'error') {
@@ -10551,6 +10520,7 @@ window.api.onSshStatus((sessionId, status) => {
     if (t.session && t.session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId, bastionKey: t.session.bastionKey, host: t.session.host, port: t.session.port, account: t.session.username, error: status.error });
     state.recording.delete(sessionId);
     updateRecordBtn();
+    clearSftpTransfers(); // 连接错误 → 同样断开,清传输记录
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   }
 });
