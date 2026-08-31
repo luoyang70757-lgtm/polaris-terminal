@@ -73,6 +73,19 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     else bad('⑤ 无 jobId 兜底', `sent=${sent.length}`);
   }
 
+  // ⑥ 文件切换立即发:同 job 窗口内不同 file(递归/多文件上传)每条都发,保证面板逐文件行
+  {
+    const sent = [];
+    const t = createProgressThrottle({ send: (p) => sent.push(p), intervalMs: 10000 });
+    t.emit({ jobId: 'u6', file: 'a.txt', done: 1, total: 10 });
+    t.emit({ jobId: 'u6', file: 'b.txt', done: 1, total: 10 }); // 同窗口但换文件 → 立即发
+    t.emit({ jobId: 'u6', file: 'b.txt', done: 5, total: 10 }); // 同文件 → 被节流
+    t.emit({ jobId: 'u6', file: 'c.txt', done: 1, total: 10 }); // 换文件 → 立即发
+    if (sent.length === 3 && sent.map((s) => s.file).join(',') === 'a.txt,b.txt,c.txt')
+      ok('⑥ 文件切换立即发(每文件至少一条)');
+    else bad('⑥ 文件切换', `sent=${sent.map((s) => s.file).join(',')}`);
+  }
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
 })();
