@@ -2555,6 +2555,14 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
+  // 空格键组合卡死防御:vim 等 TUI 退出(备用屏切回)后 xterm 内部 _isComposing 可能残留卡死,
+  // 之后的空格被当输入法组合吞掉(现象:打不出空格,其他字符键正常;日志特征:KEY '␣' 出现但无 SEND)。
+  // 在 xterm 处理本 keydown 之前(本 handler 是 window 捕获层,先于 textarea)派发 compositionend
+  // 强制复位 _isComposing,让空格正常输出。真实中文输入(e.isComposing=true)一律不干预。
+  if (inTerm && k === ' ' && !e.isComposing && e.keyCode !== 229) {
+    const ta = e.target;
+    try { if (ta) ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); } catch { /* ignore */ }
+  }
 }, true);
 
 // 焦点迁移:终端 textarea / BODY / 菜单 之间的变化(右键菜单点一下把焦点顶掉就是元凶)
