@@ -54,6 +54,9 @@ var XLSX = __req('xlsx', 'xlsx');
 var appLog = __req('./lib/app-log', 'app-log');
 var tar = __req('tar', 'tar'); // 纯 JS tar:目录打包上传用,不依赖系统 tar(Windows 无系统 tar)
 var sftpSizes = __req('./lib/sftp-sizes', 'sftp-sizes'); // H3C 等设备上传文件真实大小持久化(覆盖显示 0)
+var connectOpts = __req('./lib/connect-opts', 'connect-opts'); // 共享:makeHostVerifier/resolvePrivateKey/withHostVerify
+var sessionGroups = __req('./lib/session-groups', 'session-groups'); // 分组/命令历史归档/快速命令/导入模板 IPC
+var sessionIpc = __req('./lib/session-ipc', 'session-ipc'); // 会话管理/导入导出/系统探测 IPC
 __startupLog('模块加载完成');
 
 // ---------- 安全日志 ----------
@@ -158,6 +161,13 @@ if (process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland') 
 
 const DEV_MODE = process.argv.includes('--dev') || process.env.POLARIS_DEV === '1';
 let mainWindow = null;
+connectOpts.init({ getMainWindow: () => mainWindow }); // 指纹校验弹窗以主窗口为父;mainWindow 延迟可用,闭包惰性读取
+
+// macOS 双击启动检测:未公证 app 经 LaunchServices(双击/Dock)启动时,系统会限制其局域网访问
+// (连接内网主机报 EHOSTUNREACH);命令行/启动器直接跑二进制则正常。检测启动方式,
+// 连接失败时给用户明确提示,避免误判为"主机不可达"。命令行启动无 XPC_SERVICE_NAME 或不是 application.*
+const LAUNCHED_VIA_LAUNCHSERVICES = process.platform === 'darwin' &&
+  !!process.env.XPC_SERVICE_NAME && String(process.env.XPC_SERVICE_NAME).indexOf('application.') === 0;
 
 // ---------- 会话存储(SQLite,内存运行 + 整库加密落盘) ----------
 // 密码解锁后才创建(sessionStore = createStore(解密后的字节))。
@@ -376,216 +386,11 @@ function finalizeAllSessionLogs() {
   for (const sid of Array.from(logSessions.keys())) finalizeSessionLog(sid);
 }
 
-// 跳板机(SSH 代理)配置:会话里的 jump 字段存成 JSON 字符串,其中的密码/口令同样加密
-function packJump(j) {
-  if (!j || !j.host) return '';
-  return JSON.stringify({
-    host: j.host,
-    port: j.port || 22,
-    username: j.username || '',
-    password: j.password ? crypto.encrypt(j.password) : '',
-    private_key: j.private_key || '',
-    passphrase: j.passphrase ? crypto.encrypt(j.passphrase) : '',
-  });
-}
-function unpackJump(s) {
-  if (!s) return null;
-  try {
-    const j = JSON.parse(s);
-    if (!j || !j.host) return null;
-    return {
-      host: j.host, port: j.port, username: j.username,
-      password: j.password ? crypto.decrypt(j.password) : '',
-      private_key: j.private_key || '',
-      passphrase: j.passphrase ? crypto.decrypt(j.passphrase) : '',
-    };
-  } catch { return null; }
-}
-
-// ---------- IPC:会话管理(SQLite) ----------
-// 返回给渲染进程时解密(渲染进程连接要用明文);入库时加密
-ipcMain.handle('sessions:list', () => {
-  try {
-    const sessions = sessionStore.list().map((x) => ({
-      ...x,
-      password: crypto.decrypt(x.password),
-      passphrase: crypto.decrypt(x.passphrase), // 私钥口令同样加密存储
-      jump: unpackJump(x.jump),
-    }));
-    return { ok: true, sessions };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('sessions:create', (_e, s) => {
-  try {
-    const id = sessionStore.create({ ...s, password: crypto.encrypt(s.password), passphrase: crypto.encrypt(s.passphrase), jump: packJump(s.jump) });
-    schedulePersist();
-    return { ok: true, id };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('sessions:update', (_e, id, s) => {
-  try {
-    sessionStore.update(id, { ...s, password: crypto.encrypt(s.password), passphrase: crypto.encrypt(s.passphrase), jump: packJump(s.jump) });
-    schedulePersist();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('sessions:remove', (_e, id) => {
-  try {
-    sessionStore.remove(id);
-    schedulePersist();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('sessions:import', (_e, list) => {
-  try {
-    // 入库前逐条加密密码
-    const encrypted = (Array.isArray(list) ? list : []).map((x) => ({
-      ...x,
-      password: crypto.encrypt(x.password),
-      passphrase: crypto.encrypt(x.passphrase),
-    }));
-    const results = sessionStore.importMany(encrypted);
-    schedulePersist();
-    const okCount = results.filter((r) => r.ok).length;
-    return { ok: true, imported: okCount, total: results.length, results };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// 导出会话为"加密备份文件"(保存对话框)。rows: [{name,host,port,username,password,group}]
-// 内容先生成 CSV,再用导出密码 AES-256-GCM 整体加密 → 文件不是明文,客户端工具打不开
-ipcMain.handle('sessions:export', async (_e, { rows, password }) => {
-  try {
-    if (!password || String(password).length < 4) return { ok: false, error: '导出密码至少 4 位' };
-    const save = await dialog.showSaveDialog(mainWindow, {
-      title: '导出会话(加密备份)',
-      defaultPath: `Polaris会话备份_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}.polaris`,
-      filters: [{ name: 'Polaris 加密备份', extensions: ['polaris'] }],
-    });
-    if (save.canceled || !save.filePath) return { ok: false, canceled: true };
-    // CSV 转义:含逗号/引号/换行的字段加引号包裹,内部引号翻倍
-    const esc = (v) => {
-      const s = String(v ?? '');
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const lines = ['名称,主机,端口,用户名,密码,分组'];
-    for (const r of rows || []) {
-      lines.push([esc(r.name), esc(r.host), esc(r.port || 22), esc(r.username), esc(r.password || ''), esc(r.group || '默认分组')].join(','));
-    }
-    const csv = '﻿' + lines.join('\n');
-    const blob = dbCrypto.encryptBytes(Buffer.from(csv), password); // 整包加密
-    fs.writeFileSync(save.filePath, blob);
-    return { ok: true, path: save.filePath, count: (rows || []).length };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// ---- 从 Xshell(.xsh) / iTerm2(JSON) 导入会话配置 ----
-// Xshell .xsh 是 INI 格式: [CONNECTION] 段里有 Host/Port/UserName;密码被 Xshell 加密无法还原,需重新填
-// iTerm2 导出的 Profiles JSON: { "Profiles": [ { "Name","Host","Port","Username" } ] }
-function parseIniText(text) {
-  const map = {};
-  for (const line of String(text).split(/\r?\n/)) {
-    const m = line.match(/^\s*([^#;=]+?)\s*=\s*(.*?)\s*$/);
-    if (m) map[m[1].trim()] = m[2].trim();
-  }
-  return map;
-}
-ipcMain.handle('sessions:importExternal', async (_e, { files }) => {
-  try {
-    const paths = Array.isArray(files) ? files : [];
-    if (!paths.length) return { ok: false, error: '没有选择文件' };
-    const rows = [];
-    for (const fp of paths) {
-      const base = path.basename(fp);
-      const lower = base.toLowerCase();
-      try {
-        if (lower.endsWith('.xsh')) {
-          const ini = parseIniText(fs.readFileSync(fp, 'utf8'));
-          const host = ini.Host || ini.host || '';
-          const username = ini.UserName || ini.username || '';
-          if (!host) continue;
-          rows.push({ name: base.replace(/\.xsh$/i, '') || host, host, port: parseInt(ini.Port || '22', 10) || 22, username, password: '', group: '默认分组' });
-        } else if (lower.endsWith('.json')) {
-          const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-          const profiles = (data.Profiles || []).filter((p) => p && p.Host);
-          for (const p of profiles) {
-            rows.push({ name: p.Name || p.Host, host: p.Host, port: parseInt(p.Port || '22', 10) || 22, username: p.Username || p.User || '', password: '', group: '默认分组' });
-          }
-        }
-      } catch (err) {
-        console.warn('[MAIN] 导入外部配置失败', base, err.message);
-      }
-    }
-    if (!rows.length) return { ok: false, error: '没有解析出可用的主机(请选 .xsh 或 iTerm2 JSON 导出文件)' };
-    return { ok: true, rows };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// ---- 加密备份导入:读取 .polaris → 解密 → 解析 CSV → 返回行数组(供渲染层走统一导入) ----
-// 简单 CSV 行解析(支持引号包裹的逗号/引号转义)
-function parseCsvLine(line) {
-  const cells = [];
-  let cur = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQ) {
-      if (c === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false;
-      } else cur += c;
-    } else if (c === '"') inQ = true;
-    else if (c === ',') { cells.push(cur); cur = ''; }
-    else cur += c;
-  }
-  cells.push(cur);
-  return cells;
-}
-ipcMain.handle('sessions:importBackup', (_e, { buf, password }) => {
-  try {
-    if (!password) return { ok: false, error: '请输入备份文件密码' };
-    if (!buf || !buf.byteLength) return { ok: false, error: '备份文件为空' };
-    const csv = dbCrypto.decryptBytes(Buffer.from(buf), password).toString('utf8'); // 密码错会抛错
-    const rows = String(csv).replace(/^﻿/, '').split(/\r?\n/).map(parseCsvLine).filter((r) => r.some((c) => String(c).trim() !== ''));
-    return { ok: true, rows };
-  } catch (err) {
-    return { ok: false, error: '密码错误或文件已损坏: ' + err.message };
-  }
-});
-
-// 探测远程系统类型(参考 Netcatty 的 OS 识别):exec 跑 os-release / uname 解析
-ipcMain.handle('sessions:detectOs', async (_e, opts) => {
-  try {
-    const r = await sshClient.execCommand(
-      withHostVerify(resolvePrivateKey(opts)),
-      'cat /etc/os-release 2>/dev/null; uname -s'
-    );
-    const text = r.stdout || '';
-    const pretty = text.match(/PRETTY_NAME="?([^"\n]+)"?/);
-    const id = text.match(/^ID=(\S+)/m);
-    const uname = text.match(/(Darwin|Linux|FreeBSD|SunOS)/);
-    const name = pretty ? pretty[1] : (id ? id[1] : (uname ? uname[1] : 'Linux'));
-    // id 可能带引号(如 ID="centos"),去掉引号再转小写
-    const distro = id ? id[1].replace(/["']/g, '').toLowerCase() : (uname ? uname[1].toLowerCase() : 'linux');
-    return { ok: true, distro, name };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+// ---------- 会话管理 / 导入导出 / 系统探测(已拆到 lib/session-ipc.js,含 packJump/unpackJump) ----------
+sessionIpc.register(ipcMain, {
+  getSessionStore: () => sessionStore, // 惰性:解锁后才赋值
+  schedulePersist,
+  getMainWindow: () => mainWindow,    // 惰性:建窗后才赋值
 });
 
 // ---------- IPC:JumpServer 资产(堡垒机) ----------
@@ -698,7 +503,9 @@ ipcMain.handle('jms:webLogout', async (_e, { origin }) => {
 ipcMain.handle('bastion:clearAll', async () => {
   try {
     const bs = session.fromPartition('persist:bastion');
-    await bs.clearStorageData(); // cookie + localStorage + cache 全清
+    // 清登录态(cookie)+ 缓存,但**保留 localStorage**——H3C 网页的收藏分组存这,
+    // 全清会把它一起丢掉(用户重登后收藏消失)。与退出时的清理行为一致。
+    await bs.clearStorageData({ storages: ['cookies', 'cachestorage', 'serviceworkers'] });
     await bs.clearCache();
     return { ok: true };
   } catch (err) {
@@ -907,7 +714,7 @@ ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
     const results = [];
     for (const s of sessions) {
       try {
-        const conn = await sshClient.connectRaw(withHostVerify(resolvePrivateKey(s)));
+        const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
         const sftp = await sshClient.openSftp(conn);
         await new Promise((res, rej) => sftp.fastPut(localPath, remotePath, (e) => (e ? rej(e) : res())));
         sftp.end();
@@ -935,7 +742,7 @@ ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
       const safeName = String(s.name || 'host').replace(/[\\/:*?"<>|\r\n]+/g, '_').replace(/\.\./g, '_').slice(0, 60) || 'host';
       const localPath = path.join(localDir, `${safeName}_${base}`);
       try {
-        const conn = await sshClient.connectRaw(withHostVerify(resolvePrivateKey(s)));
+        const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
         const sftp = await sshClient.openSftp(conn);
         await new Promise((res, rej) => sftp.fastGet(remotePath, localPath, (e) => (e ? rej(e) : res())));
         sftp.end();
@@ -986,7 +793,7 @@ ipcMain.handle('batch:exec', async (_e, { hosts, command }) => {
     for (const h of (Array.isArray(hosts) ? hosts : [])) {
       const t0 = Date.now();
       try {
-        const opts = withHostVerify(resolvePrivateKey({
+        const opts = connectOpts.withHostVerify(connectOpts.resolvePrivateKey({
           host: h.host, port: h.port || 22, username: h.username, password: h.password,
           privateKey: h.privateKey, passphrase: h.passphrase,
         }));
@@ -1016,7 +823,7 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   // 多主机:每项含连接信息 + 对应终端的 sessionId(命令会同步到这些终端)
   const hostList = (Array.isArray(hosts) ? hosts : []).map((h) => ({
     hostOpts: h && h.host
-      ? withHostVerify(resolvePrivateKey({ host: h.host, port: h.port || 22, username: h.username, password: h.password, privateKey: h.privateKey, passphrase: h.passphrase }))
+      ? connectOpts.withHostVerify(connectOpts.resolvePrivateKey({ host: h.host, port: h.port || 22, username: h.username, password: h.password, privateKey: h.privateKey, passphrase: h.passphrase }))
       : null,
     sessionId: (h && h.sessionId) || null,
   })).filter((x) => x.hostOpts);
@@ -1274,303 +1081,11 @@ ipcMain.handle('kb:openFolder', async () => {
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
-// ---------- IPC:分组管理 ----------
-ipcMain.handle('groups:list', () => {
-  try {
-    return { ok: true, groups: sessionStore.listGroups() };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('groups:create', (_e, name, parentId) => {
-  try {
-    const id = sessionStore.createGroup(name, parentId);
-    schedulePersist();
-    return { ok: true, id };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('groups:rename', (_e, id, name) => {
-  try {
-    sessionStore.renameGroup(id, name);
-    schedulePersist();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('groups:setProd', (_e, id, flag) => {
-  try {
-    sessionStore.setGroupProd(id, !!flag);
-    schedulePersist();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('groups:delete', (_e, id) => {
-  try {
-    sessionStore.deleteGroup(id);
-    schedulePersist();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// 生成"导入模板"Excel:弹保存对话框 → SheetJS 生成带表头和示例行的 xlsx → 写盘
-// ---- 命令记录持久化(SQLite cmd_history 表) ----
-ipcMain.handle('cmd:add', (_e, host, command) => {
-  try { sessionStore.addCmd(host, command); schedulePersist(); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle('cmd:list', () => {
-  try { return { ok: true, cmds: sessionStore.listCmds() }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle('cmd:clear', () => {
-  try { sessionStore.clearCmds(); schedulePersist(); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 智能命令推荐(参考 Chaterm):该主机的历史高频命令 + 内置常用运维命令库合并。
-// host 为空 → 全量统计(全局常用)。纯函数在 lib/recommend.js,可独立单测。
-ipcMain.handle('cmd:recommend', (_e, host) => {
-  try {
-    const rows = sessionStore.listCmdsByHost(host);
-    const list = recommendLib.recommend(rows, { host: host || undefined, limit: 12 });
-    return { ok: true, host: host || null, list };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// AI 命令推荐(参考 Chaterm 的"智能命令推荐"):单次调用(非 agent 循环),
-// 把"主机 + 最近命令历史 + 终端最近输出"给模型,让它推荐一条下一条要执行的命令。
-// 不带工具,模型只输出 { command, reason },渲染层直接可点选执行。
-ipcMain.handle('ai:suggestCmd', async (_e, { apiKey, url, model, format, host, history, context }) => {
-  try {
-    if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
-    const base = normalizeAiUrl(url || '', format || 'openai');
-    const mdl = (model && model.trim()) || 'claude-sonnet-5';
-    const system = `你是一名资深 Linux/运维工程师,内嵌在 SSH 终端工具里。
-用户给你当前主机的上下文(主机标识、最近执行过的命令、终端最近输出),请你推荐**一条**接下来最值得执行的命令。
-要求:
-- 只输出一个 JSON 对象,不要任何多余文字: {"command": "命令", "reason": "一句话中文理由"}
-- command 必须是单条、非交互、能一次执行完的 shell 命令(不要 vim/less/top 这类需要退出的交互程序;用 top -bn1 这类一次性版本)
-- reason 用中文,一句话说明为什么执行它
-- 结合终端输出判断:有报错就推荐排查命令,有磁盘/内存告警就推荐对应的检查命令`;
-    const user = [
-      `当前主机: ${host || '(未知)'}`,
-      history ? `最近执行过的命令(按时间):\n${String(history).slice(0, 1500)}` : '最近执行过的命令: (无)',
-      context ? `终端最近输出(末尾截取):\n${String(context).slice(-1500)}` : '终端最近输出: (空)',
-      '',
-      '请严格按系统要求输出 JSON。',
-    ].join('\n');
-    const r = await callAiStream(base, mdl, format, apiKey, [{ role: 'user', content: user }], null, { systemPrompt: system, tools: [] });
-    if (r.error) return { ok: false, error: r.error };
-    // 尽量解析 JSON;失败则从文本里兜底提取第一行当命令
-    let parsed = null;
-    try { parsed = JSON.parse(String(r.text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch { /* 非严格 JSON */ }
-    if (parsed && parsed.command) {
-      return { ok: true, command: String(parsed.command), reason: parsed.reason || '' };
-    }
-    const lines = String(r.text || '').trim().split('\n').map((x) => x.trim()).filter(Boolean);
-    return { ok: true, command: lines[0] || '', reason: lines.slice(1).join(' ').slice(0, 120) || '' };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// 归档某台主机的命令记录:按当前主机归档,文件名 = 标签页名称_时间戳.txt(不自动打开)
-ipcMain.handle('cmd:archive', async (_e, { host, sessionName }) => {
-  try {
-    const now = new Date();
-    const pad = (x) => String(x).padStart(2, '0');
-    const archiveId = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    const name = String(sessionName || '归档').trim().replace(/[\\/:*?"<>|\s]+/g, '_');
-    const count = sessionStore.archiveCmds(archiveId, host, ''); // 先占位 file
-    if (!count) return { ok: true, archived: 0, path: null };
-    const rows = sessionStore.archiveDetail(archiveId);
-    const dir = path.join(appLock.lockDir(), 'archives');
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `${name}_${archiveId}.txt`);
-    const byHost = {};
-    for (const r of rows) {
-      const h = r.host || '未知主机';
-      if (!byHost[h]) byHost[h] = [];
-      byHost[h].push(r);
-    }
-    let out = `Polaris 命令记录归档  ${archiveId}\n${'='.repeat(50)}\n`;
-    for (const h of Object.keys(byHost)) {
-      out += `\n===== ${h} =====\n`;
-      for (const c of byHost[h]) out += `[${c.created_at}] ${c.command}\n`;
-    }
-    fs.writeFileSync(file, out, 'utf8');
-    // 把文件路径补进批次记录
-    dbSetArchiveFile(archiveId, file);
-    schedulePersist();
-    return { ok: true, archived: count, archiveId, path: file };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// 补写归档批次的文件路径(sessionStore 内部更新)
-function dbSetArchiveFile(archiveId, file) {
-  try { sessionStore.setArchiveFile(archiveId, file); } catch { /* ignore */ }
-}
-
-// 列出某台主机的归档批次(时间倒序)
-ipcMain.handle('cmd:listArchives', (_e, host) => {
-  try { return { ok: true, archives: sessionStore.listArchives(host || '') }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 查看某批归档的明细
-ipcMain.handle('cmd:archiveDetail', (_e, archiveId) => {
-  try { return { ok: true, rows: sessionStore.archiveDetail(archiveId) }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 列出归档文件夹里的文件(时间倒序)
-ipcMain.handle('cmd:listArchiveFiles', () => {
-  try {
-    const dir = path.join(appLock.lockDir(), 'archives');
-    fs.mkdirSync(dir, { recursive: true });
-    const files = fs.readdirSync(dir)
-      .filter((f) => f.endsWith('.txt'))
-      .map((f) => {
-        const st = fs.statSync(path.join(dir, f));
-        return { name: f, size: st.size, mtime: st.mtimeMs };
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-    return { ok: true, files };
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 归档文件路径必须落在 archives 目录内(渲染层传的路径不可信,防任意文件删/拷)
-function isInArchives(filePath) {
-  const dir = path.resolve(appLock.lockDir(), 'archives');
-  const resolved = path.resolve(String(filePath || ''));
-  return resolved === dir || resolved.startsWith(dir + path.sep);
-}
-
-// 下载归档文件:弹保存对话框 → 复制一份到用户选的位置
-ipcMain.handle('cmd:downloadArchive', async (_e, filePath) => {
-  try {
-    const src = String(filePath || '');
-    if (!src || !isInArchives(src)) return { ok: false, error: '归档文件不存在' };
-    const save = await dialog.showSaveDialog(mainWindow, {
-      title: '保存归档文件', defaultPath: path.basename(src),
-      filters: [{ name: '文本文件', extensions: ['txt'] }],
-    });
-    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
-    fs.copyFileSync(src, save.filePath);
-    return { ok: true, path: save.filePath };
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 删除归档:删文件 + 删数据库里对应批次的归档记录
-ipcMain.handle('cmd:deleteArchive', (_e, archiveId, filePath) => {
-  try {
-    if (filePath) {
-      if (!isInArchives(filePath)) return { ok: false, error: '非法路径' };
-      if (fs.existsSync(filePath)) fs.rmSync(filePath);
-    }
-    sessionStore.deleteArchive(String(archiveId || ''));
-    schedulePersist();
-    return { ok: true };
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 打开归档文件夹(查看所有归档文件)
-ipcMain.handle('cmd:openArchives', () => {
-  try {
-    const dir = path.join(appLock.lockDir(), 'archives');
-    fs.mkdirSync(dir, { recursive: true });
-    shell.openPath(dir);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// 导出命令记录为 txt:弹保存对话框 → 按主机分组写入
-// 默认文件名 = 连接名称 + 日期 + 时间(如 我的服务器_2026-08-04_20-55-30.txt)
-// 选择 SSH 私钥文件(原生对话框),返回路径
-ipcMain.handle('pick:keyFile', async () => {
-  try {
-    const r = await dialog.showOpenDialog(mainWindow, {
-      title: '选择 SSH 私钥文件',
-      properties: ['openFile'],
-      filters: [{ name: '私钥文件', extensions: ['*'] }],
-    });
-    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
-    return { ok: true, path: r.filePaths[0] };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-ipcMain.handle('template:save', async () => {
-  try {
-    const save = await dialog.showSaveDialog(mainWindow, {
-      title: '保存导入模板',
-      defaultPath: '主机导入模板.xlsx',
-      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
-    });
-    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
-
-    // 第一个 sheet:主机列表(表头 + 示例行,示例用文档保留网段 192.0.2.x 避免误连)
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['名称', '主机', '端口', '用户名', '密码', '分组'],
-      ['示例服务器A', '192.0.2.10', '22', 'root', 'password123', '生产'],
-      ['', '192.0.2.11', '22', 'ubuntu', '', '测试'],
-    ]);
-    ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 10 }];
-    // 第二个 sheet:填写说明
-    const note = XLSX.utils.aoa_to_sheet([
-      ['填写说明'],
-      ['1. 在"主机列表"表里填你的服务器,首行表头不要动。'],
-      ['2. 每行一台,列顺序:名称,主机,端口,用户名,密码,分组。'],
-      ['3. 名称/端口/密码/分组可留空:名称留空用主机地址,端口默认22,分组默认"默认分组"。'],
-      ['4. 填好后保存,回软件点"导入 → 从 Excel 文件导入"选择本文件。'],
-      ['5. 示例行可直接删掉或用它当格式参照。'],
-    ]);
-    note['!cols'] = [{ wch: 90 }];
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '主机列表');
-    XLSX.utils.book_append_sheet(wb, note, '说明');
-    XLSX.writeFile(wb, save.filePath);
-    return { ok: true, path: save.filePath };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// ---------- IPC:快速命令(命令收藏) ----------
-ipcMain.handle('quick:list', () => {
-  try { return { ok: true, cmds: sessionStore.listQuickCmds() }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle('quick:add', (_e, { name, command }) => {
-  try { const id = sessionStore.addQuickCmd(name, command); schedulePersist(); return { ok: true, id }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle('quick:update', (_e, { id, name, command }) => {
-  try { sessionStore.updateQuickCmd(id, name, command); schedulePersist(); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle('quick:del', (_e, id) => {
-  try { sessionStore.deleteQuickCmd(id); schedulePersist(); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message }; }
+// ---------- 分组 / 命令历史归档 / 快速命令 / 导入模板(已拆到 lib/session-groups.js) ----------
+sessionGroups.register(ipcMain, {
+  getSessionStore: () => sessionStore, // 惰性:解锁后才赋值
+  schedulePersist,
+  getMainWindow: () => mainWindow,    // 惰性:建窗后才赋值
 });
 
 // ---------- IPC:SSH 隧道 / 端口转发 ----------
@@ -1746,45 +1261,6 @@ ipcMain.handle('rec:replay', (_e, id) => {
 // ---------- IPC:SSH 直连 ----------
 // 指纹校验(known_hosts):首次连接询问是否信任,已信任校验一致,不一致拒绝。
 // autoTrust:设置里开了"自动信任新主机密钥" → 未记录的主机直接信任并记录(不弹窗)。
-function makeHostVerifier(host, port, autoTrust) {
-  return (key) => {
-    try {
-      const fp = knownHosts.fingerprint(key);
-      const id = `${host}:${port}`;
-      const known = knownHosts.get(id);
-      if (known) {
-        if (known === fp) return true;
-        dialog.showMessageBoxSync(mainWindow, {
-          type: 'error', title: '安全警告',
-          message: '主机密钥不匹配,可能被中间人攻击!',
-          detail: `${id}\n已记录指纹: ${known}\n本次指纹:   ${fp}`,
-          buttons: ['断开连接'],
-        });
-        return false;
-      }
-      // 自动信任:跳过弹窗,直接记录指纹并放行(仍写入 known_hosts,之后照常校验)
-      if (autoTrust) {
-        knownHosts.set(id, fp);
-        console.warn(`[MAIN] 自动信任新主机 ${id}(指纹 ${fp.slice(0, 20)}…),已写入 known_hosts`);
-        return true;
-      }
-      const r = dialog.showMessageBoxSync(mainWindow, {
-        type: 'question', title: '首次连接',
-        message: `是否信任 ${host}:${port} 的主机密钥?`,
-        detail: `指纹: ${fp}`,
-        buttons: ['信任并连接', '拒绝'],
-        defaultId: 0,
-        cancelId: 1,
-      });
-      if (r === 0) { knownHosts.set(id, fp); return true; }
-      return false;
-    } catch (err) {
-      console.warn('[MAIN] 指纹校验异常,拒绝连接:', err.message);
-      return false;
-    }
-  };
-}
-
 // 跳板机(SSH 代理,等价 ssh -J):先连跳板机,经它 forwardOut 开一条到目标的隧道,
 // 目标 SSH 连接把这条隧道当 sock 用,目标机的认证仍由用户自己的账号完成(跳板只转发字节)。
 // 失败时清理已建的跳板连接并抛出,调用方会走 ssh:connect 的失败分支。
@@ -1792,11 +1268,11 @@ async function openJumpTunnel(sessionId, finalOpts) {
   const j = finalOpts.jump;
   const jport = j.port || 22;
   const jumpConn = await sshClient.connectRaw({
-    ...resolvePrivateKey({
+    ...connectOpts.resolvePrivateKey({
       host: j.host, port: jport, username: j.username || finalOpts.username,
       password: j.password, privateKey: j.private_key || '', passphrase: j.passphrase || '',
     }),
-    hostVerifier: makeHostVerifier(j.host, jport, finalOpts.autoTrustHostKey === true), // 跳板机指纹同样校验
+    hostVerifier: connectOpts.makeHostVerifier(j.host, jport, finalOpts.autoTrustHostKey === true), // 跳板机指纹同样校验
     onKeyboardInteractive: makeKbdResponder(sessionId, { ...finalOpts, host: j.host, port: jport }), // 跳板可能也要域认证/OTP
   });
   jumpConns.set(sessionId, jumpConn);
@@ -1824,25 +1300,6 @@ function closeJump(sessionId) {
     jumpConns.delete(sessionId);
     try { jc.end(); } catch { /* ignore */ }
   }
-}
-
-// 把私钥文件路径换成私钥内容(ssh2 要的是内容不是路径)
-function resolvePrivateKey(opts) {
-  if (!opts || !opts.privateKey) return opts;
-  try {
-    return { ...opts, privateKey: fs.readFileSync(opts.privateKey) };
-  } catch (err) {
-    console.warn('[MAIN] 读取私钥失败:', err.message); // 读不到就保留路径,让 ssh2 报错更清楚
-    return opts;
-  }
-}
-
-// 给"一次性连接"(批量传输/AI 助手/系统探测)也自动装上指纹校验。
-// 规则与 ssh:connect 一致:传了 verifyHostKey:false 就跳过,否则一律校验。
-function withHostVerify(opts) {
-  if (!opts || !opts.host) return opts;
-  if (opts.verifyHostKey === false) return opts;
-  return { ...opts, hostVerifier: makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true) };
 }
 
 // ---------- keyboard-interactive 认证(域/双密码/OTP 挑战) ----------
@@ -1879,10 +1336,10 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
     return { ok: false, error: `会话 ${sessionId} 已存在` };
   }
   try {
-    const finalOpts = resolvePrivateKey({ ...opts }); // 私钥路径 → 内容
+    const finalOpts = connectOpts.resolvePrivateKey({ ...opts }); // 私钥路径 → 内容
     // 默认开启指纹校验;渲染进程可传 verifyHostKey:false 关闭
     if (finalOpts.verifyHostKey !== false) {
-      finalOpts.hostVerifier = makeHostVerifier(finalOpts.host, finalOpts.port, finalOpts.autoTrustHostKey === true);
+      finalOpts.hostVerifier = connectOpts.makeHostVerifier(finalOpts.host, finalOpts.port, finalOpts.autoTrustHostKey === true);
     }
     // keyboard-interactive 挑战 → 渲染层弹窗问用户
     finalOpts.onKeyboardInteractive = makeKbdResponder(sessionId, finalOpts);
@@ -1957,7 +1414,13 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
   } catch (err) {
     console.log('[MAIN] ssh:connect 失败:', err.message); // 日志里能看到失败原因
     closeJump(sessionId); // 目标连接失败也要收掉已开好的跳板隧道(幂等,无跳板时为 no-op)
-    return { ok: false, error: err.message };
+    // macOS 双击启动限制:未公证 app 经 LaunchServices 启动时被系统限制局域网访问 → EHOSTUNREACH。
+    // 命令行/启动器直接跑二进制正常。命中时给用户明确提示,别误判成"主机不可达"。
+    let error = err.message;
+    if (LAUNCHED_VIA_LAUNCHSERVICES && /EHOSTUNREACH|ENETUNREACH/.test(String(err.message || ''))) {
+      error = `${err.message}\n⚠️ 检测到双击启动。macOS 会限制本 app 访问局域网(未公证),请用「启动Polaris.command」或命令行方式启动后重试。`;
+    }
+    return { ok: false, error };
   }
 });
 
@@ -2142,7 +1605,7 @@ async function getSftp(sessionId) {
       delete opts.sock; // 旧连接的跳板隧道 socket 不能复用
       delete opts.hostVerifier; // 指纹校验按需重建
       if (opts.verifyHostKey !== false) {
-        opts.hostVerifier = makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
+        opts.hostVerifier = connectOpts.makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
       }
       const connectOnce = async () => {
         if (opts.jump && opts.jump.host) opts.sock = await openJumpTunnel(sessionId, opts);
