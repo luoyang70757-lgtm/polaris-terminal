@@ -3227,11 +3227,13 @@ app.on('before-quit', () => {
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
   persistDb();             // 再确保数据库落盘
   sftpPartials.save();     // 续传记录兜底落盘(正常路径每次变更已同步写盘,这里无害防漏)
-  // 退出前清除堡垒机浏览器的登录态/记录(cookie)——用户要求:关闭 app 后清除浏览器记录。
+  // 退出前清除堡垒机浏览器的登录态(cookie)+ 缓存,但**保留 localStorage**:
+  // H3C 网页的收藏分组存在 localStorage,全清会把它一起丢掉(用户重登后收藏消失)。
   // 异步执行,不阻塞退出;成功与否都放行。
   try {
     const bastionSession = session.fromPartition('persist:bastion');
-    bastionSession.clearStorageData().catch(() => {});
+    bastionSession.clearStorageData({ storages: ['cookies', 'cachestorage', 'serviceworkers'] }).catch(() => {});
+    bastionSession.clearCache().catch(() => {});
   } catch { /* ignore */ }
   // 收尾全部完成后才关库:close 之后 sessionStore 的所有方法(如 addRecording)都会抛错
   if (sessionStore) { try { sessionStore.close(); } catch { /* ignore */ } }

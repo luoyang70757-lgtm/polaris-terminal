@@ -22,6 +22,11 @@ const SearchAddonClass =
   (window.XTermAddonSearch && window.XTermAddonSearch.SearchAddon) ||
   (window.SearchAddon && window.SearchAddon.SearchAddon) ||
   window.SearchAddon;
+// xterm WebGL 渲染(xterm-addon-webgl 的 UMD 暴露 window.WebglAddon,类在 .WebglAddon,
+// 个别版本直接暴露类 → 兼容两种):
+// 大数据量输出(滚屏/tail 大日志)从 canvas 软渲染换成 GPU 加速,终端更流畅。
+// GPU 不可用/崩溃时 addon 会抛错,这里解析为 null 并靠 loadAddon 的 try/catch 兜底回退。
+const WebglAddonClass = (window.WebglAddon && window.WebglAddon.WebglAddon) || window.WebglAddon || null;
 
 // 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
 const __bootT0 = performance.now();
@@ -1435,7 +1440,9 @@ async function loadSessions() {
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
-    restoreBastionAssets(); // 恢复上次捕获的堡垒机资产(重启不丢;webview 连上后会刷新)
+    // 启动延迟加载:堡垒机资产恢复(读库+渲染)不阻塞首屏,等主界面先出来再异步做。
+    // 资产含 4 位数+时对首帧无感知需求,晚 300ms 显示不影响使用。
+    setTimeout(() => { try { restoreBastionAssets(); } catch { /* ignore */ } }, 300);
   } else {
     setStatus(`读取会话失败: ${res.error}`, 'var(--red)');
   }
@@ -1444,6 +1451,12 @@ async function loadSessions() {
 // 从 SQLite 恢复上次捕获的堡垒机资产(重启不丢)。资产只含名称/IP/账号/目录/收藏,不含密码。
 async function restoreBastionAssets() {
   try {
+    // 手动收藏分组独立恢复:与堡垒机资产解耦,即使资产为空/加载失败也要读取分组
+    // (否则 SQLite 里已持久化的收藏分组重启后不显示,被误认为"没持久化")
+    try {
+      const g = await window.api.bastionListFavGroups();
+      if (g && g.ok && Array.isArray(g.groups)) state.bastionFavGroups = g.groups;
+    } catch { /* 收藏分组读取失败不阻断 */ }
     const r = await window.api.bastionLoadAssets();
     if (!r || !r.ok || !r.byUrl) {
       console.log('[堡垒机] restore: 读取失败或空', r && r.error);
@@ -1492,11 +1505,7 @@ async function restoreBastionAssets() {
         }));
       }
     }
-    // 载入手动收藏分组(用户自建,非 webview)
-    try {
-      const g = await window.api.bastionListFavGroups();
-      if (g && g.ok && Array.isArray(g.groups)) state.bastionFavGroups = g.groups;
-    } catch { /* 收藏分组读取失败不阻断 */ }
+    // 载入手动收藏分组已在函数开头统一处理(与资产解耦)
     if (all.length && stableJson(all) !== stableJson(state.bastionAssets)) {
       // 恢复资产 → H3C 区块默认折叠(左侧分组收起,展开才看)
       state.bastionCollapsed = true;
@@ -2625,6 +2634,7 @@ function setupImeGuard(term) {
   //      (Chromium 向系统申请全新 IME session,OS 层的拦截才真正解除)。
   // 有真实组合(compositionstart 已触发)时一律不干预,打拼音不受影响。
   let processBurst = 0;
+  let imeHintShown = false;
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Process' || e.keyCode === 229) {
       if (composing) { processBurst = 0; return; } // 真实组合中,让 IME 正常走
@@ -2632,6 +2642,12 @@ function setupImeGuard(term) {
       if (++processBurst >= 3) {
         processBurst = 0;
         try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
+        // 连续死键说明输入法(IME)持续激活拦截字符键(命令打不进、空格被选字吞)。
+        // 终端里输命令应切英文输入法;提示一次,不刷屏。
+        if (!imeHintShown && navigator.platform.toUpperCase().includes('WIN')) {
+          imeHintShown = true;
+          try { setStatus('⚠️ 检测到输入法(IME)开启,终端输命令请切换英文输入法(Win+Space)', 'var(--orange)'); } catch { /* ignore */ }
+        }
       }
     } else {
       processBurst = 0; // 有真实按键/正常键进来,复位计数
@@ -7566,13 +7582,22 @@ async function connectToServer(session) {
     fontSize: state.settings.fontSize || 13,
     cursorBlink: true,
     cursorStyle: 'block',
-    scrollback: 5000,
+    scrollback: 3000,
     theme: { ...curTheme.term },
   });
   const fit = new FitAddonClass();
   term.loadAddon(fit);
   const searchAddon = new SearchAddonClass();
   term.loadAddon(searchAddon);
+  // WebGL 渲染(GPU 加速):大数据量滚屏(tail 大日志/编译输出)从 canvas 软渲染换 GPU,更流畅。
+  // GPU 不可用或 context 丢失时 addon 抛错/触发 onContextLoss → 回退默认渲染,不影响使用。
+  if (WebglAddonClass) {
+    try {
+      const wa = new WebglAddonClass();
+      term.loadAddon(wa);
+      if (wa.onContextLoss) wa.onContextLoss(() => { try { wa.dispose(); } catch { /* ignore */ } });
+    } catch { /* GPU 不可用 → 用默认渲染 */ }
+  }
   term.open(paneEl);
   fit.fit();
 
