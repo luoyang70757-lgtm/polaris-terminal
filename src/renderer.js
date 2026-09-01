@@ -5132,6 +5132,7 @@ async function bastionCfgAdd() {
   bastionRenderServerSelect();
   bastionRenderTabs(); // 标签栏同步新堡垒机
   state.collapsedTopBastion = false; // 展开「🛡 堡垒机」分组,让新建的连接立刻可见
+  state.collapsedBastionSaved = false; // 同时展开「已保存堡垒机连接」子区:连接项可见,右键才能编辑/管理
   renderSessionList(els.inputSessionSearch.value); // 左侧堡垒机分组同步显示新连接
   closeBastionCfg(); // 保存后直接关闭弹窗
   // 新增成功即打开右侧浏览器并加载该站点;编辑则回到列表
