@@ -674,6 +674,7 @@ const state = {
   bastionFavFetchAt: 0,     // 上次兜底拉收藏夹树(userFav/getTree)的时间戳(节流)
   bastionCollapsed: true, // H3C 堡垒机区默认折叠(打开堡垒机后左侧分组收起,需展开才看资产)
   collapsedBastionSaved: true, // 左侧"堡垒机连接"分组是否折叠(默认收起,登录后不自动展开)
+  bastionSavedAutoExpanded: false, // 首次有已保存连接时自动展开一次(连接项可见,右键可编辑);用户手动折叠后不再干预
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
   sftp: {
@@ -6038,6 +6039,12 @@ function makeBastionAssetItem(a) {
 function renderBastionSavedSessions(container, f) {
   const saved = bastionServers();
   if (!saved.length) return;
+  // 首次有已保存连接时自动展开「已保存堡垒机连接」子区:连接项可见,右键才能编辑/管理
+  // (用户手动折叠后置位,之后尊重用户选择不再强制展开)
+  if (!state.bastionSavedAutoExpanded) {
+    state.bastionSavedAutoExpanded = true;
+    state.collapsedBastionSaved = false;
+  }
   const kw = (f || '').toLowerCase();
   // 连接本身(名称/URL)命中,或其已加载资产(名称/IP/地址/账号)命中,才显示
   const list = saved.filter((s) => {
@@ -6412,9 +6419,12 @@ function renderBastionInSessionList(container, f) {
   const favCount = all.filter((a) => a.favorite).length;
   // 设备总数不含收藏:收藏主机单独在 ⭐收藏 区块展示(下面分组+主机),不重复计入总数
   const nonFavCount = all.length - favCount;
+  // 当前 H3C 站点对应的已保存堡垒机连接(按 origin 匹配):存在则区块头右键可「编辑连接」
+  const curConn = (state.bastionUrl && bastionServers().find((s) => s && s.url && bastionOrigin(s.url) === bastionOrigin(state.bastionUrl))) || null;
   container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${kw ? list.length : nonFavCount}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
+      ...(curConn ? [{ label: '✏️ 编辑连接', action: () => bastionCfgEdit(curConn.id) }] : []),
       { label: '🔗 批量连接全部', action: () => batchBastionConnect(list) },
       ...(kw ? [{ label: `⭐ 收藏搜索到的 ${list.length} 台…`, action: () => batchFavoriteAssets(list) }] : []),
       { label: '🧹 收起全部分组', action: () => collapseAllBastionGroups() },
