@@ -8585,9 +8585,19 @@ function sftpToggleSelectAll() {
   renderSftpList(); // 重绘会顺带刷新高亮和底部提示
 }
 
-// 计算上一级路径:/a/b/c → /a ; /a → /
+// 计算上一级路径:/a/b/c → /a ; /a → / ; 设备文件系统根(flash:/a/b → flash:/a)也认
 function sftpParent(p) {
-  const clean = p.replace(/\/+$/, '');
+  const clean = String(p || '/').replace(/\/+$/, '');
+  if (!clean) return '/';
+  // H3C Comware 等设备用 flash:/、cfcard:/ 这类文件系统根:路径不是从 / 起算,
+  // 直接按 / 切会算成 "flash:" 这种不存在的路径(点"上一级"后列表读取失败/像没反应)。
+  const m = /^([A-Za-z][A-Za-z0-9_-]*:)(\/.*)?$/.exec(clean);
+  if (m) {
+    const rest = m[2] || '';
+    if (!rest || rest === '/') return `${m[1]}/`; // flash:/ 已是根,再上一级还是它
+    const i = rest.lastIndexOf('/');
+    return i <= 0 ? `${m[1]}/` : m[1] + rest.slice(0, i);
+  }
   const idx = clean.lastIndexOf('/');
   if (idx <= 0) return '/';
   return clean.slice(0, idx);
@@ -8632,10 +8642,14 @@ async function loadSftpList() {
   const sessionId = sftpSession();
   if (!sessionId) return;
   const reqPath = state.sftp.path; // 请求时的目录;响应回来若会话/路径已变 → 过期结果丢弃(防快速切换目录串台)
+  // 立刻给反馈:设备慢(某些 H3C 设备 readdir 要几十秒甚至超时)时,列表要等很久才变,
+  // 旧版这段时间界面毫无动静,用户以为"点了没反应"。这里先上状态栏提示,回来再报结果。
+  setStatus(`正在读取 ${reqPath} …`, 'var(--accent)');
   const res = await window.api.sftpList(sessionId, reqPath);
   if (state.sftp.sessionId !== sessionId || state.sftp.path !== reqPath) return;
   if (!res.ok) {
     els.sftpList.innerHTML = `<div class="sftp-empty">读取失败: ${res.error}</div>`;
+    setStatus(`读取 ${reqPath} 失败: ${res.error}`, 'var(--orange)');
     return;
   }
   // 用 realpath 解析出的绝对路径替换路径栏 —— 仅当请求的是相对路径('.')时。
@@ -8652,6 +8666,10 @@ async function loadSftpList() {
   const t = state.tabs.get(state.sftp.sessionId);
   if (t) t.sftpPath = state.sftp.path;
   renderSftpList();
+  // 读取完成:把开头那句"正在读取…"换成结果;期间别的操作占了状态栏就不动它
+  if (els.toolbarStatus && els.toolbarStatus.textContent === `正在读取 ${reqPath} …`) {
+    setStatus(`已读取 ${state.sftp.path}(${(res.entries || []).length} 项)`, 'var(--text-dim)');
+  }
 }
 
 // 渲染路径栏为可点击面包屑:每段一个按钮,点击直接跳到该目录;
@@ -8995,7 +9013,14 @@ function toggleSftpConnMenu() {
 
 // ---- 工具按钮 ----
 async function sftpGoUp() {
-  state.sftp.path = sftpParent(state.sftp.path);
+  const cur = state.sftp.path || '/';
+  const up = sftpParent(cur);
+  // 已经在根目录:再点也不会变(旧版仍去读一次同目录 —— 慢设备上要等 40s 超时,表现为"点了没反应")
+  if (up === cur) {
+    setStatus(`已在根目录 ${cur},无法再上一级`, 'var(--orange)');
+    return;
+  }
+  state.sftp.path = up;
   loadSftpList();
 }
 

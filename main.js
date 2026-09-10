@@ -1701,6 +1701,12 @@ function resetSftpIfBroken(sessionId, err) {
   }
 }
 
+// 该会话是否有正在跑的 SFTP 传输任务:超时要重置连接时用它挡一下(重置会掐断在传的文件)
+function hasActiveTransfer(sessionId) {
+  for (const j of sftpJobs.values()) { if (j && j.sessionId === sessionId && !j.cancelled) return true; }
+  return false;
+}
+
 // 把目录和文件名拼成远程路径(统一用 / 分隔,处理 root 边界)
 function joinRemote(dir, name) {
   if (dir === '/' || dir === '') return `/${name}`;
@@ -1826,7 +1832,11 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
             done = true;
             __sftpLog('readdir 超时', { sessionId, path: remotePath, ms: Date.now() - _t0 });
             try { if (typeof __startupLog === 'function') __startupLog('sftp:list readdir 超时: ' + remotePath + ' (40s)'); } catch { /* ignore */ }
-            reject(new Error('目录读取超时(40s)'));
+            // 挂死的请求会把整条 SFTP 通道堵住(设备串行处理),不重置则后续每次点击都得再等 40s
+            // —— 用户看到的就是"点了没反应"。有传输在跑时不动它(重置会掐断在传的文件)。
+            const reset = !hasActiveTransfer(sessionId);
+            if (reset) resetSftp(sessionId);
+            reject(new Error('目录读取超时(40s)' + (reset ? ',已重置 SFTP 连接,请重试' : '')));
           }
         }, 40000);
         sftp.readdir(remotePath, (err, list) => {
@@ -1862,9 +1872,7 @@ ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
   } catch (err) {
     __sftpLog('readdir 失败', { sessionId, path: remotePath, ms: Date.now() - _t0, error: err && err.message });
     // 设备级拒绝(General failure/H3C OTP 复用等)→ SFTP 连接已坏,重置让它下次自动重建
-    if (err && /General failure|not connected|channel.*close|connection lost/i.test(String(err.message || err))) {
-      resetSftp(sessionId);
-    }
+    resetSftpIfBroken(sessionId, err);
     return { ok: false, error: err.message };
   }
 });
@@ -2144,7 +2152,7 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
 // 在后台执行一批上传(不阻塞调用方),完成时发 sftp:done
 function startUploadJob(sessionId, remoteDir, localPaths) {
   const jobId = 'u' + (++sftpJobSeq);
-  sftpJobs.set(jobId, { cancelled: false });
+  sftpJobs.set(jobId, { cancelled: false, sessionId });
   setImmediate(async () => {
     try {
       const results = [];
@@ -2168,7 +2176,7 @@ function startUploadJob(sessionId, remoteDir, localPaths) {
 // 在后台执行下载(不阻塞调用方),完成时发 sftp:done;kind='single' 下载单文件,'many' 批量
 function startDownloadJob(sessionId, kind, args) {
   const jobId = 'd' + (++sftpJobSeq);
-  sftpJobs.set(jobId, { cancelled: false });
+  sftpJobs.set(jobId, { cancelled: false, sessionId });
   setImmediate(async () => {
     const shouldCancel = makeShouldCancel(jobId);
     const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId }, p));
