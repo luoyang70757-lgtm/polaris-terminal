@@ -29,7 +29,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.41**。本次会话（v1.0.35→v1.0.40）已提交的重要变化：
+见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.42**。本次会话（v1.0.35→v1.0.40）已提交的重要变化：
 
 - **命令补全**（v1.0.38）：输入命令前缀 ≥2 字符弹候选（内置常用 + 该主机历史高频 + 快捷命令，历史带描述），**Tab 补全 / ↑↓ 选择 / 点击补全，不自动执行**；转义/回车/Ctrl/点击面板外自动关闭；行被服务器改写（dirty）时不补全
 - **性能**（v1.0.37）：主终端 xterm **WebGL 渲染**（GPU 不可用自动回退 canvas）、scrollback 5000→3000、启动延迟加载堡垒机资产
@@ -37,11 +37,12 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 - **堡垒机连接编辑**（v1.0.39/40）：新建连接后自动展开「已保存堡垒机连接」子区；H3C 资产区块头菜单首位有「✏️ 编辑连接」
 - **macOS 双击启动**：检测 LaunchServices 启动 + 内网 EHOSTUNREACH 时，错误消息明确提示用启动器
 
-**v1.0.41 修复的两个交互 bug**：
+**v1.0.41/42 修复的交互 bug**：
 
 - **输入法残留被当输入发到服务器**：空格兜底/焦点复位会派发 synthetic `compositionend`，xterm 的 `_finalizeComposition` 会把**隐藏 textarea 的残留内容**当用户输入 `triggerDataEvent` 发给 SSH（症状：敲 `df -Th` 回车 → 服务端收到 `df -Th T` → `df: T: 没有那个文件或目录`；日志特征：空格键两条 SEND）。修法：统一入口 `resetTermComposition`（renderer.js）——只在 xterm 真卡组合态时复位，且**复位前先清空 textarea**，冲刷内容恒为空
 - **SFTP「⬆ 上一级」点了没反应**：① 已在根目录时旧版仍去重读同目录（H3C 设备 readdir 慢，40s 内界面毫无动静）→ 改为立即提示「已在根目录」且不发请求；② `sftpParent` 认 H3C Comware 的 `flash:/`、`cfcard:/` 文件系统根；③ 读取中/结束都有状态栏反馈；④ readdir 40s 超时后**无传输在跑时重置 SFTP 通道**（旧版挂死的请求会把设备串行 SFTP 堵死，之后每次点击都再等 40s）
 
+- **备用屏切换乱抢焦点**（v1.0.42）：`connectToServer` 里 `buffer.onBufferChange → term.focus()` 无条件补焦点 —— 远端任何全屏程序切备用屏（vim 进入/退出等）都会把焦点从用户正在输入的地方（会话搜索框/路径框/堡垒机地址框）拽回终端，非当前标签也会抢。改为：**只对当前标签、且焦点不在别的输入框里时才补**（"vim 退出后终端仍能输入"的初衷不变）。回归 `verify-bufferfocus.js`、`verify-vim-real.js`
 **调试注意**：测试脚本会 `pkill electron`（含用户正式 app），跑完 e2e 记得重启；功能验证后清理残留 dev 实例（`pkill -9 -f "polaris-terminal/node_modules/electron"`）。
 
-回归测试：`node verify-sftp-stress.js`（SFTP 全链路）、`verify-recommend.js`（命令推荐，拆模块后）、`verify-pack-upload.js`（打包/递归上传）、`verify-sftp-progress-throttle.js`（节流器单测）、`verify-space-composition-flush.js`（输入法残留污染命令行）、`verify-sftp-up.js`（SFTP 上一级/慢读取反馈）。
+回归测试：`node verify-sftp-stress.js`（SFTP 全链路）、`verify-recommend.js`（命令推荐，拆模块后）、`verify-pack-upload.js`（打包/递归上传）、`verify-sftp-progress-throttle.js`（节流器单测）、`verify-space-composition-flush.js`（输入法残留污染命令行）、`verify-sftp-up.js`（SFTP 上一级/慢读取反馈）、`verify-bufferfocus.js`（备用屏切换不抢焦点）。

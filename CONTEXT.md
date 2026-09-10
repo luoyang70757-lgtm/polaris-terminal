@@ -150,4 +150,5 @@ node verify-<功能>.js
 **已解决（2026-09-10，v1.0.41）**：
 - **输入法残留被当输入发到服务器**（renderer.js）：用户报「敲 `df -Th` 回车，服务端收到 `df -Th T` 报 `df: T: 没有那个文件或目录`」。日志取证：空格键每次出现两条 SEND（一条多余的空串/`" T"`，一条正常空格），多出的内容来自 xterm 组合冲刷（见技术决策 24）。修法：统一入口 `resetTermComposition`（只在真卡组合态复位 + 复位前清空 textarea）。复现/回归 `verify-space-composition-flush.js`（改前逐字复现 `SEND " T"`，改后 4/4 通过）；`verify-vim-space.js`（原"vim 退出后空格失效"修复）无回退
 - **SFTP「⬆ 上一级」点了没反应**（renderer.js + main.js）：根目录空转 + readdir 超时后通道不重置（后者是"越点越坏"的放大器，用户 [SFTP] 日志里 8 次 `readdir path:"/"` 40s 超时即此）。修法见技术决策 25。回归 `verify-sftp-up.js`（6/6）、`verify-sftp-panel.js`（5/5）
-- **未修（已定位）**：H3C 连接时 FOCUS 刷屏 —— 根因是 `connectToServer` 无条件 `activateTab` → `term.focus()`，批量连接（`batchBastionConnect` 每 500ms 一台）每台都切激活标签并抢焦点；候选修法：`connectToServer(session, opts)` 加后台模式 + `onBufferChange → term.focus()` 只对激活标签生效
+- **备用屏切换乱抢焦点**（v1.0.42，renderer.js `onBufferChange`）：补焦点加两道前提——只对**当前标签**补（后台标签不抢）、焦点停在别的输入框（`INPUT/TEXTAREA/contentEditable`）时不补。原来远端任何全屏程序切备用屏都会把用户正在别处输入（搜索框/路径框/堡垒机地址框）的焦点拽回终端。回归 `verify-bufferfocus.js`（4/4）、`verify-vim-real.js`（5/5，真实 vim 退出后仍能输入）
+- **待办（已定位、用户要求先不动）**：H3C/批量连接抢焦点 —— 根因是 `connectToServer` 无条件 `activateTab` → `term.focus()`，批量连接（`batchBastionConnect` 每 500ms 一台、`batchSavedAssetConnect` 每 300ms 一台）每台都切激活标签并抢焦点（FOCUS 日志刷屏即此）。候选修法：`connectToServer(session, opts)` 加 `background` 后台模式，批量入口传 `{ background: true }`
