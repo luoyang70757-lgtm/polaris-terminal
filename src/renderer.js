@@ -7888,6 +7888,15 @@ async function connectToServer(session) {
     if (term.buffer && term.buffer.onBufferChange) {
       term.buffer.onBufferChange(() => {
         try { tab.__imeReset && tab.__imeReset(); } catch { /* ignore */ }
+        // 补焦点有前提(否则远端一切备用屏就把用户的焦点抢走):
+        //  ① 只有"用户正在看的这个标签"才补 —— 后台标签(批量连接开出来的)切备用屏不该抢焦点;
+        //  ② 焦点正停在别的输入框里(路径框/搜索框/堡垒机地址框)时不补 —— 否则正在打字就被拽走。
+        // 初衷不变:vim 等全屏程序退出后终端仍能输入(此时焦点通常在 body 或终端自己身上)。
+        if (state.activeSessionId !== sessionId) return;
+        const ae = document.activeElement;
+        const typingElsewhere = !!ae && ae !== term.textarea &&
+          (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable === true);
+        if (typingElsewhere) return;
         try { term.focus(); } catch { /* ignore */ }
       });
     }
