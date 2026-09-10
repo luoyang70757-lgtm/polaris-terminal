@@ -8,9 +8,10 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 ## 本文件要点（快速须知）
 
 - **项目**：Electron 43 + xterm.js + ssh2 + SQLite 的 SSH/SFTP 终端（参考 Chaterm 功能开发）
-- **架构**：单文件主进程 `main.js`（~2600 行）+ 渲染进程 `src/renderer.js`（~9300 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
+- **架构**：主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~9300 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
+- **主进程已拆独立模块**（依赖惰性注入，命脉区块 SFTP/SSH/堡垒机仍在 main.js）：`lib/connect-opts.js`（指纹校验链 makeHostVerifier/resolvePrivateKey/withHostVerify）、`lib/session-groups.js`（分组/命令历史归档/快速命令/导入模板 IPC）、`lib/session-ipc.js`（会话管理/导入导出/系统探测 IPC）
 - **运行 dev**：`POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu`（自动拉起 mock 服务器）
-- **编译正式版**：`npm run dist` → `release/mac/Polaris.app`（未签名，Gatekeeper 需右键打开）
+- **编译正式版**：`npm run dist` → `release/mac/Polaris.app`（未签名）。⚠️ **macOS 双击启动会被系统限制局域网访问（未公证 → 内网 EHOSTUNREACH）**，日常请用桌面「启动Polaris.command」或命令行直接跑二进制
 - **数据目录**：`POLARIS_LOCK_DIR` 指定（默认 `~/.jms-terminal`）；开发用 `.polaris-data/`（**已 gitignore，勿提交**）
 
 ## 安全红线（必须遵守）
@@ -28,4 +29,19 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）：SFTP 家目录探测、面包屑修复、堡垒机（JMS/H3C）对接、全量日志、右键菜单/焦点/刷新稳定性修复均已完成并提交；**堡垒机入口已整合**（头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单，右侧浏览器面板保留）。回归测试 `node verify-bastion-merge.js`。待办见 `CONTEXT.md` 末尾章节。
+见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.41**。本次会话（v1.0.35→v1.0.40）已提交的重要变化：
+
+- **命令补全**（v1.0.38）：输入命令前缀 ≥2 字符弹候选（内置常用 + 该主机历史高频 + 快捷命令，历史带描述），**Tab 补全 / ↑↓ 选择 / 点击补全，不自动执行**；转义/回车/Ctrl/点击面板外自动关闭；行被服务器改写（dirty）时不补全
+- **性能**（v1.0.37）：主终端 xterm **WebGL 渲染**（GPU 不可用自动回退 canvas）、scrollback 5000→3000、启动延迟加载堡垒机资产
+- **SFTP 加固**（v1.0.35）：进度节流（`lib/sftp-progress-throttle.js`，每 job 每 100ms 一条，**文件切换立即发送**保证多文件面板逐行）、120s 传输假死看门狗、stat 30s 超时
+- **堡垒机连接编辑**（v1.0.39/40）：新建连接后自动展开「已保存堡垒机连接」子区；H3C 资产区块头菜单首位有「✏️ 编辑连接」
+- **macOS 双击启动**：检测 LaunchServices 启动 + 内网 EHOSTUNREACH 时，错误消息明确提示用启动器
+
+**v1.0.41 修复的两个交互 bug**：
+
+- **输入法残留被当输入发到服务器**：空格兜底/焦点复位会派发 synthetic `compositionend`，xterm 的 `_finalizeComposition` 会把**隐藏 textarea 的残留内容**当用户输入 `triggerDataEvent` 发给 SSH（症状：敲 `df -Th` 回车 → 服务端收到 `df -Th T` → `df: T: 没有那个文件或目录`；日志特征：空格键两条 SEND）。修法：统一入口 `resetTermComposition`（renderer.js）——只在 xterm 真卡组合态时复位，且**复位前先清空 textarea**，冲刷内容恒为空
+- **SFTP「⬆ 上一级」点了没反应**：① 已在根目录时旧版仍去重读同目录（H3C 设备 readdir 慢，40s 内界面毫无动静）→ 改为立即提示「已在根目录」且不发请求；② `sftpParent` 认 H3C Comware 的 `flash:/`、`cfcard:/` 文件系统根；③ 读取中/结束都有状态栏反馈；④ readdir 40s 超时后**无传输在跑时重置 SFTP 通道**（旧版挂死的请求会把设备串行 SFTP 堵死，之后每次点击都再等 40s）
+
+**调试注意**：测试脚本会 `pkill electron`（含用户正式 app），跑完 e2e 记得重启；功能验证后清理残留 dev 实例（`pkill -9 -f "polaris-terminal/node_modules/electron"`）。
+
+回归测试：`node verify-sftp-stress.js`（SFTP 全链路）、`verify-recommend.js`（命令推荐，拆模块后）、`verify-pack-upload.js`（打包/递归上传）、`verify-sftp-progress-throttle.js`（节流器单测）、`verify-space-composition-flush.js`（输入法残留污染命令行）、`verify-sftp-up.js`（SFTP 上一级/慢读取反馈）。

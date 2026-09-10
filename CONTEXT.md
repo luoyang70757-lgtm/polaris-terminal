@@ -100,6 +100,14 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 15. **gitee 同步**（`scripts/sync-to-gitee.js`）：只依赖 Node 18+ 内置 fetch/FormData，无第三方依赖，CI 和本机都能跑；**10MB 分块** + 每附件 60s 超时 + 失败重试 3 次（2/4s 背退），对抗海外 runner → 国内网络；多个分片文件**逐条**拼接提示，不混进一条 cat 命令拼坏
 16. **主题系统**（renderer.js）：预设只写 term 配色 + `appearance`，UI 变量走 `deriveUiTokens` 派生（dark 面板/边框比 bg 提亮，light 则加深），预设可 `css` 覆盖；`auto` 跟随系统
 17. **断点续传磁盘化**（lib/sftp-partials.js + main.js）：中断点存 `lockDir()/sftp-partials.json`（仿 known-hosts：原子写 + 0600 + 损坏兜底），每次 set/remove **同步落盘**（崩溃/强杀后记录仍在，这是磁盘化的核心价值）；键用**稳定主机身份** `hostId:kind:path`（`hostId` 在 ssh:connect 时补存 = `username@host:port`，JMS 复合用户名区分同网关不同资产；sessionId 每次启动从 sess-1 重计、不能单独做键，否则 A 主机断点会续到 B 主机）；启动时 `prune` 掉 7 天前过期条目防磁盘表无限增长；「判定失效删记录返回 0（全量）」与「续传成功后删记录」语义不变
+18. **main.js 拆模块**（v1.0.38，3263→2712 行）：抽 `lib/connect-opts.js`（makeHostVerifier/resolvePrivateKey/withHostVerify 指纹校验链，被 ssh:connect/批量/AI/导入共用）、`lib/session-groups.js`（分组/命令历史归档/快速命令/导入模板 IPC）、`lib/session-ipc.js`（会话管理/导入导出/系统探测，含 packJump/unpackJump）。**依赖惰性注入**：`register(ipcMain, { getSessionStore, schedulePersist, getMainWindow })`——sessionStore/mainWindow 启动早期不可用，传 getter 不取快照。SFTP/SSH/堡垒机等被数据管线重度消费的命脉区块**未拆**（拆分需同步改消费方，收益/风险不成比例）
+19. **命令补全**（v1.0.38，renderer.js）：输入命令前缀 ≥2 字符弹候选（内置常用命令数组 + `recommendCmds(host)` 该主机历史高频带 desc + 快捷命令首词），**Tab 补全选中 / ↑↓ 切换 / 点击补全，不自动执行**；转义/回车/Ctrl+C/U/点击面板外自动关闭；**dirty 保护**（行被服务器改写时不补全，避免误删输入）；只补全命令词（第一个词），不做路径/参数（远程文件系统不可知）
+20. **SFTP 进度节流**（v1.0.35/38，lib/sftp-progress-throttle.js）：每 job 每 100ms 发一条，完成 flush 补终态；**文件切换（`p.file` 变化）立即发送**——多文件/递归上传保证面板每文件一行（verify-pack-upload 回归点）
+21. **macOS 双击启动限制**（v1.0.38，main.js `LAUNCHED_VIA_LAUNCHSERVICES`）：未公证 app 经 LaunchServices 启动被系统限制局域网访问（内网 EHOSTUNREACH）；命令行/启动器直接跑二进制正常。检测 `process.env.XPC_SERVICE_NAME` 以 `application.` 开头 → 连接 EHOSTUNREACH 时错误消息追加提示用启动器。**日常用桌面「启动Polaris.command」**
+22. **H3C 网页收藏持久化**（v1.0.38，main.js）：退出与 `bastion:clearAll` 都改为 `clearStorageData({storages:['cookies','cachestorage','serviceworkers']})` + clearCache——**保留 localStorage**（H3C 网页收藏分组存这），只清登录态 cookie；全清会把收藏一起丢（用户重登后收藏消失）
+23. **堡垒机连接编辑入口**（v1.0.39/40，renderer.js）：新建连接后 `collapsedBastionSaved=false` 展开子区（连接项可见）；首次有已保存连接时 `bastionSavedAutoExpanded` 自动展开一次；H3C 资产区块头菜单首位加「✏️ 编辑连接」（当前站点按 `bastionOrigin` 匹配已保存连接）
+24. **xterm 组合态复位唯一入口**（v1.0.41，renderer.js `resetTermComposition`）：xterm 5.x 的 `CompositionHelper._finalizeComposition` 会把**隐藏 textarea 的内容**当作用户刚输入的文字 `triggerDataEvent` 发给 SSH（异步分支 `substring(start)`、同步分支 `substring(start,end)`），而 textarea 平时就残留按键字符（实测敲一次空格后 `textarea.value === " "`），组合位置又可能是上次输入法组合的旧值 → **"复位组合态"这个动作本身会把残留字符插进命令行**（用户实测 `df -Th` → `df -Th T`）。两道保险：① 只在 xterm 真卡组合态（`_compositionHelper.isComposing || _isSendingComposition`，取不到退回 DOM `.composition-view.active`）时才派发 `compositionend`；② **派发前先清空 textarea**，冲刷内容恒为空。三处调用点（空格兜底 / 失焦·聚焦复位 / 死键 229）统一走它
+25. **SFTP 上一级与慢读取反馈**（v1.0.41，renderer.js `sftpGoUp`/`sftpParent`/`loadSftpList` + main.js `sftp:list`）：① 已在根目录（H3C 会话常见 path=`/`）时旧版仍重读同目录 → 改为直接提示、不发请求；② `sftpParent` 认 `flash:/`、`cfcard:/` 设备文件系统根（旧版会切出 `flash:` 这种不存在路径）；③ 发起读取立刻状态栏「正在读取 …」、结束换「已读取 …（N 项）」/失败报原因——设备慢也不再"点了没反应"；④ readdir 40s 超时时，**无传输任务（`hasActiveTransfer`）在跑才 `resetSftp`**：挂死请求会堵住设备串行 SFTP 通道，不重置则后续每次点击都再等 40s；有传输在跑不动它（重置会掐断在传文件）
 
 ## 运行与调试
 
@@ -129,3 +137,17 @@ node verify-<功能>.js
 **已解决（2026-08-25，历史会话复盘）**：**历史最高频问题——左侧堡垒机（尤其 H3C）获取不到资产列表 /「未捕获到资产」**，跨 4 个会话出现 15+ 次。它是一串根因而非单个 bug，已在 v1.0.2→v1.0.12 逐个铲除，关键节点：v1.0.2 `4ac370d`（API 写死 getAccessViewTree → 改读浏览器真实请求体 paths）、v1.0.3 `c7a28de`（钩子注入死锁）、v1.0.8/9 `8b331c2` + `5c63ff2`（**根因**：注入脚本正则被宿主模板解码破坏 → 钩子永远进不去）、v1.0.12 `f5b5401`（H3C 会话保活放宽到面板隐藏也运行）、08-25 未打 tag（JMS/H3C 共性问题：折叠层级把资产藏起来 → 登录后默认展开）。**判断依据**：v1.0.13 起用户抱怨转移到显示层（分组重复 `df6f473`、收藏分组 `66d4184`/`2a8fffc`/`471aab2`，均已修），资产捕获链路本身是通的（确认 870/879 台设备 dirs 含根），当前 v1.0.18「获取不到资产列表」本体不再出现。**遗留**：SFTP 偶发目录读取超时/大文件传输失败——根因是 v1.0.11 加的 stat 探测挂住 H3C 串行 SFTP 通道，v1.0.17 `5dbb8ef` 移除修复，v1.0.18 `0076967` 加 [SFTP] 调试日志，等真实设备复现后按日志收尾
 - **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析，待执行）：A 类冗余——SFTP 传输历史双份记录、堡垒机面板三重选控件、堡垒机入口重复；B 类健壮性——右侧固定宽面板可同时全开把终端挤没（`min-width:0`）、面板尺寸记忆不一致
 - **主题/字体优化**（`docs/theme-font-optimization.md`，2026-08-23 分析，待执行）：ANSI 16 色全局一份换主题不变（Termius 每主题自带调色板，核心差距）、前 8 套预设硬编码 css 与派生值漂移、字体列表缺 Nerd Font/自定义入口
+
+**已解决（2026-09-01，v1.0.35→v1.0.40）**：
+- **SFTP 大文件上传加固**（v1.0.35）：进度节流（lib/sftp-progress-throttle.js，高频进度不再打满渲染层）、120s 传输假死看门狗（连接假死主动终止）、stat 30s 超时（H3C 串行通道挂住不阻塞）；断开/关标签清空传输记录、彻底移除启动自动连接（v1.0.35）
+- **性能**（v1.0.37）：主终端 xterm WebGL 渲染（GPU 不可用自动回退 canvas）、scrollback 5000→3000、启动延迟加载堡垒机资产（300ms 后异步）
+- **main.js 拆模块 + 命令补全 + macOS 启动提示 + H3C 收藏持久化 + 节流文件切换修复**（v1.0.38，见关键技术决策 18-23）
+- **堡垒机连接编辑入口**（v1.0.39/40）：新建连接自动展开子区 + H3C 资产区块头「编辑连接」——用户"左侧连接没编辑功能"根因是已保存连接子区默认折叠 + 资产区块头无编辑入口，非功能缺失
+- 完整回归：14 项 verify 脚本全过（含 verify-pack-upload 抓到节流文件切换回归并修复）
+
+**遗留**：macOS 双击启动网络限制**根治需公证**（无 Apple 证书，短期保留启动器方案）；「UI 布局优化」「主题/字体优化」两份 docs 清单仍待执行；H3C 网页收藏若要彻底 SQLite 化（跨设备/清 localStorage 也不丢）需读取 H3C 网页 localStorage 结构设计捕获，当前靠"保留 localStorage"兜底。
+
+**已解决（2026-09-10，v1.0.41）**：
+- **输入法残留被当输入发到服务器**（renderer.js）：用户报「敲 `df -Th` 回车，服务端收到 `df -Th T` 报 `df: T: 没有那个文件或目录`」。日志取证：空格键每次出现两条 SEND（一条多余的空串/`" T"`，一条正常空格），多出的内容来自 xterm 组合冲刷（见技术决策 24）。修法：统一入口 `resetTermComposition`（只在真卡组合态复位 + 复位前清空 textarea）。复现/回归 `verify-space-composition-flush.js`（改前逐字复现 `SEND " T"`，改后 4/4 通过）；`verify-vim-space.js`（原"vim 退出后空格失效"修复）无回退
+- **SFTP「⬆ 上一级」点了没反应**（renderer.js + main.js）：根目录空转 + readdir 超时后通道不重置（后者是"越点越坏"的放大器，用户 [SFTP] 日志里 8 次 `readdir path:"/"` 40s 超时即此）。修法见技术决策 25。回归 `verify-sftp-up.js`（6/6）、`verify-sftp-panel.js`（5/5）
+- **未修（已定位）**：H3C 连接时 FOCUS 刷屏 —— 根因是 `connectToServer` 无条件 `activateTab` → `term.focus()`，批量连接（`batchBastionConnect` 每 500ms 一台）每台都切激活标签并抢焦点；候选修法：`connectToServer(session, opts)` 加后台模式 + `onBufferChange → term.focus()` 只对激活标签生效
