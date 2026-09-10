@@ -2570,11 +2570,14 @@ window.addEventListener('keydown', (e) => {
   dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
   // 空格键组合卡死防御:vim 等 TUI 退出(备用屏切回)后 xterm 内部 _isComposing 可能残留卡死,
   // 之后的空格被当输入法组合吞掉(现象:打不出空格,其他字符键正常;日志特征:KEY '␣' 出现但无 SEND)。
-  // 在 xterm 处理本 keydown 之前(本 handler 是 window 捕获层,先于 textarea)派发 compositionend
-  // 强制复位 _isComposing,让空格正常输出。真实中文输入(e.isComposing=true)一律不干预。
+  // 在 xterm 处理本 keydown 之前(本 handler 是 window 捕获层,先于 textarea)复位组合态,让空格正常输出。
+  // 只复位"真卡住"的终端,且复位前清空隐藏 textarea —— 否则 xterm 会把 textarea 里的残留字符
+  // 当用户输入发给服务器(症状:敲空格后命令行多出 " T" 之类字符,见 resetTermComposition)。
+  // 真实中文输入(e.isComposing=true)一律不干预。
   if (inTerm && k === ' ' && !e.isComposing && e.keyCode !== 229) {
-    const ta = e.target;
-    try { if (ta) ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); } catch { /* ignore */ }
+    for (const t of state.tabs.values()) {
+      if (t.term && t.term.textarea === e.target) { resetTermComposition(t.term); break; }
+    }
   }
 }, true);
 
@@ -2588,6 +2591,35 @@ document.addEventListener('focusin', (e) => {
   if (isTerm || isBody || onMenu) dlog('FOCUS', `→ ${termElInfo(ae)}${isTerm ? ' (终端)' : isBody ? ' (BODY!)' : ' (菜单)'}`);
 }, true);
 
+// ---- xterm 组合态复位(唯一入口)----
+// 为什么单独抽出来:xterm 5.x 的 CompositionHelper._finalizeComposition 会把**隐藏 textarea 里的内容**
+// 当成"用户刚输入的文字" triggerDataEvent 发给 SSH(异步分支 substring(start)、同步分支 substring(start,end));
+// 而 textarea 平时就残留着按键字符(实测:敲一次空格后 textarea.value === " "),组合位置 start/end 又可能
+// 是上一次输入法组合留下的旧值 —— 于是"复位组合态"这个动作本身会把残留字符插进命令行。
+// 实测(v1.0.40):敲 `df -Th` 回车 → 服务端收到 `df -Th T` → `df: T: 没有那个文件或目录`
+// (日志特征:空格键出现两条 SEND —— 一条 ""/" T",一条正常的 " ")。
+// 两道保险:① 只在 xterm 真的卡在组合态(isComposing / _isSendingComposition)时才派发 compositionend;
+//          ② 派发前先清空 textarea,保证冲刷内容为空(xterm 内部结构即便变动也发不出脏数据)。
+function termCompositionStuck(term) {
+  // xterm 5.3 把 CompositionHelper 挂在 Terminal 上(_compositionHelper),两处内部字段都用上
+  try {
+    const ch = term && term._compositionHelper;
+    if (ch) return !!(ch.isComposing || ch._isSendingComposition);
+  } catch { /* ignore */ }
+  try {
+    // 退回 DOM 信号:组合视图带 active 类 ⇔ xterm 认为正在组合(compositionstart 加、finalize 去)
+    const view = term && term.element && term.element.querySelector('.composition-view');
+    if (view) return view.classList.contains('active');
+  } catch { /* ignore */ }
+  return true; // 两个信号都取不到 → 保守复位(此时 textarea 已清空,不会发脏数据)
+}
+function resetTermComposition(term) {
+  const ta = term && term.textarea;
+  if (!ta) return false;
+  if (!termCompositionStuck(term)) return false;
+  try { ta.value = ''; } catch { /* ignore */ }
+  try { ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); return true; } catch { return false; }
+}
 // ---- 中文输入法不定时失效修复 ----
 // 症状:拼音候选窗偶尔弹不出来,按键直接以纯字母形式上屏/发到服务器。
 // 根因:fcitx5/ibus 等输入法在「切标签 / 终端失焦 / 窗口失焦」时不会触发 xterm 隐藏
@@ -2608,9 +2640,9 @@ function setupImeGuard(term) {
     composing = false;
     try {
       if (wasComposing) ta.value = ''; // 真实组合的残留 preedit 才清空,避免把拼音误提交
-      // 无条件派发 compositionend:清除 xterm 内部 _isComposing 卡死状态
-      // (vim 等全屏 TUI 退出后可能残留,键盘输入被当组合吞掉;只有窗口失焦触发 textarea blur 才恢复)
-      ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true }));
+      // 清除 xterm 内部 _isComposing 卡死状态(vim 等全屏 TUI 退出后可能残留,键盘输入被当组合吞掉)。
+      // 走统一入口:内部先清空 textarea,否则 xterm 会把残留字符当输入发给服务器。
+      resetTermComposition(term);
     } catch { /* ignore */ }
   };
   ta.addEventListener('compositionstart', () => {
@@ -2642,7 +2674,7 @@ function setupImeGuard(term) {
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Process' || e.keyCode === 229) {
       if (composing) { processBurst = 0; return; } // 真实组合中,让 IME 正常走
-      try { ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); } catch { /* ignore */ }
+      try { resetTermComposition(term); } catch { /* ignore */ }
       if (++processBurst >= 3) {
         processBurst = 0;
         try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
