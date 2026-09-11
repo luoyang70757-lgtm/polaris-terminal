@@ -6283,7 +6283,10 @@ function renderBastionSavedSessions(container, f) {
       } else if (isH3CSavedConn(s)) {
         // H3C 站点资产来自右侧浏览器 webview 捕获(state.bastionAssets),按业务目录分组
         // 直接渲染在这个连接下面(与 JMS 连接一致),而不是只放单独的「🌐 H3C 堡垒机」区块。
-        const mine = (!state.bastionUrl || bastionOrigin(s.url) === state.bastionUrl) ? state.bastionAssets : [];
+        // 资产只对"当前浏览的站点"有效(state.bastionAssets 是单站点内存缓存):
+        // 非当前站点不能拿它冒充 —— 否则展开别的 H3C 连接会误报"未捕获到资产/登录失效"
+        const isCurrentSite = !state.bastionUrl || bastionOrigin(s.url) === state.bastionUrl;
+        const mine = isCurrentSite ? state.bastionAssets : [];
         const h3cList = kw ? mine.filter((a) => bastionAssetMatch(a, kw)) : mine;
         if (h3cList.length) {
           const dirMap = new Map();
@@ -6306,6 +6309,9 @@ function renderBastionSavedSessions(container, f) {
             assetsWrap.appendChild(ghead);
             for (const a of arr) assetsWrap.appendChild(makeBastionAssetItem(a));
           }
+        } else if (!isCurrentSite) {
+          assetsWrap.textContent = '资产按站点加载:该连接不是当前浏览的站点。右键本行「🔄 拉取资产」会切到该站点并拉取'
+            + (state.bastionUrl ? `(当前:${String(state.bastionUrl).replace(/^https?:\/\//, '')})` : '');
         } else {
           assetsWrap.textContent = '未捕获到资产:请在右侧浏览器完成登录与双因素认证,通过后资产自动捕获;或点「🔄 拉取资产」立即同步'
             + (bastionDiagHint ? ` [${bastionDiagHint}]` : '');
@@ -8607,9 +8613,12 @@ function trackShellCwd(tab, cmdLine) {
   } catch { /* ignore */ }
 }
 
-// 把名字拼进当前目录,得到完整远程路径
+// 把名字拼进当前目录,得到完整远程路径。
+// 目录自身以 / 结尾时不再补分隔符 —— 根 "/" 与设备文件系统根 "flash:/" 都属于这种
+// (旧版只特判 "/",flash:/ 会拼成 flash://x,进目录/上传/删除路径全错)
 function sftpJoin(name) {
-  return state.sftp.path === '/' ? `/${name}` : `${state.sftp.path}/${name}`;
+  const p = String(state.sftp.path || '/');
+  return p.endsWith('/') ? `${p}${name}` : `${p}/${name}`;
 }
 
 // 多选集合 → 当前目录里真正选中的条目列表(按 remotePath 匹配)
@@ -8732,42 +8741,44 @@ async function loadSftpList() {
 function renderSftpPath(path) {
   const el = els.sftpPath;
   el.innerHTML = '';
-  const segs = path.split('/').filter(Boolean); // 拆段;根目录 = 空
-  const parts = segs.map((seg, i) => ({ name: seg, path: '/' + segs.slice(0, i + 1).join('/') }));
-  if (parts.length === 0) {
-    // 根目录:单个"／"段
-    const root = document.createElement('button');
-    root.className = 'sftp-path-seg root active';
-    root.textContent = '/';
-    root.title = '跳转到根目录';
-    root.addEventListener('click', () => { if (state.sftp.path !== '/') { state.sftp.path = '/'; loadSftpList(); } });
-    el.appendChild(root);
-  } else {
-    // 面包屑:根段显示 "/" 且不带前导分隔符,之后每段前加一个 "/" 分隔符。
-    // 这样 /root 视觉上 = [根 /][root](分隔符 "/" 是段之间的路径拼接,
-    // 不再额外渲染成 //root —— 根段自身就是路径的开头)。
-    let first = true;
-    for (const p of parts) {
-      if (!first) {
-        const sep = document.createElement('span');
-        sep.className = 'sftp-path-sep';
-        sep.textContent = '/';
-        el.appendChild(sep);
-      }
-      const btn = document.createElement('button');
-      btn.className = 'sftp-path-seg';
-      btn.textContent = (first ? '/' : '') + p.name; // 首段前带根 "/",后续段由分隔符拼接
-      btn.title = `跳转到 ${p.path}`;
-      const target = p.path;
-      btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
-      el.appendChild(btn);
-      first = false;
+  const full = String(path || '/');
+  // 设备文件系统根(H3C Comware 的 flash:/、cfcard:/):"x:/" 整体当根段,后续段按 / 累加。
+  // 旧版按 "/" 盲切,flash:/ 会被渲染成 "/flash:"(点它跳到不存在的路径)。
+  const devRoot = /^([A-Za-z][A-Za-z0-9_-]*:)\//.exec(full);
+  const rootLabel = devRoot ? devRoot[1] + '/' : '/';
+  const rest = devRoot ? full.slice(rootLabel.length) : full.replace(/^\/+/, '');
+  const segs = rest.split('/').filter(Boolean); // 拆段;根目录 = 空
+  // 根段:unix 是 "/",设备是 "flash:/";无子段时它自己就是"当前目录"
+  const root = document.createElement('button');
+  root.className = 'sftp-path-seg root' + (segs.length ? '' : ' active');
+  root.textContent = rootLabel;
+  root.title = `跳转到 ${rootLabel}`;
+  root.addEventListener('click', () => { if (state.sftp.path !== rootLabel) { state.sftp.path = rootLabel; loadSftpList(); } });
+  el.appendChild(root);
+  // 逐段累加(每段都是可直接跳转的完整路径);根段自带结尾 "/",故首个子段前不再插分隔符
+  let acc = rootLabel;
+  let prevEndsSlash = true;
+  for (const seg of segs) {
+    if (!prevEndsSlash) {
+      const sep = document.createElement('span');
+      sep.className = 'sftp-path-sep';
+      sep.textContent = '/';
+      el.appendChild(sep);
     }
-    // 当前完整路径高亮最后一段
-    const last = el.querySelector('.sftp-path-seg:last-of-type');
-    if (last) last.classList.add('active');
+    acc = acc.endsWith('/') ? acc + seg : acc + '/' + seg;
+    const target = acc;
+    const btn = document.createElement('button');
+    btn.className = 'sftp-path-seg';
+    btn.textContent = seg;
+    btn.title = `跳转到 ${target}`;
+    btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
+    el.appendChild(btn);
+    prevEndsSlash = false;
   }
-  el.title = `当前目录: ${path}\n(点路径段可直接跳转)`;
+  // 当前完整路径高亮最后一段
+  const last = el.querySelector('.sftp-path-seg:last-of-type');
+  if (last) last.classList.add('active');
+  el.title = `当前目录: ${full}\n(点路径段可直接跳转)`;
   el.scrollLeft = el.scrollWidth; // 滚动到末尾,总是看到当前所在目录
 }
 
