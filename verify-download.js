@@ -47,7 +47,7 @@ async function ev(c, expr) {
 
 async function main() {
   fs.writeFileSync(OUT, '');
-  const PORT = 9401, SSH = 2234, HTTP = 8134;
+  const PORT = 9401, SSH = 2224, HTTP = 8134;
   const DIR = fs.mkdtempSync(os.tmpdir() + '/polaris-dl-');
   const DL = fs.mkdtempSync(os.tmpdir() + '/polaris-dl-out-');
   freePort(PORT); freePort(SSH); freePort(HTTP);

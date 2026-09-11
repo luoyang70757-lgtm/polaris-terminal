@@ -45,7 +45,7 @@ async function ev(c, expr) {
 
 async function main() {
   fs.writeFileSync(OUT, '');
-  const PORT = 9398;
+  const PORT = 9389;
   const DIR = fs.mkdtempSync(os.tmpdir() + '/polaris-sftpflash-');
   freePort(PORT);
   const app = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {

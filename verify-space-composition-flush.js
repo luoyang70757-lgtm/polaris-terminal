@@ -17,7 +17,7 @@ const { freePort, killTree, guardTimeout } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-spflush-'));
-const PORT = 9361, SSH = 2231;
+const PORT = 9354, SSH = 2221;
 // 先清掉本项目残留 dev 实例:它们占着 mock/CDP 端口时 app 会起不来(targets 未就绪)
 try { execSync('pkill -f "polaris-terminal/node_modules/electron" 2>/dev/null'); } catch { /* 无残留 */ }
 const sleep0 = (ms) => new Promise((r) => setTimeout(r, ms));

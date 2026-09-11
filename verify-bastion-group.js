@@ -1,7 +1,7 @@
 'use strict';
 /** verify-bastion-group.js — 回归:堡垒机资产按「全部所属目录」分组(设备可在多个目录重复显示,与网页一致)
  * 覆盖:①渲染分组:dirs=[A,B] 的设备同时出现在 A、B 两组,组计数=该目录全部设备数
- *       ②注入钩子的 dirs 累积逻辑:同一设备被多个目录匹配时全部记录
+ *       ②dirs 累积逻辑(bastionMergeDirBatch / mergeBastionCapture):同一设备被多个目录匹配时全部记录
  * 运行: node verify-bastion-group.js(--dev 临时数据目录)
  */
 const { spawn } = require('child_process');

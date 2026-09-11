@@ -11,7 +11,7 @@ const { freePort, killTree, guardTimeout } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-autofill-'));
-const PORT = 9368, SSH = 2243;
+const PORT = 9359, SSH = 2243;
 freePort(PORT); freePort(SSH);
 process.env.MOCK_SSH_PORT = String(SSH);
 process.env.MOCK_HTTP_PORT = String(SSH + 100);

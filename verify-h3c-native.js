@@ -15,7 +15,7 @@ const OUT = path.join(os.tmpdir(), 'verify-h3c-native-result.txt');
 try { fs.writeFileSync(OUT, ''); } catch {}
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-h3cn-'));
-const PORT = 9383, SSH = 2246, HTTP = 8146;
+const PORT = 9383, SSH = 2241, HTTP = 8146;
 function freePort(p){ try{ execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`);}catch{} }
 function killTree(proc){ try{ if(proc&&proc.pid) process.kill(-proc.pid,'SIGKILL'); }catch{} }
 freePort(PORT); freePort(SSH); freePort(HTTP);

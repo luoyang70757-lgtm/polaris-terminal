@@ -12,7 +12,7 @@ const OUT = path.join(os.tmpdir(), 'verify-kb-result.txt');
 try { fs.writeFileSync(OUT, ''); } catch {}
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-kb-'));
-const PORT = 9371, SSH = 2236, HTTP = 8136, AI_PORT = 9372;
+const PORT = 9369, SSH = 2236, HTTP = 8136, AI_PORT = 9372;
 function freePort(p){ try{ execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`);}catch{} }
 function killTree(proc){ try{ if(proc&&proc.pid) process.kill(-proc.pid,'SIGKILL'); }catch{} }
 freePort(PORT); freePort(SSH); freePort(HTTP); freePort(AI_PORT);

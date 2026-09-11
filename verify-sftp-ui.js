@@ -46,7 +46,7 @@ async function ev(c, expr) {
 
 async function main() {
   fs.writeFileSync(OUT, '');
-  const PORT = 9413, SSH = 2236, HTTP = 8136;
+  const PORT = 9413, SSH = 2226, HTTP = 8142;
   const DIR = fs.mkdtempSync(os.tmpdir() + '/polaris-sftpui-');
   freePort(PORT); freePort(SSH); freePort(HTTP);
   const app = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {

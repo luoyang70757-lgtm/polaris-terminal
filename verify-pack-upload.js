@@ -31,7 +31,7 @@ MK(path.join(LOCAL, 'SizeDir'));
 fs.writeFileSync(path.join(LOCAL, 'SizeDir', 'big.dat'), Buffer.alloc(5000, 7));
 fs.writeFileSync(path.join(LOCAL, 'SizeDir', 'small.txt'), 'hello size\n');
 
-const PORT = 9361, SSH = 2229;
+const PORT = 9350, SSH = 2220;
 freePort(PORT); freePort(SSH);
 process.env.MOCK_SSH_PORT = String(SSH);
 process.env.MOCK_HTTP_PORT = String(SSH + 100);

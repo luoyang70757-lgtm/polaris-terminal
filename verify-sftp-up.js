@@ -12,7 +12,7 @@ const { freePort, killTree, guardTimeout } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-sftpup-'));
-const PORT = 9363, SSH = 2233;
+const PORT = 9363, SSH = 2223;
 try { execSync('pkill -f "polaris-terminal/node_modules/electron" 2>/dev/null'); } catch { /* 无残留 */ }
 freePort(PORT); freePort(SSH);
 process.env.MOCK_SSH_PORT = String(SSH);
@@ -84,6 +84,31 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     const wrong = parsed.filter(([i, o], k) => o !== cases[k][1]);
     if (!wrong.length) ok('sftpParent 路径计算正确(含 flash:/ 设备根)');
     else bad('sftpParent 计算错误', JSON.stringify(wrong));
+
+    // ①b sftpJoin:目录自身以 / 结尾时不再补分隔符(根 "/" 与设备根 "flash:/")
+    const joins = await ev(c, `JSON.stringify([['/', 'a'], ['/root', 'b'], ['flash:/', 'c'], ['flash:/a', 'd']].map(([p, n]) => { state.sftp.path = p; return [p, n, sftpJoin(n)]; }))`);
+    const jExp = [['/', 'a', '/a'], ['/root', 'b', '/root/b'], ['flash:/', 'c', 'flash:/c'], ['flash:/a', 'd', 'flash:/a/d']];
+    const jGot = JSON.parse(joins);
+    const jBad = jGot.filter((r, i) => r[2] !== jExp[i][2]);
+    if (!jBad.length) ok('sftpJoin 路径拼接正确(含 flash:/ 设备根)');
+    else bad('sftpJoin 拼接错误', JSON.stringify(jBad));
+
+    // ①c 面包屑:设备根渲染成 "flash:/" 而不是 "/flash:",点根段回到 flash:/
+    const bc = await ev(c, `(function(){
+      state.sftp.path = 'flash:/a/b'; renderSftpPath(state.sftp.path);
+      const segs = [...document.querySelectorAll('#sftp-path .sftp-path-seg')];
+      const texts = segs.map((x) => x.textContent);
+      const bar = document.getElementById('sftp-path').textContent;
+      segs[0] && segs[0].click();
+      const afterRoot = state.sftp.path;
+      return JSON.stringify({ texts, bar, afterRoot, n: segs.length });
+    })()`);
+    const b = JSON.parse(bc);
+    if (b.bar === 'flash:/a/b' && b.texts[0] === 'flash:/' && b.afterRoot === 'flash:/') ok(`面包屑正确:${b.bar}(根段 ${b.texts[0]})`);
+    else bad('面包屑渲染/跳转错误', bc);
+    const bc2 = await ev(c, `(function(){ state.sftp.path='/root'; renderSftpPath('/root'); return document.getElementById('sftp-path').textContent; })()`);
+    if (bc2 === '/root') ok('unix 路径面包屑无回归(/root)');
+    else bad('unix 面包屑回归', String(bc2));
 
     // ② 已在根目录:给提示 + 不重读(列表里的哨兵原地不动)
     await ev(c, `state.sftp.path='/'; els.sftpList.innerHTML='<div id="sentinel">SENTINEL</div>'; els.toolbarStatus.textContent=''; true`);

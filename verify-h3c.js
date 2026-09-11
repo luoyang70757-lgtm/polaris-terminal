@@ -13,7 +13,7 @@ const OUT = path.join(os.tmpdir(), 'verify-h3c-result.txt');
 try { fs.writeFileSync(OUT, ''); } catch {}
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-h3c-'));
-const PORT = 9381, SSH = 2245, HTTP = 8145;
+const PORT = 9381, SSH = 2238, HTTP = 8145;
 // 构造合法 accessclient:// token(zlib 压缩 JSON → base64url)
 function makeToken(info) {
   const buf = zlib.deflateSync(Buffer.from(JSON.stringify(info), 'utf8'));

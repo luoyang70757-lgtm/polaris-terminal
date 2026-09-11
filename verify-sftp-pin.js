@@ -17,7 +17,7 @@ const path = require('path');
 const net = require('net');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-sftppin-'));
-const PORT = 9364, SSH = 2231, HTTP = 8131;
+const PORT = 9355, SSH = 2231, HTTP = 8131;
 
 function freePort(p) {
   try { execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch { /* ignore */ }
