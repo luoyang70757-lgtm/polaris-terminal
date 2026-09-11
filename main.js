@@ -2155,10 +2155,11 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
     __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
     return { ok: true, remotePath, resumedFrom: resumeFrom };
   } catch (err) {
-    recordUploadPartial(sessionId, sftp, remotePath, localPath); // 又失败:用最新的真实已写字节更新中断点
+    const cancelled = !!(err && err.code === 'CANCELLED');
+    recordUploadPartial(sessionId, sftp, remotePath, localPath); // 失败/取消:用真实已写字节更新中断点(远端半成品已保留)
     resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    __sftpLog('上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-    return { ok: false, error: err.message };
+    __sftpLog(cancelled ? '上传已取消(远端半成品已保留,可续传)' : '上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
+    return { ok: false, cancelled, error: err.message };
   }
 }
 
@@ -2201,9 +2202,16 @@ function startDownloadJob(sessionId, kind, args) {
         if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', lp));
         const _t0 = Date.now();
         __sftpLog('下载开始', { sessionId, remotePath, localPath: lp, resumeFrom });
-        await sshClient.downloadFile(sftp, remotePath, lp, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
-        __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
-        ok = true; localPath = lp;
+        try {
+          await sshClient.downloadFile(sftp, remotePath, lp, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
+          __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
+          ok = true; localPath = lp;
+        } catch (err) {
+          // 取消:本地半成品保留(见 lib/ssh-client cancelError)→ 记下残留大小,下次同路径从断点续
+          recordDownloadPartial(sessionId, lp);
+          __sftpLog(err && err.code === 'CANCELLED' ? '下载已取消(本地半成品已保留,可续传)' : '下载失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
+          throw err;
+        }
       } else {
         const { plans } = args;
         const total = plans.reduce((s, p) => s + (p.size || 0), 0);
