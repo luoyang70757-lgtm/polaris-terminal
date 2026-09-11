@@ -5828,11 +5828,24 @@ function persistBastionAssets() {
   bastionPersistTimer = setTimeout(flushBastionAssets, 800);
 }
 function flushBastionAssets() {
-  const url = state.bastionUrl || '';
-  if (!url || !state.bastionAssets.length) return;
-  window.api.bastionSaveAssets(url, state.bastionAssets).then((r) => {
-    if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', r.error);
-  }).catch(() => {});
+  if (!state.bastionAssets.length) return;
+  // 按**每台资产自己的堡垒机 origin** 分键写回:state.bastionAssets 是为"合并展示"而把多台
+  // 堡垒机的资产放在一起的,持久化必须落回各自的键 —— 旧版整包写到 state.bastionUrl 一把键上,
+  // B 站点的资产会被写进 A 键下,重启后跨键按 devId 去重会丢设备/挪位置(见 issues 第 7 条)。
+  // 资产自带 bastionUrl 优先;没有的(如按目录补拉时新建的设备)归**当前站点** ——
+  // 它们本就是当前站点拉回来的,绝不能落到别的站点键下。
+  const byUrl = new Map();
+  for (const a of state.bastionAssets) {
+    const u = a.bastionUrl || state.bastionUrl || '';
+    if (!u) continue; // 连当前站点都取不到(未登录/无 origin)才不落盘
+    if (!byUrl.has(u)) byUrl.set(u, []);
+    byUrl.get(u).push(a);
+  }
+  for (const [url, list] of byUrl) {
+    window.api.bastionSaveAssets(url, list).then((r) => {
+      if (r && !r.ok) console.log('[堡垒机] 资产持久化失败:', url, r.error);
+    }).catch(() => {});
+  }
 }
 // 应用退出前立即冲刷未落盘的资产(不等防抖 timer;防抖期间退出 = 数据丢失)
 window.addEventListener('beforeunload', () => {
