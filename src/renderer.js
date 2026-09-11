@@ -10567,7 +10567,11 @@ function finishInitClean(t) {
   t.initBuf = '';
   t.initMask = false;
   try { t.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
-  window.api.sshWrite(t.sessionId, '\r');
+  // 取干净提示符前**先清行**(Ctrl+U):连接后 ~1.5s 内用户可能已敲了半条命令,它正留在远端行里,
+  // 直接发回车会把它提前执行(实测踩到)。Ctrl+U 是 bash/zsh readline 的清行键;
+  // 这段只对 SSH 会话跑(initMask 仅 ssh 置位),telnet 不受影响。
+  if (t.inputBuf) { t.inputBuf = ''; hideCmdComplete(t); } // 本地镜像同步清空,与远端行保持一致
+  window.api.sshWrite(t.sessionId, '\x15\r');
 }
 function startEncodingProbe(t) {
   if (!t || !t.session || t.encProbe) return;
