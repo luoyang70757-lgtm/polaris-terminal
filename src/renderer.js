@@ -2109,7 +2109,7 @@ function batchClear() {
 // 批量连接:打开所有选中的、尚未打开的会话
 function batchConnect() {
   for (const s of selectedSessions()) {
-    if (!findTabBySessionId(s.id)) connectToServer(s);
+    if (!findTabBySessionId(s.id)) connectToServer(s, { background: true }); // 批量:后台开标签,不抢焦点
   }
   batchClear();
 }
@@ -2126,7 +2126,7 @@ function batchClose() {
 // 菜单「连接选中会话」:连接勾选的会话;若没勾选但当前标签已断开,则重新连接它
 function menuConnect() {
   const list = selectedSessions();
-  if (list.length) { for (const s of list) if (!findTabBySessionId(s.id)) connectToServer(s); batchClear(); return; }
+  if (list.length) { for (const s of list) if (!findTabBySessionId(s.id)) connectToServer(s, { background: true }); batchClear(); return; }
   const active = state.tabs.get(state.activeSessionId);
   if (active && active.session && active.status !== 'connected' && active.status !== 'connecting') {
     reconnectTab(state.activeSessionId);
@@ -4384,7 +4384,7 @@ function jmsLogout() {
 
 // 连接资产(经 KoKo 网关):用户名 = JMS用户@协议@账号@资产地址
 // accountName 可选:多账号时指定;不传用第一个
-function jmsConnect(serverId, asset, accountName, openSftp) {
+function jmsConnect(serverId, asset, accountName, openSftp, opts) {
   const s = jmsFind(serverId);
   if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
   const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
@@ -4406,7 +4406,7 @@ function jmsConnect(serverId, asset, accountName, openSftp) {
     displayHost: asset.address || asset.ip || '',
     displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
   };
-  connectToServer(session);
+  connectToServer(session, opts);
   if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
 }
 
@@ -4527,7 +4527,7 @@ function batchJmsConnect(s, assets) {
   const list = (assets || []).filter(Boolean);
   if (!list.length) return;
   setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => jmsConnect(s.id, a), i * 300));
+  list.forEach((a, i) => setTimeout(() => jmsConnect(s.id, a, undefined, undefined, { background: true }), i * 300));
 }
 
 // 批量打开连接:依次连接一组 H3C 资产(走 accessclient,500ms 错峰)
@@ -4536,7 +4536,7 @@ function batchBastionConnect(assets) {
   if (!list.length) return;
   if (!els.bastionWebview || !els.bastionWebview.src) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录'); openBastionPanel(); return; }
   setStatus(`批量连接 H3C 资产 ${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => bastionConnect(a), i * 500));
+  list.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
 }
 
 // 批量打开连接:依次连接一组「已保存堡垒机连接」的资产(未登录先自动登录)
@@ -4560,7 +4560,7 @@ async function batchSavedAssetConnect(s, assets) {
     } catch (e) { alert(`登录「${s.name}」失败: ${e.message}`); return; }
   }
   setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => bastionConnectAsset(s, a), i * 300));
+  list.forEach((a, i) => setTimeout(() => bastionConnectAsset(s, a, undefined, { background: true }), i * 300));
 }
 
 function renderJmsInSessionList(container, f) {
@@ -6326,7 +6326,7 @@ function renderBastionSavedSessions(container, f) {
 
 // 通过已保存堡垒机连接连某资产 SSH(复用 JMS 复合用户名走 KoKo 网关)。
 // 不经过 jmsFind:该连接存于 bastionServers,不在 state.jmsServers。
-async function bastionConnectAsset(bastionServer, asset, accountName) {
+async function bastionConnectAsset(bastionServer, asset, accountName, opts) {
   const s = bastionServer;
   if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
   const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
@@ -6354,8 +6354,8 @@ async function bastionConnectAsset(bastionServer, asset, accountName) {
     displayHost: asset.address || asset.ip || '',
     displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
   };
-  connectToServer(session);
-  setStatus(`连接 ${asset.name}(${account})…`, 'var(--accent)');
+  connectToServer(session, opts);
+  if (!(opts && opts.background)) setStatus(`连接 ${asset.name}(${account})…`, 'var(--accent)');
 }
 
 // H3C Shterm 站点:URL 含 /shterm 或配置类型为 h3c。这类站点没有 JumpServer REST API,
@@ -6761,7 +6761,7 @@ function renderBastionInSessionList(container, f) {
 // 通过堡垒机发起连接:主进程 h3c:accessUrl IPC(用 persist:bastion 会话 cookie 直连
 // POST /shterm/api/deviceAccess/accessUrl;真实 H3C:请求 { misc, sessRemark, account, proto, dev }
 // → 响应 { url: accessclient://... }),拿到后走和网页点击完全相同的解码+SSH 路径。
-async function bastionConnect(asset, accountName, proto, openSftp) {
+async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   const dev = asset.devId || asset.id || '';
   if (!dev) { alert('该资产缺少设备 ID,无法发起连接'); return; }
   const baseUrl = bastionNativeBaseUrl();
@@ -6787,7 +6787,7 @@ async function bastionConnect(asset, accountName, proto, openSftp) {
     return;
   }
   bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, token: url.slice(0, 60) + '…' });
-  handleAccessClientUrl(url, openSftp, dev);
+  handleAccessClientUrl(url, openSftp, dev, opts);
 }
 
 // 断开该 H3C 资产已打开的连接(标签保留,显示"已断开")
@@ -6907,7 +6907,7 @@ function setBastionZoom(delta) {
 
 // 处理 accessclient:// —— 解码 token(H3C 单点登录凭证) → 用 Polaris 终端连 SSH
 // openSftp:连上后顺带打开 SFTP 面板;devId:标记来源资产(供会话列表按资产断开)
-async function handleAccessClientUrl(acUrl, openSftp, devId) {
+async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   bastionLog({ ev: 'token-decode', token: acUrl.slice(0, 60) + '…' });
   const r = await window.api.bastionDecode(acUrl);
   if (!r.ok) { bastionLog({ ev: 'token-decode-fail', error: r.error }); alert('解码堡垒机连接失败: ' + r.error); return; }
@@ -6945,8 +6945,9 @@ async function handleAccessClientUrl(acUrl, openSftp, devId) {
       .then((r) => bastionLog({ ev: 'net-probe', host, port, ...r }))
       .catch((e) => bastionLog({ ev: 'net-probe-throw', error: e.message }));
   }
-  connectToServer(session);
-  setStatus(`堡垒机直连: ${session.name}`, 'var(--green)');
+  connectToServer(session, opts);
+  // 后台模式(批量)不逐台刷状态栏,由批量入口统一提示
+  if (!(opts && opts.background)) setStatus(`堡垒机直连: ${session.name}`, 'var(--green)');
   // 连接成功 → 最小化到会话列表,终端在前台(SSH 连接独立,不受页面收起影响)
   minimizeBastion();
   if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
@@ -7687,7 +7688,12 @@ function closeReplay() {
 // 收起输入侧栏(纯看终端画面)
 function closeReplaySide() { els.replayInputSide.classList.add('hidden'); }
 
-async function connectToServer(session) {
+// opts.background=true:后台开标签 —— 不切激活标签、不抢键盘焦点(批量连接入口用)。
+// 批量(会话列表多选 / JMS 批量 / H3C 批量 / 已保存连接批量)每台都会调用本函数,
+// 旧行为是每台都 activateTab+term.focus(),于是"正在看的终端被逐台切走、焦点被抢"
+// (FOCUS 日志刷屏,见 docs/issues-2026-09-11.md 第 10 条)。
+async function connectToServer(session, opts) {
+  const background = !!(opts && opts.background);
   const sessionId = `sess-${++sessionSeq}`;
   const title = session.name; // 标签只显示名称,去掉 username@host,更紧凑
 
@@ -7955,8 +7961,22 @@ async function connectToServer(session) {
   } catch { /* ignore */ }
   recordRecent(sessionId); // 记入"最近连接"
 
+  // renderLayout 会重建终端容器 DOM(把激活面板摘下来再挂回),挂回不会恢复键盘焦点 →
+  // 焦点掉到 body。旧版因为紧接着 activateTab(内含 term.focus)而被掩盖;后台模式必须自己还回去。
+  const focusWasInActiveTerm = (() => {
+    const a = state.tabs.get(state.activeSessionId);
+    return !!(a && a.term && document.activeElement === a.term.textarea);
+  })();
   renderLayout();
-  activateTab(sessionId);
+  // 后台模式:跳过 activateTab(它=切激活标签 + term.focus())。
+  // 注意:此时 paneEl 不在 DOM 里,下面的 fit 重试量不到尺寸 → 该标签先按默认 80x24 建 PTY,
+  // 用户点开该标签时 activateTab → fit + scheduleRefit → sshResize 自愈(与切标签同一路径)。
+  // 无激活标签(首个连接)时仍走前台:否则界面会停在"没有终端"的空态。
+  if (background && state.activeSessionId && state.tabs.has(state.activeSessionId)) {
+    if (focusWasInActiveTerm) { try { state.tabs.get(state.activeSessionId).term.focus(); } catch { /* ignore */ } }
+  } else {
+    activateTab(sessionId);
+  }
   scheduleRefit(tab, 200); // 连接后延迟重适配:等布局/字体稳定,确保终端填满(防止只占上半部分)
 
   // ---- 等 xterm 量出字符尺寸,再按真实终端尺寸发起连接 ----
@@ -8113,6 +8133,17 @@ function activateTab(sessionId) {
   } else {
     renderLayout();        // 单面板:切换显示哪个连接
   }
+  // renderLayout 重建容器 DOM → 上面那次 term.focus() 的焦点会掉到 body(旧版靠 BODY 兜底转发在救:
+  // 按键仍会进终端,但 activeElement 不在终端上,依赖真实焦点的行为如输入法/光标都不对)。
+  // 这里把焦点补回激活终端;用户此刻在别的输入框(搜索/地址栏等)打字时不抢。
+  try {
+    const ae = document.activeElement;
+    const typingElsewhere = !!ae && ae !== document.body &&
+      (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable === true) &&
+      !(ae.classList && ae.classList.contains('xterm-helper-textarea'));
+    const at = state.tabs.get(sessionId);
+    if (!typingElsewhere && at && at.term) at.term.focus();
+  } catch { /* ignore */ }
 
   // SFTP 按标签各自的状态:每个标签记住自己是否开了 SFTP、浏览到哪个目录。
   // 选中"未打开 SFTP 的标签页"→ 面板收起、按钮不亮;切回开过的标签 → 恢复它的文件列表。
