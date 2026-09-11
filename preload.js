@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld('api', {
   listArchiveFiles: () => ipcRenderer.invoke('cmd:listArchiveFiles'),
   downloadArchive: (filePath) => ipcRenderer.invoke('cmd:downloadArchive', filePath),
   deleteArchive: (archiveId, filePath) => ipcRenderer.invoke('cmd:deleteArchive', archiveId, filePath),
-  sftpBatchUpload: (sessions, remoteDir) => ipcRenderer.invoke('sftp:batchUpload', { sessions, remoteDir }),
+  sftpBatchUpload: (sessions, remoteDir, localPaths) => ipcRenderer.invoke('sftp:batchUpload', { sessions, remoteDir, localPaths }),
   sftpBatchDownload: (sessions, remotePath) => ipcRenderer.invoke('sftp:batchDownload', { sessions, remotePath }),
   // 上传/下载进度事件(主进程推送,驱动进度条)
   onSftpProgress: (cb) => ipcRenderer.on('sftp:progress', (_e, p) => cb(p)),

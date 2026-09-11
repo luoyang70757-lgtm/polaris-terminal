@@ -704,22 +704,32 @@ ipcMain.handle('bastion:deleteFavGroup', (_e, id) => {
   try { sessionStore.deleteBastionFavGroup(id); schedulePersist(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
 });
 
-// 批量上传:选一个本地文件,上传到每个选中主机的远程目录
-ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
+// 批量上传:选一个本地文件,上传到每个选中主机的远程目录。
+// 走与单机上传完全相同的**加固管线**(sshClient.uploadFile):statSize 对账 + 读回核对,
+// 而不是 fastPut 的"ACK 即成功"(中继截断/设备撒谎时不报错,是唯一没跟上 v1.0.35+ 加固的路径)。
+// localPaths 可直传(测试/拖拽场景),不传则弹文件选择框。
+ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir, localPaths }) => {
   try {
-    const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: '选择要批量上传的文件' });
-    if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
-    const localPath = pick.filePaths[0];
-    const remotePath = `${(remoteDir || '/').replace(/\/+$/, '')}/${path.basename(localPath)}`;
+    let localPath = (Array.isArray(localPaths) ? localPaths : []).filter(Boolean)[0] || '';
+    if (!localPath) {
+      const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: '选择要批量上传的文件' });
+      if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
+      localPath = pick.filePaths[0];
+    }
+    const total = fs.statSync(localPath).size;
+    const remotePath = joinRemote(remoteDir || '/', path.basename(localPath));
     const results = [];
     for (const s of sessions) {
       try {
         const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
-        const sftp = await sshClient.openSftp(conn);
-        await new Promise((res, rej) => sftp.fastPut(localPath, remotePath, (e) => (e ? rej(e) : res())));
-        sftp.end();
-        conn.end();
-        results.push({ ok: true, name: s.name, host: s.host });
+        try {
+          const sftp = await sshClient.openSftp(conn);
+          await sshClient.uploadFile(sftp, localPath, remotePath, null, 0, null);
+          try { sftp.end(); } catch { /* ignore */ }
+          results.push({ ok: true, name: s.name, host: s.host, path: remotePath, bytes: total });
+        } finally {
+          try { conn.end(); } catch { /* ignore */ }
+        }
       } catch (err) {
         results.push({ ok: false, name: s.name, host: s.host, error: err.message });
       }
@@ -731,7 +741,10 @@ ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir }) => {
 // 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名区分文件名)
 ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
   try {
-    const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: '选择保存到哪个文件夹' });
+    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答"选文件夹"对话框(与 sftp:download 一致)
+    const pick = process.env.POLARIS_AUTO_DL_DIR
+      ? { canceled: false, filePaths: [process.env.POLARIS_AUTO_DL_DIR] }
+      : await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: '选择保存到哪个文件夹' });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
     const localDir = pick.filePaths[0];
     const base = path.basename(remotePath) || 'download';
@@ -743,11 +756,15 @@ ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
       const localPath = path.join(localDir, `${safeName}_${base}`);
       try {
         const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
-        const sftp = await sshClient.openSftp(conn);
-        await new Promise((res, rej) => sftp.fastGet(remotePath, localPath, (e) => (e ? rej(e) : res())));
-        sftp.end();
-        conn.end();
-        results.push({ ok: true, name: s.name, host: s.host, path: localPath });
+        try {
+          const sftp = await sshClient.openSftp(conn);
+          // 加固管线:落盘后按远端大小对账,截断则删残留 + 明确报错(不再 fastGet 的"传完即成功")
+          await sshClient.downloadFile(sftp, remotePath, localPath, null, 0, null);
+          try { sftp.end(); } catch { /* ignore */ }
+          results.push({ ok: true, name: s.name, host: s.host, path: localPath, bytes: fs.statSync(localPath).size });
+        } finally {
+          try { conn.end(); } catch { /* ignore */ }
+        }
       } catch (err) {
         results.push({ ok: false, name: s.name, host: s.host, error: err.message });
       }
