@@ -2196,7 +2196,8 @@ function startUploadJob(sessionId, remoteDir, localPaths) {
       const failed = results.filter((r) => !r.ok);
       // error 带出首个失败原因:渲染层状态栏能显示具体错误(否则逐路径失败只有面板"✗ 失败",看不见原因)
       const firstErr = (failed[0] && failed[0].error) || undefined;
-      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
+      // uploaded:本次成功上传的远端路径(渲染层据此高亮定位"传到了哪")
+      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, uploaded: ok.map((r) => r.remotePath).filter(Boolean), failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
     } catch (err) {
       sftpJobDone(jobId, { sessionId, op: 'upload', ok: false, error: err && err.message, cancelled: makeShouldCancel(jobId)() });
     }

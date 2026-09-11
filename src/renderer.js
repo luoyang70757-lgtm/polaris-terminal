@@ -10731,11 +10731,23 @@ window.api.onSftpDone((d) => {
   }
   // 上传成功 → 刷新列表 + 高亮定位;失败/取消 → 提示
   if (d.op === 'upload' && d.ok && !d.cancelled) {
+    // 高亮定位:把本次上传的条目名交给列表渲染(刷新后闪烁 + 滚到可见)。
+    // 旧版 job 化改造时这段丢了 —— sftpUploadFlash 只被读、没人写,高亮成了死代码。
+    const names = (d.uploaded || []).map((rp) => String(rp).split('/').filter(Boolean).pop()).filter(Boolean);
+    if (names.length) {
+      const flash = new Set(names);
+      state.sftpUploadFlash = flash;
+      // 只在"还是这一批"时清除,避免把随后新上传的高亮一起清掉
+      setTimeout(() => { if (state.sftpUploadFlash === flash) state.sftpUploadFlash.clear(); }, 3000);
+    }
     if (state.sftp.visible) loadSftpList();
     setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
   } else if (d.op === 'download' && d.ok && !d.cancelled && (d.localPath || d.results)) {
     setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
-  } else if (!d.cancelled && d.error) {
+  } else if (d.cancelled) {
+    // 取消:半成品与续传点都保留(见 lib/ssh-client 的 cancelError),状态栏明确说明可续传
+    setStatus('传输已取消(半成品与续传点已保留,再次传输同一文件将从断点续)', 'var(--orange)');
+  } else if (d.error) {
     setStatus(`传输失败: ${d.error}`, 'var(--red)');
   }
 });
