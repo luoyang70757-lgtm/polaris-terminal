@@ -8,7 +8,8 @@
 
 - 技术栈：Electron 43 + xterm.js 5.3 + ssh2 + SQLite（node:sqlite 内置）
 - 数据安全：会话数据存本地 SQLite（整库 AES-256-GCM 加密），密码走系统 safeStorage 加密（`enc:v1:` 前缀）
-- 架构：单文件主进程 `main.js`（~2600 行）+ 渲染进程 `src/renderer.js`（~9300 行）+ contextBridge 安全桥（`preload.js`，无 nodeIntegration）
+- 架构：主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~11000 行）+ contextBridge 安全桥（`preload.js`，无 nodeIntegration）；
+  主进程已拆模块（依赖惰性注入，命脉区块 SFTP/SSH/堡垒机仍在 main.js）：`lib/connect-opts.js`、`lib/session-groups.js`、`lib/session-ipc.js`
 
 ## 核心文件
 
@@ -59,7 +60,11 @@ npm run dist   # → release/mac/Polaris.app（macOS，未签名）
 - e2e 验证：`node verify-<功能>.js`（自动 spawn electron + 调试端口 + 临时数据目录，用后 pkill）
 - 测试会杀掉正在运行的 app（pkill electron），测完需重启
 
-## 当前状态（截至 2026-08-15 会话）
+## 当前状态（截至 2026-09-11）
 
-已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能、菜单/焦点/刷新修复、全量日志、AI 技能/推荐/知识库、堡垒机入口整合（头部🛡按钮并入会话列表🛡分组右键菜单，右侧浏览器保留）。
+**当前版本 v1.0.43**（2026-09-11 发版）：含敏感输入不落盘、取消传输保留半成品、批量传输并入加固管线、危险命令确认覆盖全部一键入口、批量连接不抢焦点、多堡垒机资产分键、xlsx 换官方 tarball 等；问题清单见 `docs/issues-2026-09-11.md`。
+
+已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能与断点续传、命令补全与智能推荐、主题系统（25 套，各带 ANSI 色板）、AI 技能/知识库、SSH 隧道、录制回放、全量日志、堡垒机入口整合。
 详见 `CONTEXT.md` 的「已完成功能」「技术决策」。
+
+**依赖注意**：`xlsx` 用 SheetJS 官方 CDN tarball（非 npm registry，见 `docs/deps-xlsx-evaluation.md`），`npm ci`/CI 需能访问 cdn.sheetjs.com。

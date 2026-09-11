@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases + gitee 码云镜像）**。当前版本 **v1.0.8**。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.43**（2026-09-11；本轮修复清单见 `docs/issues-2026-09-11.md`）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -109,6 +109,11 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 24. **xterm 组合态复位唯一入口**（v1.0.41，renderer.js `resetTermComposition`）：xterm 5.x 的 `CompositionHelper._finalizeComposition` 会把**隐藏 textarea 的内容**当作用户刚输入的文字 `triggerDataEvent` 发给 SSH（异步分支 `substring(start)`、同步分支 `substring(start,end)`），而 textarea 平时就残留按键字符（实测敲一次空格后 `textarea.value === " "`），组合位置又可能是上次输入法组合的旧值 → **"复位组合态"这个动作本身会把残留字符插进命令行**（用户实测 `df -Th` → `df -Th T`）。两道保险：① 只在 xterm 真卡组合态（`_compositionHelper.isComposing || _isSendingComposition`，取不到退回 DOM `.composition-view.active`）时才派发 `compositionend`；② **派发前先清空 textarea**，冲刷内容恒为空。三处调用点（空格兜底 / 失焦·聚焦复位 / 死键 229）统一走它
 25. **SFTP 上一级与慢读取反馈**（v1.0.41，renderer.js `sftpGoUp`/`sftpParent`/`loadSftpList` + main.js `sftp:list`）：① 已在根目录（H3C 会话常见 path=`/`）时旧版仍重读同目录 → 改为直接提示、不发请求；② `sftpParent` 认 `flash:/`、`cfcard:/` 设备文件系统根（旧版会切出 `flash:` 这种不存在路径）；③ 发起读取立刻状态栏「正在读取 …」、结束换「已读取 …（N 项）」/失败报原因——设备慢也不再"点了没反应"；④ readdir 40s 超时时，**无传输任务（`hasActiveTransfer`）在跑才 `resetSftp`**：挂死请求会堵住设备串行 SFTP 通道，不重置则后续每次点击都再等 40s；有传输在跑不动它（重置会掐断在传文件）
 
+26. **传输取消/超时语义**（v1.0.43，lib/ssh-client.js）：取消或 120s 假死超时一律 **reject `code:'CANCELLED'`** 并**保留本地/远端半成品**（下载侧用 `settled=true` 阻止 `settle()` 按大小不符 unlink）；调用方记续传点、UI 明示"已取消(可续传)"。旧版取消只 destroy 流、不结算 → `ws 'close'` 把 promise resolve 成"成功" → 走校验分支删半成品且记不下续传点。**真失败仍按原逻辑删残缺 + 报错**
+27. **后台开标签模式**（v1.0.43，renderer.js `connectToServer(session, { background: true })`）：批量入口（会话列表批量/菜单连接选中/JMS 批量/H3C 批量/已保存连接批量）传 `background` → 不切激活标签、不抢键盘焦点；无激活标签时仍走前台。**注意**：后台标签的 pane 不在 DOM 里 → 先按 80x24 建 PTY，点开时 `activateTab → fit + scheduleRefit` 自愈。另修：`renderLayout()` 重建容器 DOM 会让焦点掉到 body（旧版被 `activateTab` 内 `term.focus()` 掩盖），现由 `activateTab` 与后台模式分别补回（用户正在输入框打字时不抢）
+28. **敏感输入不落盘**（v1.0.43，main.js `isSecretInput`）：`ssh:write` 支持 `opts.noLog`；并兜底"待写入文本包含该会话密码(长度≥3)"→ 一律跳过 `recorder.writeInput` 与会话日志。自动填充密码（renderer 传 `noLog`）是主要来源；**登录宏仍照常记录**（审计需要，含密码时由兜底命中）。Telnet 密码不走本条链路
+29. **xlsx 依赖**（v1.0.43）：`package.json` 指向 SheetJS 官方 tarball `xlsx-0.20.3`（非 npm registry —— npm 线止于 0.18.5 且有 2 个 high 无法修复）。`npm ci`/CI 需能访问 cdn.sheetjs.com；`npm audit` 不再跟踪它。评估与 PoC 见 `docs/deps-xlsx-evaluation.md`
+
 ## 运行与调试
 
 ```bash
@@ -116,12 +121,13 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu
 # 正式版编译（本机）
 npm run dist   # release/mac/Polaris.app（未签名）
-# CI 产物命名：Windows 便携版 Polaris-<v>.exe；macOS Polaris-<v>-mac-x64.zip（仅 x64）
+# CI 产物：仅 Windows 便携版 Polaris.<v>.exe（GitHub Releases 附件）；macOS 由本机 `npm run dist` 产出 release/mac/Polaris.app（未签名，CI 不编 macOS）
 # e2e 验证（会 pkill electron，测完重启）
 node verify-<功能>.js
 ```
 
-- **发布流程**：`git tag vX.Y.Z` → push → GitHub Actions 自动编译两平台 → 发 Releases → 自动同步 gitee（需 secrets.GITEE_TOKEN）
+- **发布流程**：`git tag vX.Y.Z` → `git push origin <tag>` → GitHub Actions 编译 Windows → 自动创建 Release 并附 `.exe`
+  **只推 main 不会出 Release**（workflow 的 release job 条件是 `refs/tags/v*`）；CI 不编 macOS、也不再向 gitee 同步产物（gitee 只留源码仓库）
 - 真实环境：JumpServer `192.168.1.250`（admin / 密码见本地 `~/.jms-terminal/jms-servers.json` 或用户提供），PVE 资产 `192.168.1.254`（root，经 KoKo 网关 2222）；H3C 参考 `10.204.240.4`（HAR 已入 .gitignore）
 - 日志：`数据目录/logs/app-*.log`（全量）；调试面板 🧾 → ⬇ 下载日志
 - verify 脚本：`verify-bastion-merge.js`（堡垒机入口整合回归）、`verify-sftp-*.js`、`verify-bastion-*.js`、`verify-h3c*.js`、`verify-ctxmenu*.js` 等 40+ 个（CDP e2e，自建 electron + 调试端口 + 临时数据目录）
@@ -151,4 +157,6 @@ node verify-<功能>.js
 - **输入法残留被当输入发到服务器**（renderer.js）：用户报「敲 `df -Th` 回车，服务端收到 `df -Th T` 报 `df: T: 没有那个文件或目录`」。日志取证：空格键每次出现两条 SEND（一条多余的空串/`" T"`，一条正常空格），多出的内容来自 xterm 组合冲刷（见技术决策 24）。修法：统一入口 `resetTermComposition`（只在真卡组合态复位 + 复位前清空 textarea）。复现/回归 `verify-space-composition-flush.js`（改前逐字复现 `SEND " T"`，改后 4/4 通过）；`verify-vim-space.js`（原"vim 退出后空格失效"修复）无回退
 - **SFTP「⬆ 上一级」点了没反应**（renderer.js + main.js）：根目录空转 + readdir 超时后通道不重置（后者是"越点越坏"的放大器，用户 [SFTP] 日志里 8 次 `readdir path:"/"` 40s 超时即此）。修法见技术决策 25。回归 `verify-sftp-up.js`（6/6）、`verify-sftp-panel.js`（5/5）
 - **备用屏切换乱抢焦点**（v1.0.42，renderer.js `onBufferChange`）：补焦点加两道前提——只对**当前标签**补（后台标签不抢）、焦点停在别的输入框（`INPUT/TEXTAREA/contentEditable`）时不补。原来远端任何全屏程序切备用屏都会把用户正在别处输入（搜索框/路径框/堡垒机地址框）的焦点拽回终端。回归 `verify-bufferfocus.js`（4/4）、`verify-vim-real.js`（5/5，真实 vim 退出后仍能输入）
-- **待办（已定位、用户要求先不动）**：H3C/批量连接抢焦点 —— 根因是 `connectToServer` 无条件 `activateTab` → `term.focus()`，批量连接（`batchBastionConnect` 每 500ms 一台、`batchSavedAssetConnect` 每 300ms 一台）每台都切激活标签并抢焦点（FOCUS 日志刷屏即此）。候选修法：`connectToServer(session, opts)` 加 `background` 后台模式，批量入口传 `{ background: true }`
+- **H3C/批量连接抢焦点（2026-09-11 未发版已修）**：`connectToServer(session, opts)` 加 `background` 后台模式（不切激活标签、不抢焦点），5 个批量入口全部传入；连带修掉 `renderLayout()` 重建 DOM 后焦点掉到 body（旧版被 `activateTab` 内的 `term.focus()` 掩盖）。回归 `verify-batch-focus.js`
+
+**已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
