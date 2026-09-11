@@ -30,7 +30,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- SSH 直连 ----
   sshConnect: (sessionId, opts) => ipcRenderer.invoke('ssh:connect', { sessionId, opts }),
-  sshWrite: (sessionId, data) => ipcRenderer.send('ssh:write', sessionId, data),
+  // opts.noLog=true:该输入属敏感内容(如自动填充的密码),不进会话日志/录制
+  sshWrite: (sessionId, data, opts) => ipcRenderer.send('ssh:write', sessionId, data, opts),
   sshSetEncoding: (sessionId, enc) => ipcRenderer.send('ssh:setEncoding', sessionId, enc),
   sshResize: (sessionId, cols, rows) => ipcRenderer.send('ssh:resize', sessionId, cols, rows),
   sshClose: (sessionId) => ipcRenderer.send('ssh:close', sessionId),

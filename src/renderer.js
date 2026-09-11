@@ -10558,7 +10558,8 @@ window.api.onSshData((sessionId, data) => {
       if (promptEnd && !t.autoPwSent) {
         t.autoPwSent = true; // 同一提示分块到达时只发一次
         dlog('AUTOFILL', `${sessionId} 检测到密码提示,自动发送(长度 ${t.session.password.length},不记明文)`);
-        window.api.sshWrite(sessionId, t.session.password + '\r');
+        // noLog:自动填充的是密码 → 不进会话日志/录制(主进程还有"含密码即跳过"的兜底)
+        window.api.sshWrite(sessionId, t.session.password + '\r', { noLog: true });
       } else if (!promptEnd) {
         t.autoPwSent = false; // 提示后收到其它输出(密码被接受/命令结果)→ 武装好等下一次提示
       }

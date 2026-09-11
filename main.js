@@ -1494,12 +1494,25 @@ ipcMain.handle('telnet:connect', (_e, { sessionId, opts }) => new Promise((resol
   telnetSessions.set(sessionId, tel); // 立即登记:用户中途关标签,ssh:close 也能路由到它
 }));
 
-ipcMain.on('ssh:write', (_e, sessionId, data) => {
-  // 录制打点:记录敲过的输入(回放时用 ▶ 标出,看清每步做了什么)
-  const rec = recSessions.get(sessionId);
-  if (rec && data) recorder.writeInput(rec.file, Date.now() - rec.startTs, data);
-  writeSessionInput(sessionId, data); // 会话日志:按行缓冲记录输入(命令回车后整行落盘)
+// 敏感输入判定(密码绝不落盘明文):① 调用方显式 opts.noLog(如自动填充密码)
+// ② 兜底:文本里含该会话的密码。命中 → 不写录制、不写会话日志。
+// (旧版自动填充的密码会走下面这条普通链路 → 明文进 session-logs/*.log 与录制)
+function isSecretInput(s, data, opts) {
+  if (opts && opts.noLog) return true;
+  try {
+    const pw = s && s.connOpts && s.connOpts.password;
+    if (!pw || String(pw).length < 3) return false; // 过短的密码会把普通输入也误判成敏感
+    return String(data || '').includes(String(pw));
+  } catch { return false; }
+}
+
+ipcMain.on('ssh:write', (_e, sessionId, data, opts) => {
   const s = sshSessions.get(sessionId);
+  const secret = isSecretInput(s, data, opts);
+  // 录制打点:记录敲过的输入(回放时用 ▶ 标出,看清每步做了什么);密码不记
+  const rec = recSessions.get(sessionId);
+  if (rec && data && !secret) recorder.writeInput(rec.file, Date.now() - rec.startTs, data);
+  if (!secret) writeSessionInput(sessionId, data); // 会话日志:按行缓冲记录输入(命令回车后整行落盘)
   if (s && s.stream && !s.stream.destroyed) {
     // 输入按会话编码编码:GBK/GB2312 会话不能恒发 UTF-8,否则服务器按 GBK 解出乱码。
     // 编码已含连接后自动探测的结果(ssh:setEncoding 会更新 s.encoding)。
