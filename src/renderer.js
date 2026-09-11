@@ -1390,6 +1390,7 @@ function appendAiMsg(role, text) {
 function runInActiveTerminal(command) {
   const t = state.tabs.get(state.activeSessionId);
   if (!t || t.status !== 'connected') { alert('当前没有已连接的终端'); return; }
+  if (!confirmDangerousOnTabs([t], command, 'AI 代码块 / 推荐项执行')) return; // 生产 + 危险 → 与手敲同规则
   window.api.sshWrite(t.sessionId, command + '\r');
   setStatus(`已在终端执行: ${command.split('\n')[0]}`, 'var(--green)');
 }
@@ -3543,6 +3544,25 @@ function hasProdSession() {
   }
   return false;
 }
+// ---- 一键执行入口的生产环境保护(与手敲同一套判定) ----
+// 手敲路径在 term.onData 里判定;快捷命令 / 命令推荐 / 代码块执行 / 命令重发 / 批量执行 /
+// 登录宏 这些"一键入口"以前绕过它 —— 生产标记主机上点一下 `rm -rf /` 就直接执行了。
+// 统一走这里:任一目标会话属生产分组 且 命令非 safe → 弹一次确认;返回 false = 用户拒绝。
+function dangerousConfirmText(tabs, command, label) {
+  const prod = (tabs || []).filter((t) => t && t.session && isSessionProd(t.session));
+  const an = analyzeCommand(command);
+  if (!prod.length || an.level === 'safe') return null; // null = 无需确认
+  const reasons = an.findings.map((f) => `  · ${f.name}`).join('\n');
+  const target = prod.length === 1
+    ? `目标: ${prod[0].session.host}`
+    : `目标: ${prod.length} 台生产会话: ${prod.map((t) => t.session.name).slice(0, 5).join('、')}${prod.length > 5 ? ' 等' : ''}`;
+  return `${dangerousLabel(an.level)}!确定要在生产环境执行吗?\n\n${command}\n\n命中: \n${reasons}\n\n(${label})\n${target}`;
+}
+function confirmDangerousOnTabs(tabs, command, label) {
+  const text = dangerousConfirmText(tabs, command, label);
+  return text == null ? true : confirm(text);
+}
+
 // 把输入发给服务器(单会话 / 广播模式统一走这里)
 function sendInput(sessionId, data) {
   // ---- 多行粘贴保护:一次贴入多行(如整段脚本)时先确认,防止误贴进生产 ----
@@ -3694,6 +3714,7 @@ function resendCommand(host, command) {
     if (t.status === 'connected' && t.session && t.session.host === host) { target = t; break; }
   }
   if (!target) { alert('该主机未连接,无法重发'); return; }
+  if (!confirmDangerousOnTabs([target], command, '命令记录重发')) return; // 生产 + 危险 → 先确认
   // 切到目标标签并聚焦,让命令立刻可见、生效
   if (state.activeSessionId !== target.sessionId) activateTab(target.sessionId);
   window.api.sshWrite(target.sessionId, command + '\r');
@@ -3888,6 +3909,8 @@ async function runBatchExec() {
   if (!cmd) { alert('先输入要执行的命令'); return; }
   const selTabs = [...state.batchHosts].map((id) => state.tabs.get(id)).filter((t) => t && t.status === 'connected');
   if (!selTabs.length) { alert('请先勾选已连接的主机'); return; }
+  // 生产保护:批量会把同一条命令打到多台(风险更集中),任一台属生产分组 + 危险 → 一次确认
+  if (!confirmDangerousOnTabs(selTabs, cmd, '批量执行(batch:exec)')) { setStatus('已取消:生产环境危险命令未确认', 'var(--orange)'); return; }
   const hosts = selTabs.map((t) => ({
     name: t.session.name, host: t.session.host, port: t.session.port,
     username: t.session.username, password: t.session.password,
@@ -4019,6 +4042,7 @@ async function addQuickCommand() {
 function sendQuickCurrent(name, command) {
   const t = state.tabs.get(state.activeSessionId);
   if (!t || t.status !== 'connected') { alert('请先连接一个会话'); return; }
+  if (!confirmDangerousOnTabs([t], command, `快捷命令「${name}」`)) return; // 生产 + 危险 → 先确认
   window.api.sshWrite(t.sessionId, command + '\r');
   setStatus(`已发送: ${name}`, 'var(--green)');
   closeQuickModal();
@@ -7785,37 +7809,46 @@ async function connectToServer(session) {
     // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
     // 与"命令记录"开关无关,SFTP 定位总是需要)
     if (lineOnEnter != null) trackShellCwd(tab, lineOnEnter);
-    // 命令记录:开关开启时才记。
-    if (lineOnEnter != null && state.settings.cmdRecord !== false) {
-      if (tab.inputDirty) {
-        // 行被服务器改写(↑↓ 历史回显):从终端缓冲区还原真实命令(去掉提示符)
-        tab.inputDirty = false;
-        const real = recoverRecalledCommand(tab, term);
-        if (real) recordCommand(session.host, real);
-      } else if (lineOnEnter) {
-        recordCommand(session.host, lineOnEnter);
-        // 学习提示符:提示符 = 缓冲区当前行去掉"刚输入的命令"
-        try {
-          const buf = term.buffer.active;
-          const line = buf.getLine(buf.cursorY);
-          const txt = line ? line.translateToString(true).trim() : '';
-          if (txt.endsWith(lineOnEnter)) {
-            tab.promptText = txt.slice(0, txt.length - lineOnEnter.length).trimEnd();
-          }
-        } catch { /* ignore */ }
+    // 本地输入镜像复位:回车后**无论是否记录命令**都要清掉"本行被服务器改写"(dirty)标记。
+    // 旧版把复位写在下面的 cmdRecord 开关里 → 关掉命令记录后,按一次 ↑/↓ 就永久 dirty,
+    // 命令补全(maybeShowCmdComplete 见 dirty 直接早退)与提示符学习再也不工作。
+    if (lineOnEnter != null) {
+      const wasDirty = tab.inputDirty;
+      tab.inputDirty = false;
+      // 命令记录:开关开启时才记。
+      if (state.settings.cmdRecord !== false) {
+        if (wasDirty) {
+          // 行被服务器改写(↑↓ 历史回显):从终端缓冲区还原真实命令(去掉提示符)
+          const real = recoverRecalledCommand(tab, term);
+          if (real) recordCommand(session.host, real);
+        } else if (lineOnEnter) {
+          recordCommand(session.host, lineOnEnter);
+          // 学习提示符:提示符 = 缓冲区当前行去掉"刚输入的命令"
+          try {
+            const buf = term.buffer.active;
+            const line = buf.getLine(buf.cursorY);
+            const txt = line ? line.translateToString(true).trim() : '';
+            if (txt.endsWith(lineOnEnter)) {
+              tab.promptText = txt.slice(0, txt.length - lineOnEnter.length).trimEnd();
+            }
+          } catch { /* ignore */ }
+        }
       }
     }
-    // 生产环境保护:危险命令先弹确认(分级:critical 严重 / high 危险,原因细化)
-    if (lineOnEnter != null && (state.broadcast ? hasProdSession() : isSessionProd(session))) {
-      const an = analyzeCommand(lineOnEnter);
-      if (an.level !== 'safe') {
-        const label = dangerousLabel(an.level);
-        const reasons = an.findings.map((f) => `  · ${f.name}`).join('\n');
-        const ok = confirm(
-          `${label}!确定要在生产环境执行吗?\n\n${lineOnEnter}\n\n命中: \n${reasons}\n\n` +
-          (state.broadcast ? '(广播模式:会发到所有已连接会话)' : `目标: ${session.host}`)
-        );
-        if (!ok) return; // 拒绝则吞掉(命令不执行)
+    // 生产环境保护:危险命令先弹确认(分级:critical 严重 / high 危险,原因细化)。
+    // 判定统一在 confirmDangerousOnTabs(与一键入口共用同一套规则)。
+    if (lineOnEnter != null) {
+      const targets = state.broadcast
+        ? [...state.tabs.values()].filter((t) => t.status === 'connected')
+        : [tab];
+      if (!confirmDangerousOnTabs(targets, lineOnEnter, state.broadcast ? '广播模式:会发到所有已连接会话' : '终端手敲')) {
+        // 拒绝:命令不执行,并且**清掉远端行上的这行文本**(Ctrl+U)——
+        // 否则它留在行里,之后用"快捷命令/代码块执行"等一键入口会把两段拼成一条发给 shell
+        // (实测:拒绝后行残留 → 后续命令变成 `…danger-1rm -rf …`)。本地镜像同步清空。
+        sendInput(sessionId, '\x15');
+        tab.inputBuf = '';
+        hideCmdComplete(tab);
+        return;
       }
     }
     dlog('SEND', `${sessionId} ${JSON.stringify(String(data).slice(0, 80))}${data.length > 80 ? '…' : ''}`);
@@ -10715,9 +10748,14 @@ window.api.onSshStatus((sessionId, status) => {
       t.encSettleTimer = setTimeout(() => finishInitClean(t), 1500);
     }
     updateAiHostList(); // AI 主机选择器刷新
-    // 登录宏:连接成功后逐条发送会话里配置的 on_connect 命令(每行一条)
+    // 登录宏:连接成功后逐条发送会话里配置的 on_connect 命令(每行一条)。
+    // 宏是"自动执行",不能绕过生产保护:含危险命令且会话属生产分组 → 连接时先确认,拒绝则整段跳过。
     if (t.session && t.session.on_connect) {
       const cmds = t.session.on_connect.split('\n').map((l) => l.trim()).filter(Boolean);
+      if (!confirmDangerousOnTabs([t], cmds.join('\n'), '登录宏(连接后自动发送)')) {
+        setStatus('登录宏已跳过(生产环境危险命令未确认)', 'var(--orange)');
+        return;
+      }
       cmds.forEach((cmd, i) => {
         setTimeout(() => {
           const tt = state.tabs.get(sessionId);
