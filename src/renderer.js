@@ -10764,6 +10764,30 @@ window.api.onSftpDone((d) => {
       }
     }
   }
+  // 下载失败补行:失败文件若一次进度事件都没产生,就不会有传输行(行是首个 progress 创建的)
+  // → 用户只看到"点了没反应"。这里按 done 载荷的 failed 列表补出"✗ 失败"行(含原因)。
+  if (d.op === 'download' && Array.isArray(d.failed) && d.failed.length) {
+    const list = document.getElementById('sftp-transfers-list');
+    for (const f of d.failed) {
+      const rp = f.remotePath || f.rp || '';
+      if (sftpTransfer.rows.has(rp)) continue; // 已有行(有过进度)交给下面的状态标记
+      if (!list) break;
+      const row = makeSftpTransferRow({ op: 'download', file: rp, jobId: d.jobId });
+      row.el.classList.remove('active');
+      row.el.classList.add('fail');
+      if (row.cancel) row.cancel.style.display = 'none';
+      row.meta.textContent = '✗ 失败';
+      row.el.title = `${rp}\n${f.error || '未知错误'}`;
+      const errEl = document.createElement('div');
+      errEl.className = 'st-local-row';
+      errEl.textContent = '✗ ' + (f.error || '未知错误');
+      errEl.style.color = 'var(--red)';
+      row.el.appendChild(errEl);
+      sftpTransfer.rows.set(rp, row);
+      list.prepend(row.el);
+      els.sftpProgress.classList.remove('hidden');
+    }
+  }
   // 上传成功 → 刷新列表 + 高亮定位;失败/取消 → 提示
   if (d.op === 'upload' && d.ok && !d.cancelled) {
     // 高亮定位:把本次上传的条目名交给列表渲染(刷新后闪烁 + 滚到可见)。
@@ -10778,7 +10802,9 @@ window.api.onSftpDone((d) => {
     if (state.sftp.visible) loadSftpList();
     setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
   } else if (d.op === 'download' && d.ok && !d.cancelled && (d.localPath || d.results)) {
-    setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
+    const nFail = (d.failed || []).length;
+    if (nFail) setStatus(`下载完成,但 ${nFail} 个文件失败(首因:${(d.failed[0] || {}).error || '未知'})`, 'var(--orange)');
+    else setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
   } else if (d.cancelled) {
     // 取消:半成品与续传点都保留(见 lib/ssh-client 的 cancelError),状态栏明确说明可续传
     setStatus('传输已取消(半成品与续传点已保留,再次传输同一文件将从断点续)', 'var(--orange)');

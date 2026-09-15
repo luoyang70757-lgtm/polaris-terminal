@@ -2220,6 +2220,7 @@ function startDownloadJob(sessionId, kind, args) {
         if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', lp));
         const _t0 = Date.now();
         __sftpLog('下载开始', { sessionId, remotePath, localPath: lp, resumeFrom });
+        __sftpLog('下载开始(单文件)', { sessionId, remotePath, localPath: lp, resumeFrom });
         try {
           await sshClient.downloadFile(sftp, remotePath, lp, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
           __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
@@ -2245,6 +2246,7 @@ function startDownloadJob(sessionId, kind, args) {
             return { ok: true, remotePath: p.rp, localPath: p.lp };
           } catch (err) {
             recordDownloadPartial(sessionId, p.lp);
+            __sftpLog('下载失败(单文件)', { sessionId, remotePath: p.rp, localPath: p.lp, error: err && err.message });
             return { ok: false, remotePath: p.rp, error: err.message };
           } finally { finished++; }
         });
