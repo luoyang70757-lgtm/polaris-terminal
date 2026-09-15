@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.43**（2026-09-11；本轮修复清单见 `docs/issues-2026-09-11.md`）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.44**（2026-09-15）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -114,6 +114,8 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 28. **敏感输入不落盘**（v1.0.43，main.js `isSecretInput`）：`ssh:write` 支持 `opts.noLog`；并兜底"待写入文本包含该会话密码(长度≥3)"→ 一律跳过 `recorder.writeInput` 与会话日志。自动填充密码（renderer 传 `noLog`）是主要来源；**登录宏仍照常记录**（审计需要，含密码时由兜底命中）。Telnet 密码不走本条链路
 29. **xlsx 依赖**（v1.0.43）：`package.json` 指向 SheetJS 官方 tarball `xlsx-0.20.3`（非 npm registry —— npm 线止于 0.18.5 且有 2 个 high 无法修复）。`npm ci`/CI 需能访问 cdn.sheetjs.com；`npm audit` 不再跟踪它。评估与 PoC 见 `docs/deps-xlsx-evaluation.md`
 
+30. **传输失败的可见性**（v1.0.44，renderer.js `onSftpDone` + lib/ssh-client.js）：传输行只在"首个进度事件"创建，**读失败/零字节失败的文件不会有行** → 用户看到的是"点了下载没反应"。规则:① 下载结束按 `failed` 列表补出「✗ 失败」行（含原因）;② 部分失败必须点出失败数（**不能被"已下载"掩盖**）;③ 主进程对逐文件失败写 `[SFTP]` 日志（排障唯一依据）;④ **读/写任一出错成对销毁两个流**（否则本地 0 字节文件写句柄泄漏,实测进程 lsof 可见残留 fd）;⑤ 远端报 0 字节时留痕（无法区分"真空文件"与"设备撒谎"）
+
 ## 运行与调试
 
 ```bash
@@ -160,3 +162,5 @@ node verify-<功能>.js
 - **H3C/批量连接抢焦点（2026-09-11 未发版已修）**：`connectToServer(session, opts)` 加 `background` 后台模式（不切激活标签、不抢焦点），5 个批量入口全部传入；连带修掉 `renderLayout()` 重建 DOM 后焦点掉到 body（旧版被 `activateTab` 内的 `term.focus()` 掩盖）。回归 `verify-batch-focus.js`
 
 **已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
+
+**已解决（2026-09-15，v1.0.44）**：用户报「SFTP 点击下载后没有任何反应」。现场取证（直接查运行中的 app）：进程仍持有 4 个残留写 fd、`sftp-partials.json` 有 0B/2106B 两条失败记录、本地落下 3 个 0 字节文件、app 日志**无任何下载记录**、面板截图**无任何传输行**。根因是"失败文件零进度 → 不建行 + 不写日志"，叠加"读错不销毁写流 → fd 泄漏"。修法与回归见技术决策 30 与 `verify-sftp-download-fail.js`(7/7)。

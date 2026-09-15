@@ -30,7 +30,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.43**。本次会话（v1.0.35→v1.0.40）已提交的重要变化：
+见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.44**。本次会话（v1.0.35→v1.0.40）已提交的重要变化：
 
 - **命令补全**（v1.0.38）：输入命令前缀 ≥2 字符弹候选（内置常用 + 该主机历史高频 + 快捷命令，历史带描述），**Tab 补全 / ↑↓ 选择 / 点击补全，不自动执行**；转义/回车/Ctrl/点击面板外自动关闭；行被服务器改写（dirty）时不补全
 - **性能**（v1.0.37）：主终端 xterm **WebGL 渲染**（GPU 不可用自动回退 canvas）、scrollback 5000→3000、启动延迟加载堡垒机资产
@@ -44,6 +44,14 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 - **SFTP「⬆ 上一级」点了没反应**：① 已在根目录时旧版仍去重读同目录（H3C 设备 readdir 慢，40s 内界面毫无动静）→ 改为立即提示「已在根目录」且不发请求；② `sftpParent` 认 H3C Comware 的 `flash:/`、`cfcard:/` 文件系统根；③ 读取中/结束都有状态栏反馈；④ readdir 40s 超时后**无传输在跑时重置 SFTP 通道**（旧版挂死的请求会把设备串行 SFTP 堵死，之后每次点击都再等 40s）
 
 - **备用屏切换乱抢焦点**（v1.0.42）：`connectToServer` 里 `buffer.onBufferChange → term.focus()` 无条件补焦点 —— 远端任何全屏程序切备用屏（vim 进入/退出等）都会把焦点从用户正在输入的地方（会话搜索框/路径框/堡垒机地址框）拽回终端，非当前标签也会抢。改为：**只对当前标签、且焦点不在别的输入框里时才补**（"vim 退出后终端仍能输入"的初衷不变）。回归 `verify-bufferfocus.js`、`verify-vim-real.js`
+**v1.0.44 修复：SFTP 下载失败不再"无声"**（用户报「点击下载后没有任何反应」）：
+
+- **失败文件补可见行**：传输行原本只在"首个进度事件"时创建，而读失败的文件一次进度都没有 → 界面上完全没痕迹。现在按 `sftp:done` 载荷的 `failed` 列表补出「✗ 失败」行（含原因，悬停看完整路径+错误）
+- **部分失败不再被"已下载"掩盖**：状态栏改为「下载完成,但 N 个文件失败(首因:…)」
+- **写句柄泄漏**：读流出错时只 reject 不销毁写流 → 本地 0 字节文件被长期持有（实测 app 进程 `lsof` 可见 4 个残留写 fd）。改为读/写任一出错**成对销毁**（上传侧同样处理）
+- **可诊断**：主进程补 `下载开始(单文件)`/`下载失败(单文件)` 日志；远端报 0 字节时留痕（区分"真空文件"与"设备撒谎"）
+- 回归 `verify-sftp-download-fail.js`（用 mock `MOCK_SFTP_FAIL_READ` 注入读失败，7/7：可见行/状态/日志/fd 不泄漏/同目录正常文件照常成功）
+
 **v1.0.43 的一批修复（安全 / 传输 / 交互 / 依赖）**：
 
 - **敏感输入不落盘**：自动填充的密码、以及任何"文本含该会话密码"的写入，一律不进会话日志与录制（`main.js` `isSecretInput` + `ssh:write` 的 `opts.noLog`）；此前自动填充的密码会明文写进 `session-logs/*.log`（实测复现）
@@ -58,4 +66,4 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 **调试注意**：测试脚本会 `pkill electron`（含用户正式 app），跑完 e2e 记得重启；功能验证后清理残留 dev 实例（`pkill -9 -f "polaris-terminal/node_modules/electron"`）。
 
-回归测试：`verify-batch-focus.js`（批量连接不抢焦点）、`verify-line-clear.js`（行残留防护）、`verify-xlsx-lib.js`（xlsx 替换）、`verify-transfer-cancel.js`（取消语义）、`verify-sftp-cancel.js`（取消端到端）、`verify-batch-sftp.js`（批量传输）、`verify-dangerous-onclick.js`（一键入口守卫）、`verify-bastion-multisite.js`（多站点分键）、`node verify-sftp-stress.js`（SFTP 全链路）、`verify-recommend.js`（命令推荐，拆模块后）、`verify-pack-upload.js`（打包/递归上传）、`verify-sftp-progress-throttle.js`（节流器单测）、`verify-space-composition-flush.js`（输入法残留污染命令行）、`verify-sftp-up.js`（SFTP 上一级/慢读取反馈）、`verify-bufferfocus.js`（备用屏切换不抢焦点）。
+回归测试：`verify-sftp-download-fail.js`（下载失败可见性 + 资源回收）、`verify-batch-focus.js`（批量连接不抢焦点）、`verify-line-clear.js`（行残留防护）、`verify-xlsx-lib.js`（xlsx 替换）、`verify-transfer-cancel.js`（取消语义）、`verify-sftp-cancel.js`（取消端到端）、`verify-batch-sftp.js`（批量传输）、`verify-dangerous-onclick.js`（一键入口守卫）、`verify-bastion-multisite.js`（多站点分键）、`node verify-sftp-stress.js`（SFTP 全链路）、`verify-recommend.js`（命令推荐，拆模块后）、`verify-pack-upload.js`（打包/递归上传）、`verify-sftp-progress-throttle.js`（节流器单测）、`verify-space-composition-flush.js`（输入法残留污染命令行）、`verify-sftp-up.js`（SFTP 上一级/慢读取反馈）、`verify-bufferfocus.js`（备用屏切换不抢焦点）。
