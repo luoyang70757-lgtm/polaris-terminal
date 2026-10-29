@@ -1391,7 +1391,7 @@ function runInActiveTerminal(command) {
   const t = state.tabs.get(state.activeSessionId);
   if (!t || t.status !== 'connected') { alert('当前没有已连接的终端'); return; }
   if (!confirmDangerousOnTabs([t], command, 'AI 代码块 / 推荐项执行')) return; // 生产 + 危险 → 与手敲同规则
-  window.api.sshWrite(t.sessionId, command + '\r');
+  sendOneShotCommand(t, command); // 先清远端残留行,避免与半条命令拼接
   setStatus(`已在终端执行: ${command.split('\n')[0]}`, 'var(--green)');
 }
 
@@ -2711,8 +2711,9 @@ function maybeShowCmdComplete(tab, term) {
   const comp = tab.cmdComp;
   if (!comp) return;
   const input = tab.inputBuf || '';
-  // 只在命令词前缀(无空格)且≥2字符时提示;dirty(行被服务器改写/方向键历史)不提示
-  if (!input || input.length < 2 || input.includes(' ') || tab.inputDirty) { hideCmdComplete(tab); return; }
+  // 只在命令词前缀(无空格)且≥2字符时提示;dirty(行被服务器改写/方向键历史)不提示;
+  // 密码提示后输入的是密码,绝不提示(避免 Tab/点击把密码改写成命令)
+  if (!input || input.length < 2 || input.includes(' ') || tab.inputDirty || tab.atPasswordPrompt) { hideCmdComplete(tab); return; }
   const cands = cmdCompCandidates(tab)
     .filter((c) => c.cmd.startsWith(input) && c.cmd !== input)
     .sort((a, b) => a.cmd.localeCompare(b.cmd))
@@ -2757,7 +2758,7 @@ function renderCmdComplete(tab, term) {
 // 补全:退格删掉已输入前缀 + 发送命令(带空格)。合并一次发送;不执行,用户自己回车。
 function applyCmdComplete(tab, term) {
   const comp = tab.cmdComp;
-  if (!comp || !comp.visible) return false;
+  if (!comp || !comp.visible || tab.atPasswordPrompt) return false;
   const item = comp.candidates[comp.selected];
   if (!item || !item.cmd) return false;
   hideCmdComplete(tab);
@@ -3502,11 +3503,19 @@ const DANGEROUS_CMDS = [
   { level: 'critical', name: '分区操作(fdisk/parted)', re: /\b(fdisk|parted|gdisk|sfdisk)\b/i },
   { level: 'critical', name: '写入块设备', re: />\s*\/dev\/(sd|nvme|vd|hd)[a-z]+\d*/i },
   { level: 'critical', name: 'fork 炸弹', re: /:\s*\(\s*\)\s*\{|:\s*\|\s*:/i },
+  // Windows / PowerShell(客户端在 Windows 上连接 Windows 目标时同样要有保护)。
+  // stripQuotes 会把 \ 当转义删掉(C:\ → C:),盘根判断要接受结尾的 "C:"。
+  { level: 'critical', name: '删除盘根(Windows)', re: /\b(del|erase|rd|rmdir)\b[^\n]*\s[a-z]:(\s*$|[\\/]|\*)/i },
+  { level: 'critical', name: '递归删除盘根(PowerShell)', re: /\bRemove-Item\b[^\n]*-Recurse[^\n]*\s[a-z]:(\s*$|[\\/]|\*)/i },
   // high:必须询问
   { level: 'high', name: '递归强制删除(rm -rf)', re: /\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\b/i },
   { level: 'high', name: '关机/重启', re: /\b(shutdown|reboot|halt|poweroff)\b/i },
   { level: 'high', name: '切换运行级别(init)', re: /\binit\s+[06]\b/i },
   { level: 'high', name: '格式化命令', re: /\bformat\b/i },
+  { level: 'high', name: '强制递归删除(del/rd)', re: /\b(del|erase|rd|rmdir)\b[^\n]*\/[sfq]\b/i },
+  { level: 'high', name: 'PowerShell 递归删除', re: /\bRemove-Item\b[^\n]*-Recurse\b/i },
+  { level: 'high', name: '关机/重启(PowerShell)', re: /\b(Stop-Computer|Restart-Computer)\b/i },
+  { level: 'high', name: '磁盘/引导配置(diskpart/bcdedit)', re: /\b(diskpart|bcdedit)\b/i },
 ];
 function analyzeCommand(line) {
   const segments = splitCommands(String(line || ''));
@@ -3564,7 +3573,7 @@ function confirmDangerousOnTabs(tabs, command, label) {
 }
 
 // 把输入发给服务器(单会话 / 广播模式统一走这里)
-function sendInput(sessionId, data) {
+function sendInput(sessionId, data, opts) {
   // ---- 多行粘贴保护:一次贴入多行(如整段脚本)时先确认,防止误贴进生产 ----
   const lineCount = (String(data).match(/\r|\n/g) || []).length;
   if (lineCount > 1) {
@@ -3586,11 +3595,25 @@ function sendInput(sessionId, data) {
 
   if (state.broadcast) {
     for (const t of state.tabs.values()) {
-      if (t.status === 'connected') window.api.sshWrite(t.sessionId, data);
+      if (t.status === 'connected') window.api.sshWrite(t.sessionId, data, opts);
     }
   } else {
-    window.api.sshWrite(sessionId, data);
+    window.api.sshWrite(sessionId, data, opts);
   }
+}
+
+// 一键执行入口(快捷命令/AI 代码块/命令重发)统一发送:先 Ctrl+U 清掉远端当前行。
+// 远端 readline 里可能残留用户敲了一半的命令(本地镜像外的状态也算):直接发 `cmd\r`
+// 会拼成 `cd /tmpls -l` 这类意外命令;更严重的是危险命令确认只看本次要发的命令,
+// 残留的危险命令会借一条"安全命令"的确认被一起执行(确认机制被绕过)。
+function sendOneShotCommand(tab, command) {
+  if (!tab || !tab.sessionId) return;
+  tab.inputBuf = '';
+  tab.inputDirty = false; // 远端行已被强制清空,本地镜像重新可信
+  hideCmdComplete(tab);
+  // Ctrl+U(删光标前)+ Ctrl+K(删光标后):光标停在行中间时也能把整行清干净,
+  // 只发 Ctrl+U 会留下光标之后的残留,与一键命令拼在一起。
+  window.api.sshWrite(tab.sessionId, '\x15\x0b' + command + '\r');
 }
 
 // =====================================================================
@@ -3627,6 +3650,34 @@ function recoverRecalledCommand(tab, term) {
     if (joined.startsWith(prompt)) return joined.slice(prompt.length).trim();
     return '';
   } catch { return ''; }
+}
+// 兜底:还原终端光标所在的整条"逻辑行"(xterm 用 isWrapped 标记自动换行的续行)。
+// 用于还没学到提示符时(首次连接 / 提示符格式特殊)仍能做危险命令判定 —— 返回文本可能
+// 带提示符前缀,但危险正则按词匹配,不影响命中;宁可多问一次,也不能放过危险命令。
+function lastBufferLineText(term) {
+  try {
+    const buf = term.buffer.active;
+    let start = buf.cursorY;
+    while (start > 0) {
+      const line = buf.getLine(start);
+      if (!line || !line.isWrapped) break;
+      start--;
+    }
+    let joined = '';
+    for (let y = start; y <= buf.cursorY; y++) {
+      const line = buf.getLine(y);
+      if (line) joined += line.translateToString(true);
+    }
+    return joined.trim();
+  } catch { return ''; }
+}
+
+// 命令历史/推荐用的"主机标识":堡垒机会话的 session.host 是网关地址(同一网关下
+// 所有资产都一样),必须用 displayHost(真实目标 IP)区分。否则 A 资产的命令会出现在
+// B 资产的历史里,点"重发"时还可能落到另一台已连接的同网关资产上(危险命令会跑错机器)。
+function cmdHostKey(session) {
+  if (!session) return '';
+  return String(session.displayHost || session.host || '');
 }
 
 // 记录一条命令(回车时调用);每次执行都记录(连续相同命令也逐条记);按主机聚合
@@ -3711,13 +3762,14 @@ function renderCmdPanel() {
 function resendCommand(host, command) {
   let target = null;
   for (const t of state.tabs.values()) {
-    if (t.status === 'connected' && t.session && t.session.host === host) { target = t; break; }
+    // 按"命令历史标识"(堡垒机用真实目标 displayHost)匹配,不能只比网关 host
+    if (t.status === 'connected' && t.session && cmdHostKey(t.session) === host) { target = t; break; }
   }
   if (!target) { alert('该主机未连接,无法重发'); return; }
   if (!confirmDangerousOnTabs([target], command, '命令记录重发')) return; // 生产 + 危险 → 先确认
   // 切到目标标签并聚焦,让命令立刻可见、生效
   if (state.activeSessionId !== target.sessionId) activateTab(target.sessionId);
-  window.api.sshWrite(target.sessionId, command + '\r');
+  sendOneShotCommand(target, command); // 先清远端残留行,避免与半条命令拼接
   target.term.focus();
   // 重发的命令也算执行了一次 → 同样记录(开关开启时)
   if (state.settings.cmdRecord !== false) recordCommand(host, command);
@@ -3736,7 +3788,7 @@ function clearCmdHistory() {
 // 当前活动主机(用于归档/查看归档)
 function activeCmdHost() {
   const t = state.tabs.get(state.activeSessionId);
-  return t && t.session ? t.session.host : '';
+  return t && t.session ? cmdHostKey(t.session) : '';
 }
 function basename(p) { return String(p || '').split(/[\\/]/).pop(); }
 
@@ -4043,7 +4095,7 @@ function sendQuickCurrent(name, command) {
   const t = state.tabs.get(state.activeSessionId);
   if (!t || t.status !== 'connected') { alert('请先连接一个会话'); return; }
   if (!confirmDangerousOnTabs([t], command, `快捷命令「${name}」`)) return; // 生产 + 危险 → 先确认
-  window.api.sshWrite(t.sessionId, command + '\r');
+  sendOneShotCommand(t, command); // 先清远端残留行,避免与半条命令拼接
   setStatus(`已发送: ${name}`, 'var(--green)');
   closeQuickModal();
 }
@@ -7246,7 +7298,7 @@ function closeRecommendMenu() { els.recommendMenu.classList.add('hidden'); }
 // 拉取推荐并渲染:当前激活标签的主机 → cmd:recommend(历史高频 + 常用库)
 async function refreshRecommendMenu() {
   const t = currentTab();
-  const host = t && t.session ? t.session.host : null;
+  const host = t && t.session ? cmdHostKey(t.session) : null;
   els.recommendHost.textContent = host ? `@ ${host}` : '未连接会话';
   const box = els.recommendList;
   box.textContent = '';
@@ -7314,13 +7366,13 @@ async function aiRecommendCommand() {
   const hostLabel = t && t.session
     ? (t.session.displayHost ? `${t.session.name}(${t.session.displayHost})` : `${t.session.name}(${t.session.host})`)
     : '(未连接)';
-  const aiRow = els.recommendList.querySelector('.recommend-ai-row');
+  const aiRow = els.recommendList.querySelector('.ai-row'); // class 实际是 recommend-item ai-row
   if (aiRow) { aiRow.classList.add('loading'); aiRow.textContent = '🤖 AI 思考中…'; }
   try {
     // 历史:该主机的推荐清单(高频 + 常用)
     let history = '';
     try {
-      const res = await window.api.recommendCmds(t && t.session ? t.session.host : null);
+      const res = await window.api.recommendCmds(t && t.session ? cmdHostKey(t.session) : null);
       if (res && res.ok) history = (res.list || []).slice(0, 12).map((x) => x.command).join('\n');
     } catch { /* ignore */ }
     // 上下文:终端最近 ~40 行输出
@@ -7377,7 +7429,7 @@ function renderAiRecommendItem(res) {
   }
   row.append(cmdEl, meta);
   row.addEventListener('click', () => { closeRecommendMenu(); runInActiveTerminal(res.command); });
-  const aiRow = box.querySelector('.recommend-ai-row');
+  const aiRow = box.querySelector('.ai-row');
   if (aiRow) aiRow.after(row);
   else box.prepend(row);
 }
@@ -7779,13 +7831,20 @@ async function connectToServer(session, opts) {
 
   // 键盘输入 → SSH(term.onData 会在每个按键/粘贴时触发)
   term.onData((data) => {
+    // 在下面可能重置 atPasswordPrompt 之前快照:本次输入若是密码(服务器刚提示 password:),
+    // 必须整段按敏感输入处理 —— 手敲密码是逐键发送的,主进程 isSecretInput 用单字符
+    // 匹配完整密码永远不会命中,旧版会把密码逐字符落进会话日志/录制。
+    const inputAtPasswordPrompt = !!tab.atPasswordPrompt;
     // 始终跟踪输入行:①记录命令历史 ②生产环境危险命令确认
     let lineOnEnter = null;
-    // 命令补全:Tab 且补全面板可见 → 补全选中的候选并拦截 Tab(不发给远程 shell)
+    // 命令补全:Tab 且补全面板可见 → 补全选中的候选并拦截 Tab(不发给远程 shell)。
+    // 密码提示处绝不补全(否则会把正在输入的密码改写成命令);补全未生效时让 Tab 照常发给远端。
     if (String(data).includes('\t') && tab.cmdComp && tab.cmdComp.visible) {
-      applyCmdComplete(tab, term);
-      dlog('SEND', `${sessionId} 补全:${JSON.stringify(tab.inputBuf.slice(0, 60))}`);
-      return;
+      if (!tab.atPasswordPrompt && applyCmdComplete(tab, term)) {
+        dlog('SEND', `${sessionId} 补全:${JSON.stringify(tab.inputBuf.slice(0, 60))}`);
+        return;
+      }
+      hideCmdComplete(tab);
     }
     // 命令补全:↑↓ 在补全面板可见时切换候选选择(不发远程,避免和 shell 历史冲突)
     if (tab.cmdComp && tab.cmdComp.visible) {
@@ -7810,6 +7869,8 @@ async function connectToServer(session, opts) {
       if (ch === '\r' || ch === '\n') {
         lineOnEnter = tab.inputBuf.trim();
         tab.inputBuf = '';
+        // 回车提交后密码提示已消费:解除补全抑制(服务器若再次要密码,新输出会重新置位)
+        tab.atPasswordPrompt = false;
         hideCmdComplete(tab);
       } else if (ch === '\x7f' || ch === '\b') {
         tab.inputBuf = tab.inputBuf.slice(0, -1); // 退格
@@ -7831,23 +7892,33 @@ async function connectToServer(session, opts) {
         maybeShowCmdComplete(tab, term); // 输入命令前缀后弹候选
       }
     }
-    // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
-    // 与"命令记录"开关无关,SFTP 定位总是需要)
-    if (lineOnEnter != null) trackShellCwd(tab, lineOnEnter);
     // 本地输入镜像复位:回车后**无论是否记录命令**都要清掉"本行被服务器改写"(dirty)标记。
     // 旧版把复位写在下面的 cmdRecord 开关里 → 关掉命令记录后,按一次 ↑/↓ 就永久 dirty,
     // 命令补全(maybeShowCmdComplete 见 dirty 直接早退)与提示符学习再也不工作。
+    //
+    // dirty 时本地镜像 inputBuf 是空的/不可信的(↑ 历史回显、远程 Tab 补全都会改写行)。
+    // 旧版危险命令检查只看 inputBuf → 按 ↑ 调出历史里的 `rm -rf /` 再回车**不弹确认直接执行**
+    // (生产保护被绕过)。现在 dirty 时从终端缓冲区还原真实命令行,供危险检查/命令记录/cd 跟踪共用。
+    let effectiveCmd = lineOnEnter;
     if (lineOnEnter != null) {
       const wasDirty = tab.inputDirty;
       tab.inputDirty = false;
+      let recalled = '';
+      if (wasDirty) {
+        recalled = recoverRecalledCommand(tab, term); // 去掉提示符的完整命令
+        // 还原失败(还没学到提示符)时退回当前行原文(含提示符,危险正则照样能命中)
+        effectiveCmd = recalled || lastBufferLineText(term) || lineOnEnter;
+      }
+      // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
+      // 与"命令记录"开关无关,SFTP 定位总是需要)
+      if (effectiveCmd) trackShellCwd(tab, effectiveCmd);
       // 命令记录:开关开启时才记。
       if (state.settings.cmdRecord !== false) {
         if (wasDirty) {
           // 行被服务器改写(↑↓ 历史回显):从终端缓冲区还原真实命令(去掉提示符)
-          const real = recoverRecalledCommand(tab, term);
-          if (real) recordCommand(session.host, real);
+          if (recalled) recordCommand(cmdHostKey(session), recalled);
         } else if (lineOnEnter) {
-          recordCommand(session.host, lineOnEnter);
+          recordCommand(cmdHostKey(session), lineOnEnter);
           // 学习提示符:提示符 = 缓冲区当前行去掉"刚输入的命令"
           try {
             const buf = term.buffer.active;
@@ -7862,22 +7933,23 @@ async function connectToServer(session, opts) {
     }
     // 生产环境保护:危险命令先弹确认(分级:critical 严重 / high 危险,原因细化)。
     // 判定统一在 confirmDangerousOnTabs(与一键入口共用同一套规则)。
-    if (lineOnEnter != null) {
+    if (lineOnEnter != null && effectiveCmd) {
       const targets = state.broadcast
         ? [...state.tabs.values()].filter((t) => t.status === 'connected')
         : [tab];
-      if (!confirmDangerousOnTabs(targets, lineOnEnter, state.broadcast ? '广播模式:会发到所有已连接会话' : '终端手敲')) {
+      if (!confirmDangerousOnTabs(targets, effectiveCmd, state.broadcast ? '广播模式:会发到所有已连接会话' : '终端手敲')) {
         // 拒绝:命令不执行,并且**清掉远端行上的这行文本**(Ctrl+U)——
         // 否则它留在行里,之后用"快捷命令/代码块执行"等一键入口会把两段拼成一条发给 shell
         // (实测:拒绝后行残留 → 后续命令变成 `…danger-1rm -rf …`)。本地镜像同步清空。
-        sendInput(sessionId, '\x15');
+        sendInput(sessionId, '\x15\x0b'); // 光标前后都清(行中间时 Ctrl+U 会留尾巴)
         tab.inputBuf = '';
         hideCmdComplete(tab);
         return;
       }
     }
-    dlog('SEND', `${sessionId} ${JSON.stringify(String(data).slice(0, 80))}${data.length > 80 ? '…' : ''}`);
-    sendInput(sessionId, data); // 普通输入照发(广播模式也走这里)
+    if (!inputAtPasswordPrompt) dlog('SEND', `${sessionId} ${JSON.stringify(String(data).slice(0, 80))}${data.length > 80 ? '…' : ''}`);
+    // 密码提示处的输入 → noLog(主进程跳过会话日志与录制)
+    sendInput(sessionId, data, inputAtPasswordPrompt ? { noLog: true } : undefined); // 普通输入照发(广播模式也走这里)
   });
   // 窗口尺寸变化 → 同步给服务器(否则 vim 全屏会错位)
   term.onResize(({ cols, rows }) => window.api.sshResize(sessionId, cols, rows));
@@ -7936,7 +8008,7 @@ async function connectToServer(session, opts) {
   };
   state.tabs.set(sessionId, tab);
   // 命令补全候选:异步加载(该主机历史高频 + 快捷命令),一次缓存,不阻塞连接
-  try { window.api.recommendCmds(session.host).then((r) => { if (Array.isArray(r)) tab.cmdCompCmds = r.map((x) => ({ cmd: String(x.command || '').trim().split(/\s+/)[0], desc: x.desc || '' })).filter((x) => x.cmd); }).catch(() => {}); } catch { /* ignore */ }
+  try { window.api.recommendCmds(cmdHostKey(session)).then((r) => { if (Array.isArray(r)) tab.cmdCompCmds = r.map((x) => ({ cmd: String(x.command || '').trim().split(/\s+/)[0], desc: x.desc || '' })).filter((x) => x.cmd); }).catch(() => {}); } catch { /* ignore */ }
   try { window.api.quickList().then((r) => { if (r && r.ok) tab.cmdCompQuick = r.cmds || []; }).catch(() => {}); } catch { /* ignore */ }
   tab.__imeReset = setupImeGuard(term); // 输入法组合状态看护(见 setupImeGuard)
   // vim 等全屏 TUI 退出(备用屏切回普通 buffer)后,xterm 内部 _isComposing 可能残留卡死 →
@@ -8200,7 +8272,7 @@ function closeTab(sessionId) {
   state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
   updateRecordBtn();
   window.api.sshClose(sessionId);
-  clearSftpTransfers(); // 关标签 = 关闭连接,清掉上传/下载记录
+  clearSftpTransfers(sessionId); // 只清这个会话的传输记录(其他会话可能还在传)
   kbdCancelSession(sessionId); // 关标签时取消该会话挂起的 keyboard-interactive 认证挑战
   // 批量/AI 面板里残留该标签的勾选与分屏尺寸,一并清掉,避免计数虚高/集合增长
   state.batchHosts.delete(sessionId);
@@ -8630,7 +8702,13 @@ function trackShellCwd(tab, cmdLine) {
     const c = String(cmdLine || '').trim();
     // 只认纯 cd(前面无管道/变量赋值/分号等复杂形式,那些无法可靠解析)
     if (!/^cd(\s|$)/.test(c) || /[|;&<>]/.test(c)) return;
-    const arg = c.slice(2).trim();
+    let arg = c.slice(2).trim();
+    // 去掉成对引号:cd "/path with space"、cd "C:\Program Files"(Windows 目标常见)
+    if (arg.length >= 2 && ((arg[0] === '"' && arg.endsWith('"')) || (arg[0] === "'" && arg.endsWith("'")))) {
+      arg = arg.slice(1, -1);
+    }
+    // Windows 目标(远程 Windows OpenSSH)的 cd 用反斜杠 → SFTP 路径统一正斜杠
+    if (/^[A-Za-z]:[\\/]/.test(arg) || arg.startsWith('\\\\')) arg = arg.replace(/\\/g, '/');
     if (!arg || arg === '~' || arg === '~/' ) {
       tab.shellCwd = null; // 回 home:具体路径未知,SFTP 用默认(登录目录)
       return;
@@ -9557,7 +9635,9 @@ function quickConnect() {
   else showPrompt({ title: '快捷连接', label: `${user}@${host}:${port} 的登录密码`, password: true, onOk: (pw) => doQuickConnect({ user, host, port, password: pw }) });
 }
 function doQuickConnect(s) {
-  connectToServer({ name: `${s.user}@${s.host}`, host: s.host, port: s.port, username: s.user, password: s.password || '', privateKey: s.privateKey || '', passphrase: s.passphrase || '', encoding: 'utf8' });
+  // 注意字段名:connectToServer/sshConnect 读的是下划线式 session.private_key(与数据库行一致),
+  // 旧版这里传 privateKey(驼峰)→ 复用已保存私钥的快捷连接静默丢掉密钥,认证必然失败。
+  connectToServer({ name: `${s.user}@${s.host}`, host: s.host, port: s.port, username: s.user, password: s.password || '', private_key: s.privateKey || '', passphrase: s.passphrase || '', encoding: 'utf8' });
   els.quickConnect.classList.add('hidden');
 }
 els.btnQuickConnect.addEventListener('click', toggleQuickConnect);
@@ -10446,9 +10526,10 @@ els.sftpList.addEventListener('drop', async (e) => {
   const target = state.sftp.path || '/';
   setStatus(`正在上传 ${paths.length} 个本地项到 ${target}…`, 'var(--accent)');
   const res = await window.api.sftpUploadPaths(sftpSession(), target, paths);
-  if (res && res.ok) setStatus(`上传完成: ${res.count} 个到 ${target}`, 'var(--green)');
-  else if (res && !res.ok) setStatus(`上传部分失败: ${(res.failed || []).map((f) => f.error).join('; ')}`, 'var(--red)');
-  loadSftpList();
+  // 上传已改为后台 job:这里只返回 {ok, jobId},完成/失败/刷新由 sftp:done 统一处理。
+  // 旧版按同步返回值读 res.count → 立刻显示"上传完成: undefined 个",而且此时文件还没开始传。
+  if (res && res.ok) setStatus(`上传已开始(${paths.length} 个)→ ${target}`, 'var(--accent)');
+  else setStatus(`上传失败: ${(res && res.error) || '未知错误'}`, 'var(--red)');
 });
 els.btnSftpUpload.addEventListener('click', (e) => {
   // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
@@ -10658,6 +10739,18 @@ window.api.onSshData((sessionId, data) => {
     }
   }
   let out = (typeof data === 'string') ? data : t.decoder.decode(new Uint8Array(data), { stream: true });
+  // ---- 密码提示检测(所有 SSH 会话,不依赖是否保存了密码)----
+  // 在 password:/passphrase: 提示后用户键入的是密码,不是命令:此时必须停掉命令补全。
+  // 否则密码前缀命中内置命令(如 "ro…"→rm/route)时弹候选,按 Tab 会被 applyCmdComplete
+  // 当成"退格 + 补全"改写密码(或点候选改写),导致认证失败,排障时极难想到。
+  try {
+    const plain = String(out)
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')   // OSC(含标题/超链接)
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')           // CSI(颜色/光标)
+      .replace(/\r/g, '');
+    t.outTail = ((t.outTail || '') + plain).slice(-200);
+    t.atPasswordPrompt = /(?:^|[^\w])(?:[Pp]assword|[Pp]asswd|[Pp]assphrase)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.outTail);
+  } catch { /* ignore */ }
   // 高亮(关键词着色);主进程已把 GBK/GB2312 转成 UTF-8 字符串
   if (state.settings.highlight) out = highlightString(out);
   // 连接初始化阶段(编码探针未完成):不显示,把输出缓冲起来 —— 否则服务器 banner/MOTD 会闪一下
@@ -10686,14 +10779,20 @@ function filterWrite(text) {
 
 // ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
 // 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
-const sftpTransfer = { rows: new Map(), jobs: new Map() }; // rows: path → { el, fill, meta, setLocal }; jobs: jobId → Set<path>(该传输批次出现的文件,完成/取消时标记)
+const sftpTransfer = { rows: new Map(), jobs: new Map(), jobSession: new Map() };
+// rows: 行键 → { el, fill, meta, setLocal, file, sessionId }。行键 = jobId\0远程路径:
+//   旧版只用远程路径做 key → 同一文件重传/重试时复用上一批的行(取消按钮闭包是旧 jobId、
+//   已完成状态/✓ 累加、方向图标互相覆盖),正是 v1.0.44 想支持的"失败后重试"场景。
+// jobs: jobId → Set<行键>;jobSession: jobId → sessionId(关会话时只清本会话的传输记录)
+const sftpRowKey = (p) => `${p.jobId || ''}\u0000${p.file || ''}`;
 function makeSftpTransferRow(p) {
+  const key = sftpRowKey(p);
   const el = document.createElement('div');
   el.className = 'sftp-transfer-row active';
   // 第一行:方向 / 远程名 / 进度条 / 进度 / 取消 / 删除
   const main = document.createElement('div'); main.className = 'st-main';
   const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
-  const name = document.createElement('span'); name.className = 'st-name'; name.textContent = p.file.split('/').filter(Boolean).pop() || p.file; name.title = p.file;
+  const name = document.createElement('span'); name.className = 'st-name'; name.textContent = String(p.file || '').split('/').filter(Boolean).pop() || p.file; name.title = p.file || '';
   const track = document.createElement('div'); track.className = 'st-track';
   const fill = document.createElement('div'); fill.className = 'st-fill';
   track.appendChild(fill);
@@ -10702,7 +10801,7 @@ function makeSftpTransferRow(p) {
   const cancel = document.createElement('button'); cancel.className = 'st-cancel'; cancel.title = '取消该传输'; cancel.textContent = '⏹';
   cancel.addEventListener('click', () => { if (p.jobId) { window.api.sftpCancel(p.jobId); cancel.disabled = true; cancel.textContent = '…'; } });
   const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
-  del.addEventListener('click', () => { sftpTransfer.rows.delete(p.file); el.remove(); });
+  del.addEventListener('click', () => { sftpTransfer.rows.delete(key); el.remove(); });
   main.append(dir, name, track, meta, cancel, del);
   // 第二行:本地保存路径 + 「📂 打开所在文件夹」(仅下载完成后盖上去,上传不显示)
   const localRow = document.createElement('div'); localRow.className = 'st-local-row hidden';
@@ -10718,19 +10817,21 @@ function makeSftpTransferRow(p) {
     local.title = lp;
     localRow.classList.remove('hidden');
   };
-  return { el, fill, meta, setLocal, cancel, jobId: p.jobId };
+  return { el, fill, meta, setLocal, cancel, jobId: p.jobId, key, file: p.file, sessionId: p.sessionId || '', op: p.op };
 }
 window.api.onSftpProgress((p) => {
   if (!p || !els.sftpProgress) return;
   const list = document.getElementById('sftp-transfers-list');
   if (!list) return;
   els.sftpProgress.classList.remove('hidden');
-  let row = sftpTransfer.rows.get(p.file);
-  if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(p.file, row); list.prepend(row.el); } // 新的在最上面
-  // 按 jobId 记录该批次的文件(完成/取消时只标记本批次的行,避免重叠批次误标记)
+  const key = sftpRowKey(p);
+  let row = sftpTransfer.rows.get(key);
+  if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(key, row); list.prepend(row.el); } // 新的在最上面
+  // 按 jobId 记录该批次的行键(完成/取消时只标记本批次的行,避免重叠批次误标记)
   if (p.jobId) {
     if (!sftpTransfer.jobs.has(p.jobId)) sftpTransfer.jobs.set(p.jobId, new Set());
-    sftpTransfer.jobs.get(p.jobId).add(p.file);
+    sftpTransfer.jobs.get(p.jobId).add(key);
+    if (p.sessionId) sftpTransfer.jobSession.set(p.jobId, p.sessionId);
   }
   const fpct = p.fileTotal > 0 ? Math.min(100, Math.round((p.fileDone / p.fileTotal) * 100)) : 100;
   row.fill.style.width = fpct + '%';
@@ -10742,56 +10843,82 @@ window.api.onSftpProgress((p) => {
 // 批次结束(仿 WinSCP):后台 job 完成 → 把该批次的行标 完成/失败/已取消,刷新列表
 window.api.onSftpDone((d) => {
   if (!d || !d.jobId) return;
-  const paths = sftpTransfer.jobs.get(d.jobId) || [];
+  const keys = sftpTransfer.jobs.get(d.jobId) || [];
   sftpTransfer.jobs.delete(d.jobId);
+  sftpTransfer.jobSession.delete(d.jobId);
+  // ---- 逐文件结果(批次级 ok 只表示"有没有成功的",不能拿来标每一行)----
+  // 旧版:下载部分失败(d.ok=true)会把失败文件的行也标 ✓;上传部分失败(d.ok=false)会把
+  // 所有成功行都标 ✗;取消时已完成的行也被标"已取消"。
+  const okPaths = new Set();
+  const failByPath = new Map(); // 远程路径 → 错误原因
+  const cancelPaths = new Set();
+  const noteResult = (rp, ok, err) => {
+    if (!rp) return;
+    if (ok) okPaths.add(rp);
+    else if (d.cancelled || err === '已取消') cancelPaths.add(rp);
+    else failByPath.set(rp, err || '未知错误');
+  };
+  if (Array.isArray(d.results)) for (const r of d.results) { if (r) noteResult(r.remotePath, r.ok, r.error); }
+  if (Array.isArray(d.uploaded)) for (const rp of d.uploaded) noteResult(rp, true);
+  if (Array.isArray(d.failed)) for (const f of d.failed) { if (f) noteResult(f.remotePath || f.rp, false, f.error); }
   // 下载成功 → 本地路径:单文件用 d.localPath,批量用 d.results[].localPath
   const localByPath = new Map();
-  if (d.op === 'download' && d.ok && Array.isArray(d.results)) {
-    d.results.filter((r) => r.ok).forEach((r) => localByPath.set(r.remotePath, r.localPath));
+  if (d.op === 'download' && Array.isArray(d.results)) {
+    d.results.filter((r) => r && r.ok && r.localPath).forEach((r) => localByPath.set(r.remotePath, r.localPath));
   }
-  for (const p of paths) {
-    const row = sftpTransfer.rows.get(p);
+  for (const key of keys) {
+    const row = sftpTransfer.rows.get(key);
     if (!row) continue;
-    row.el.classList.remove('active');
+    const file = row.file;
+    row.el.classList.remove('active', 'done', 'fail');
     if (row.cancel) row.cancel.style.display = 'none'; // 传输结束,隐藏取消按钮
-    if (d.cancelled) { row.el.classList.add('fail'); row.meta.textContent = '已取消'; }
-    else if (!d.ok) { row.el.classList.add('fail'); row.meta.textContent = '✗ 失败'; }
-    else {
-      row.el.classList.add('done'); row.meta.textContent = (row.meta.textContent || '') + ' ✓';
+    if (failByPath.has(file)) {
+      row.el.classList.add('fail');
+      row.meta.textContent = '✗ 失败';
+      row.el.title = `${file}\n${failByPath.get(file)}`;
+    } else if (cancelPaths.has(file) || (d.cancelled && !okPaths.has(file))) {
+      row.el.classList.add('fail');
+      row.meta.textContent = '已取消';
+    } else if (okPaths.has(file) || (d.ok && !failByPath.size)) {
+      row.el.classList.add('done');
+      // 去掉可能已存在的 ✓ 再加,避免重传/重试后累加成 "✓ ✓"
+      row.meta.textContent = String(row.meta.textContent || '').replace(/\s*✓\s*$/, '') + ' ✓';
       if (row.setLocal) {
-        const lp = d.localPath && !d.results ? d.localPath : (localByPath.get(p) || '');
+        const lp = d.localPath && !d.results ? d.localPath : (localByPath.get(file) || '');
         if (lp) row.setLocal(lp);
       }
+    } else {
+      row.el.classList.add('fail');
+      row.meta.textContent = '✗ 失败';
     }
   }
-  // 下载失败补行:失败文件若一次进度事件都没产生,就不会有传输行(行是首个 progress 创建的)
-  // → 用户只看到"点了没反应"。这里按 done 载荷的 failed 列表补出"✗ 失败"行(含原因)。
-  if (d.op === 'download' && Array.isArray(d.failed) && d.failed.length) {
-    const list = document.getElementById('sftp-transfers-list');
-    for (const f of d.failed) {
-      const rp = f.remotePath || f.rp || '';
-      if (sftpTransfer.rows.has(rp)) continue; // 已有行(有过进度)交给下面的状态标记
-      if (!list) break;
-      const row = makeSftpTransferRow({ op: 'download', file: rp, jobId: d.jobId });
+  // 失败补行:失败文件若一次进度事件都没产生,就不会有传输行(行是首个 progress 创建的)
+  // → 用户只看到"点了没反应"。上传和下载都要补(旧版只补下载,单文件下载失败也漏)。
+  // 取消项不补行(批量取消会产生成百上千条,状态栏已统一说明)。
+  const list = document.getElementById('sftp-transfers-list');
+  if (list) {
+    for (const [rp, err] of failByPath) {
+      const key = sftpRowKey({ jobId: d.jobId, file: rp });
+      if (sftpTransfer.rows.has(key)) continue; // 已有行(有过进度)交给上面的逐行标记
+      const row = makeSftpTransferRow({ op: d.op, file: rp, jobId: d.jobId, sessionId: d.sessionId });
       row.el.classList.remove('active');
       row.el.classList.add('fail');
       if (row.cancel) row.cancel.style.display = 'none';
       row.meta.textContent = '✗ 失败';
-      row.el.title = `${rp}\n${f.error || '未知错误'}`;
+      row.el.title = `${rp}\n${err}`;
       const errEl = document.createElement('div');
       errEl.className = 'st-local-row';
-      errEl.textContent = '✗ ' + (f.error || '未知错误');
+      errEl.textContent = '✗ ' + err;
       errEl.style.color = 'var(--red)';
       row.el.appendChild(errEl);
-      sftpTransfer.rows.set(rp, row);
+      sftpTransfer.rows.set(key, row);
       list.prepend(row.el);
       els.sftpProgress.classList.remove('hidden');
     }
   }
-  // 上传成功 → 刷新列表 + 高亮定位;失败/取消 → 提示
-  if (d.op === 'upload' && d.ok && !d.cancelled) {
+  // 上传有成功项 → 刷新列表 + 高亮定位(部分失败时成功项也要出现/高亮)
+  if (!d.cancelled && d.op === 'upload' && (d.uploaded || []).length) {
     // 高亮定位:把本次上传的条目名交给列表渲染(刷新后闪烁 + 滚到可见)。
-    // 旧版 job 化改造时这段丢了 —— sftpUploadFlash 只被读、没人写,高亮成了死代码。
     const names = (d.uploaded || []).map((rp) => String(rp).split('/').filter(Boolean).pop()).filter(Boolean);
     if (names.length) {
       const flash = new Set(names);
@@ -10800,24 +10927,49 @@ window.api.onSftpDone((d) => {
       setTimeout(() => { if (state.sftpUploadFlash === flash) state.sftpUploadFlash.clear(); }, 3000);
     }
     if (state.sftp.visible) loadSftpList();
-    setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
-  } else if (d.op === 'download' && d.ok && !d.cancelled && (d.localPath || d.results)) {
-    const nFail = (d.failed || []).length;
-    if (nFail) setStatus(`下载完成,但 ${nFail} 个文件失败(首因:${(d.failed[0] || {}).error || '未知'})`, 'var(--orange)');
-    else setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r.ok)[0] || {}).localPath || ''}`, 'var(--green)');
-  } else if (d.cancelled) {
+  }
+  // 状态栏:按逐文件结果给准确文案(部分失败不能被"已下载/上传完成"掩盖)
+  const nFail = failByPath.size;
+  const firstFail = nFail ? [...failByPath.values()][0] : '';
+  if (d.cancelled) {
     // 取消:半成品与续传点都保留(见 lib/ssh-client 的 cancelError),状态栏明确说明可续传
     setStatus('传输已取消(半成品与续传点已保留,再次传输同一文件将从断点续)', 'var(--orange)');
-  } else if (d.error) {
-    setStatus(`传输失败: ${d.error}`, 'var(--red)');
+  } else if (d.op === 'upload') {
+    const someOk = (d.uploaded || []).length > 0;
+    if (nFail && someOk) setStatus(`上传完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
+    else if (nFail) setStatus(`上传失败: ${firstFail}`, 'var(--red)');
+    else if (d.ok) setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
+    else if (d.error) setStatus(`传输失败: ${d.error}`, 'var(--red)');
+  } else if (d.op === 'download') {
+    if (d.ok && (d.localPath || d.results)) {
+      if (nFail) setStatus(`下载完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
+      else setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r && r.ok)[0] || {}).localPath || d.targetDir || ''}`, 'var(--green)');
+    } else if (nFail) {
+      setStatus(`下载失败: ${firstFail}`, 'var(--red)');
+    } else if (d.error) {
+      setStatus(`传输失败: ${d.error}`, 'var(--red)');
+    }
   }
 });
-function clearSftpTransfers() {
-  sftpTransfer.rows.clear();
-  sftpTransfer.jobs.clear();
-  const list = document.getElementById('sftp-transfers-list');
-  if (list) list.innerHTML = '';
-  if (els.sftpProgress) els.sftpProgress.classList.add('hidden');
+// 清空传输记录。可选 sessionId:只清某个会话的行(job 化后多个会话可能同时在传)。
+// 注意点击「清空」按钮时传入的是 MouseEvent → 统一归为"全部清空"。
+function clearSftpTransfers(sessionId) {
+  const only = typeof sessionId === 'string' ? sessionId : '';
+  for (const [key, row] of [...sftpTransfer.rows]) {
+    if (only && row.sessionId !== only) continue;
+    try { row.el.remove(); } catch { /* ignore */ }
+    sftpTransfer.rows.delete(key);
+  }
+  for (const [jobId, sid] of [...sftpTransfer.jobSession]) {
+    if (!only || sid === only) { sftpTransfer.jobs.delete(jobId); sftpTransfer.jobSession.delete(jobId); }
+  }
+  if (!only) sftpTransfer.jobs.clear();
+  // 只清本会话时,若还剩其他会话的行,列表不整体清空(否则会把别人的进行中记录也抹掉)
+  if (sftpTransfer.rows.size === 0) {
+    const list = document.getElementById('sftp-transfers-list');
+    if (list) list.innerHTML = '';
+    if (els.sftpProgress) els.sftpProgress.classList.add('hidden');
+  }
 }
 
 window.api.onSshStatus((sessionId, status) => {
@@ -10868,7 +11020,7 @@ window.api.onSshStatus((sessionId, status) => {
     setStatus('连接已断开', 'var(--red)');
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
     updateRecordBtn();
-    clearSftpTransfers(); // 连接断开 → 传输已不可能继续,清掉本次会话的上传/下载记录
+    clearSftpTransfers(sessionId); // 连接断开 → 只清本会话的传输记录(其他会话可能还在传)
     // 非用户主动关闭、非手动断开 → 自动重连
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   } else if (status.status === 'error') {
@@ -10879,7 +11031,7 @@ window.api.onSshStatus((sessionId, status) => {
     if (t.session && t.session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId, bastionKey: t.session.bastionKey, host: t.session.host, port: t.session.port, account: t.session.username, error: status.error });
     state.recording.delete(sessionId);
     updateRecordBtn();
-    clearSftpTransfers(); // 连接错误 → 同样断开,清传输记录
+    clearSftpTransfers(sessionId); // 连接错误 → 同样只清本会话的传输记录
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   }
 });
@@ -11012,7 +11164,9 @@ function renderPalette(q) {
     box.innerHTML = '<div class="palette-empty">没有匹配的命令或会话</div>';
     return;
   }
-  const add = (el, run) => { el.addEventListener('click', () => run()); paletteItems.push({ el, run }); box.appendChild(el); };
+  // 鼠标点击也必须先关面板:面板是 fixed inset:0 的遮罩(z-index 高于普通弹窗),
+  // 不关的话接下来打开的弹窗被压在面板下面,看起来"点了没反应"。
+  const add = (el, run) => { el.addEventListener('click', () => { closePalette(); run(); }); paletteItems.push({ el, run }); box.appendChild(el); };
   for (const c of cmds) {
     const el = document.createElement('div');
     el.className = 'palette-item';
@@ -11024,7 +11178,13 @@ function renderPalette(q) {
     const el = document.createElement('div');
     el.className = 'palette-item';
     el.innerHTML = `<span class="pi-name">${escHtml(s.name)} · ${escHtml(s.host)}${s.username ? ' · ' + escHtml(s.username) : ''}${s.group_name ? ' · ' + escHtml(s.group_name) : ''}</span>${open ? '<span class="pi-connected">已连接</span>' : ''}`;
-    add(el, () => { if (open) activateTab(findTabBySessionId(s.id)); else connectToServer(s); });
+    // activateTab 要的是运行期 sessionId(sess-N)字符串,不是 tab 对象(旧版传 tab:
+    // state.activeSessionId 变成对象 → 标签不高亮、终端显示错误标签、SFTP/工具栏全部失联)
+    add(el, () => {
+      if (!open) { connectToServer(s); return; }
+      const tb = findTabBySessionId(s.id);
+      if (tb) activateTab(tb.sessionId);
+    });
   }
   if (paletteItems.length) paletteItems[0].el.classList.add('selected');
 }

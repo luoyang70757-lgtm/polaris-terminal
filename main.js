@@ -57,6 +57,8 @@ var sftpSizes = __req('./lib/sftp-sizes', 'sftp-sizes'); // H3C 等设备上传�
 var connectOpts = __req('./lib/connect-opts', 'connect-opts'); // 共享:makeHostVerifier/resolvePrivateKey/withHostVerify
 var sessionGroups = __req('./lib/session-groups', 'session-groups'); // 分组/命令历史归档/快速命令/导入模板 IPC
 var sessionIpc = __req('./lib/session-ipc', 'session-ipc'); // 会话管理/导入导出/系统探测 IPC
+var fsUtil = __req('./lib/fs-util', 'fs-util'); // 原子写(Windows 杀软占用重试)
+var { safeLocalName } = __req('./lib/local-name', 'local-name'); // 远程文件名 → 本地安全名(Windows 保留名/非法字符)
 __startupLog('模块加载完成');
 
 // ---------- 安全日志 ----------
@@ -116,17 +118,36 @@ app.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
 // 所有数据(userData 设置/AI 配置 + 加密库/密码锁/指纹/录制/归档)统一放 exe 同目录的 .Polaris 文件夹,
 // 第一次运行自动创建,真正做到"数据随 exe 走",拷走文件夹即带全部数据。
 // 安装版:固定 userData 目录(改产品名/包名不会丢设置和 AI 配置)。
-const POLARIS_DATA_DIR = process.env.PORTABLE_EXECUTABLE_DIR
-  ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, '.Polaris')
-  : null;
+// Windows 注意:便携 exe 常被放在 Program Files / 只读盘 / 只读 U 盘 → mkdir 会抛错,
+// 旧版在 appLog 初始化前直接崩溃(用户只看到"打不开、无日志")。这里探测失败就回退用户数据目录。
+function resolvePortableDataDir() {
+  const base = process.env.PORTABLE_EXECUTABLE_DIR;
+  if (!base) return null;
+  const dir = path.join(base, '.Polaris');
+  try {
+    fs.mkdirSync(dir, { recursive: true }); // 第一次运行自动创建
+    fs.accessSync(dir, fs.constants.W_OK);   // 只读目录也能 mkdir 成功(exe 目录已存在),必须验证可写
+    return dir;
+  } catch (err) {
+    const msg = '便携数据目录不可写(' + (err && err.message) + '),回退到用户数据目录: ' + dir;
+    try { __startupLog(msg); } catch { /* ignore */ }
+    try { console.warn('[MAIN] ' + msg); } catch { /* ignore */ }
+    return null;
+  }
+}
+const POLARIS_DATA_DIR = resolvePortableDataDir();
 if (POLARIS_DATA_DIR) {
-  fs.mkdirSync(POLARIS_DATA_DIR, { recursive: true }); // 第一次运行自动创建
   app.setPath('userData', POLARIS_DATA_DIR);
   process.env.POLARIS_LOCK_DIR = POLARIS_DATA_DIR; // 数据库/密码锁/指纹/录制/归档 走同一目录(app-lock 读取)
 } else {
-  // 测试环境(POLARIS_LOCK_DIR 已注入临时目录)→ userData 跟随,避免共享的真实配置/设置污染测试
-  const testDir = process.env.POLARIS_LOCK_DIR;
+  // 测试环境(POLARIS_LOCK_DIR 已注入临时目录)→ userData 跟随,避免共享的真实配置/设置污染测试。
+  // 便携版回退时忽略 POLARIS_LOCK_DIR(它可能仍指向不可写的便携目录)。
+  const portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+  const testDir = portable ? null : process.env.POLARIS_LOCK_DIR;
   app.setPath('userData', testDir ? path.join(testDir, 'userdata') : path.join(app.getPath('appData'), 'polaris'));
+  // 便携版回退:改回 app-lock 默认的 ~/.jms-terminal(用户目录,肯定可写;不在 Roaming 里,
+  // 不会被域漫游同步)。
+  if (portable) delete process.env.POLARIS_LOCK_DIR;
 }
 
 // Windows 上部分显卡/虚拟机(Win11 测试环境常见)的 GPU 合成器命中测试有 bug:
@@ -159,6 +180,24 @@ if (process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland') 
   }
 }
 
+// ---------- 单实例锁(Windows 双击 exe 会再起一个进程) ----------
+// 两个实例同时解密/写 data.bin、sftp-partials.json、known_hosts 会互相覆盖(后者启动时读旧库,
+// 退出时把旧库写回 → 丢会话)。锁键跟随 userData:便携版按 exe 所在目录隔离,不同副本可并存;
+// 同一份 exe 重复双击则聚焦已有窗口。必须放在 userData 设置之后、Wayland 重启逻辑之后
+// (否则 Wayland 重启的新进程会在旧进程释放锁前被判定为"第二实例"而退出)。
+let __gotSingleLock = true;
+try {
+  __gotSingleLock = app.requestSingleInstanceLock();
+} catch (err) {
+  // 数据目录在网络盘/受限文件系统上时锁文件可能创建失败:失败不应阻止启动(退化为允许多开)
+  __startupLog('单实例锁创建失败,允许多开: ' + (err && err.message));
+  console.warn('[MAIN] 单实例锁创建失败,允许多开:', err && err.message);
+}
+if (!__gotSingleLock) {
+  app.quit();
+  return; // CommonJS 模块顶层 return:不再初始化主进程(第二个实例立刻退出)
+}
+
 const DEV_MODE = process.argv.includes('--dev') || process.env.POLARIS_DEV === '1';
 let mainWindow = null;
 connectOpts.init({ getMainWindow: () => mainWindow }); // 指纹校验弹窗以主窗口为父;mainWindow 延迟可用,闭包惰性读取
@@ -175,6 +214,18 @@ const LAUNCHED_VIA_LAUNCHSERVICES = process.platform === 'darwin' &&
 let sessionStore = null;
 let dbPassword = null;   // 解锁后保存的密码(用于加密落盘)
 let lockWindow = null;   // 锁屏窗口(仅启动解锁用;临时锁定用主窗口内覆盖层)
+
+// 第二个实例(Windows 上再双击一次 exe)把已有窗口提到前台;锁屏阶段则聚焦锁屏窗口。
+app.on('second-instance', () => {
+  const w = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow
+    : (lockWindow && !lockWindow.isDestroyed()) ? lockWindow : null;
+  if (!w) return;
+  try {
+    if (w.isMinimized()) w.restore();
+    w.show();
+    w.focus();
+  } catch { /* ignore */ }
+});
 let persistTimer = null;
 
 function persistDb() {
@@ -182,16 +233,9 @@ function persistDb() {
   try {
     const bytes = Buffer.from(sessionStore.serialize());
     const blob = dbCrypto.encryptBytes(bytes, dbPassword);
-    const dir = appLock.lockDir();
-    fs.mkdirSync(dir, { recursive: true });
-    // 原子写:先写临时文件再 rename(同目录 rename 是原子的)。
-    // 旧版直接 writeFileSync 覆盖 data.bin:中途崩溃/断电会留下半截文件,
-    // 而 data.bin 是整库加密、无任何损坏恢复机制 → 一次写一半 = 全部数据不可解密。
-    const finalPath = path.join(dir, 'data.bin');
-    const tmpPath = path.join(dir, `data.bin.tmp-${process.pid}`);
-    fs.writeFileSync(tmpPath, blob);
-    fs.renameSync(tmpPath, finalPath);
-    try { fs.chmodSync(finalPath, 0o600); } catch { /* 平台不支持则忽略 */ } // 加密库只允许当前用户读写
+    // 原子写(tmp + rename):中途崩溃/断电不会留下半截加密库(data.bin 无损坏恢复机制,
+    // 写一半 = 全部数据不可解密)。Windows 上杀软/索引器短暂占用时自动退避重试。
+    fsUtil.atomicWriteFileSync(path.join(appLock.lockDir(), 'data.bin'), blob, { mode: 0o600 });
   } catch (err) {
     console.warn('[MAIN] 保存数据库失败:', err.message);
   }
@@ -435,12 +479,7 @@ ipcMain.handle('jms:assets', async (_e, { baseUrl, token, cachedById }) => {
 const jmsCfgFile = () => path.join(appLock.lockDir(), 'jms-servers.json');
 ipcMain.handle('jms:persist', async (_e, servers) => {
   try {
-    const dir = appLock.lockDir();
-    fs.mkdirSync(dir, { recursive: true });
-    const finalPath = path.join(dir, 'jms-servers.json');
-    const tmpPath = path.join(dir, `jms-servers.json.tmp-${process.pid}`);
-    fs.writeFileSync(tmpPath, JSON.stringify(servers || []), 'utf8');
-    fs.renameSync(tmpPath, finalPath);
+    fsUtil.atomicWriteFileSync(path.join(appLock.lockDir(), 'jms-servers.json'), JSON.stringify(servers || []), { encoding: 'utf8' });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -460,12 +499,7 @@ ipcMain.handle('jms:restore', async () => {
 // 偶发丢失,重启后连接消失),bastionServers 此前只有 localStorage 存储 → 文件备份兜底。
 ipcMain.handle('bastion:persist', async (_e, servers) => {
   try {
-    const dir = appLock.lockDir();
-    fs.mkdirSync(dir, { recursive: true });
-    const finalPath = path.join(dir, 'bastion-servers.json');
-    const tmpPath = path.join(dir, `bastion-servers.json.tmp-${process.pid}`);
-    fs.writeFileSync(tmpPath, JSON.stringify(servers || []), 'utf8');
-    fs.renameSync(tmpPath, finalPath);
+    fsUtil.atomicWriteFileSync(path.join(appLock.lockDir(), 'bastion-servers.json'), JSON.stringify(servers || []), { encoding: 'utf8' });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -747,13 +781,20 @@ ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
       : await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: '选择保存到哪个文件夹' });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
     const localDir = pick.filePaths[0];
-    const base = path.basename(remotePath) || 'download';
+    // 远程路径按 / 取最后一段(Windows 的 path.basename 会把文件名里的 \ 当分隔符)
+    const base = safeLocalName(String(remotePath).split(/[\\/]/).filter(Boolean).pop() || 'download');
     const results = [];
+    const usedNames = new Set(); // 会话重名(导入文件常见)时不能互相覆盖;Windows 还不区分大小写
     for (const s of sessions) {
       // 会话名可能来自导入文件(如 iTerm2 的 Name 字段),含 ../ 或 / 会让 path.join
-      // 穿越出保存目录 → 本地任意路径写文件(安全漏洞)。净化后再拼。
-      const safeName = String(s.name || 'host').replace(/[\\/:*?"<>|\r\n]+/g, '_').replace(/\.\./g, '_').slice(0, 60) || 'host';
-      const localPath = path.join(localDir, `${safeName}_${base}`);
+      // 穿越出保存目录 → 本地任意路径写文件。远程文件名同样可能含 Windows 非法字符/保留名。
+      // 两端都按 Windows 规则净化后再拼。base 用显式 split('/') 取最后一段,
+      // 避免 Windows 上 path.basename 把远程文件名里的反斜杠误当分隔符。
+      const safeName = safeLocalName(s.name || 'host').slice(0, 60) || 'host';
+      let fileName = `${safeName}_${base}`;
+      for (let n = 2; usedNames.has(fileName.toLowerCase()); n++) fileName = `${safeName}(${n})_${base}`;
+      usedNames.add(fileName.toLowerCase());
+      const localPath = path.join(localDir, fileName);
       try {
         const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
         try {
@@ -789,7 +830,9 @@ async function runAiCommand(hostList, cmd, executed) {
       if (item.sessionId) {
         const s = sshSessions.get(item.sessionId);
         if (s && s.stream && !s.stream.destroyed) {
-          try { s.stream.write(`${cmd}\r`); } catch { /* ignore */ }
+          // 先清掉远端当前行(Ctrl+U 删光标前 + Ctrl+K 删光标后):用户可能敲了半条命令没回车,
+          // 直接写 `${cmd}\r` 会拼成一条意外命令(甚至让未被确认的危险命令借 AI 的安全命令执行)。
+          try { s.stream.write(`\x15\x0b${cmd}\r`); } catch { /* ignore */ }
         }
       }
     } catch (err) {
@@ -830,11 +873,22 @@ ipcMain.handle('batch:exec', async (_e, { hosts, command }) => {
 // AI 对话 + agent 循环:AI 可调用 run_command 在连接的主机上执行命令,直到给出最终回答
 // 支持流式输出(ai:stream 事件推给界面)和"停止"请求。
 const aiStopSet = new Set(); // 被用户点"停止"的 requestId 集合
-ipcMain.on('ai:stop', (_e, requestId) => { if (requestId) aiStopSet.add(requestId); });
+const aiAborters = new Map(); // requestId → AbortController:真正中断进行中的流式请求
+ipcMain.on('ai:stop', (_e, requestId) => {
+  if (!requestId) return;
+  aiStopSet.add(requestId);
+  // 只加标记是不够的:流式读取可能正卡在 await reader.read(),要 abort 才能立刻返回。
+  const c = aiAborters.get(requestId);
+  if (c) { try { c.abort(); } catch { /* ignore */ } }
+});
 
 ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hosts, requestId, kbEnabled }) => {
-  aiStopSet.clear(); // 单聊:新一轮对话清掉遗留停止标记,防 Set 只增不减
+  // 只清本次请求的遗留标记:旧版 clear() 会把其他并发请求的"停止"也一起清掉
+  aiStopSet.delete(requestId);
   if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
+  // 注册要在所有"提前 return"之后:否则 AI 未配置 Key 时直接返回,controller 永远留在 Map 里
+  const abortCtl = new AbortController();
+  if (requestId) aiAborters.set(requestId, abortCtl);
   const base = normalizeAiUrl(url, format);
   const mdl = (model && model.trim()) || 'claude-sonnet-5';
   // 多主机:每项含连接信息 + 对应终端的 sessionId(命令会同步到这些终端)
@@ -864,7 +918,9 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (shouldStop()) { send({ type: 'stopped' }); return { ok: true, text: '(已停止)', executed, stopped: true }; }
-      const r = await callAiStream(base, mdl, format, apiKey, conv, (evt) => send({ type: 'model', ...evt }), { systemPrompt });
+      const r = await callAiStream(base, mdl, format, apiKey, conv, (evt) => send({ type: 'model', ...evt }), { systemPrompt, signal: abortCtl.signal });
+      // 用户点"停止"会 abort 流:此时不是错误,按"已停止"收尾(不弹红字)
+      if (shouldStop()) { send({ type: 'stopped' }); return { ok: true, text: '(已停止)', executed, stopped: true }; }
       if (r.error) {
         send({ type: 'error', message: r.error }); // 流式气泡已渲染到一半也要打上错误标记
         return { ok: false, error: r.error };
@@ -876,7 +932,11 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
       }
       // 执行 AI 要的命令,收集结果
       const results = [];
+      let stopRequested = false;
       for (const tu of toolUses) {
+        // 流结束后、逐条执行工具前再查一次:用户可能在模型输出完的那一刻点了停止,
+        // 旧版会照常把整轮命令下发到服务器(只有下一轮开头才看到停止标记)。
+        if (shouldStop()) { stopRequested = true; break; }
         let output;
         if (tu.name === 'clear_screen') {
           // 清屏工具:通知渲染层清掉本地终端显示(不执行服务器命令)
@@ -971,6 +1031,7 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
         }
         results.push({ id: tu.id, output });
       }
+      if (stopRequested) { send({ type: 'stopped' }); return { ok: true, text: '(已停止)', executed, stopped: true }; }
       // 原样回传 assistant(含 thinking 块)+ 工具结果
       if (format === 'openai') {
         conv = [...conv, r.assistantMsg, ...results.map((res) => ({ role: 'tool', tool_call_id: res.id, content: res.output }))];
@@ -987,6 +1048,10 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   } catch (err) {
     send({ type: 'error', message: err.message });
     return { ok: false, error: `请求异常: ${err.message}` };
+  } finally {
+    // 无论正常结束/被打断/异常,都清掉本请求的控制器与停止标记(防 Map/Set 无限增长)
+    aiAborters.delete(requestId);
+    aiStopSet.delete(requestId);
   }
 });
 
@@ -1074,9 +1139,19 @@ ipcMain.handle('kb:pickImport', async () => {
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
-ipcMain.handle('kb:import', (_e, { filePath, name }) => {
-  try { return { ok: true, doc: kbLib.importDoc(filePath, name) }; }
-  catch (err) { return { ok: false, error: err.message }; }
+ipcMain.handle('kb:import', (_e, { filePath, name } = {}) => {
+  try {
+    // 该 IPC 接受渲染层给的任意路径(正常 UI 走 kb:pickImport 对话框)。加最小校验,
+    // 避免渲染层被注入时把它当"任意本地文件读取"通道(如读 ~/.ssh/id_rsa 再经 AI 外带)。
+    const p = path.resolve(String(filePath || ''));
+    const st = fs.statSync(p); // 不存在会抛错
+    if (!st.isFile()) return { ok: false, error: '只能导入普通文件' };
+    if (st.size > 2 * 1024 * 1024) return { ok: false, error: '文件过大(上限 2MB)' };
+    const ext = path.extname(p).toLowerCase();
+    const allowed = new Set(['.md', '.txt', '.log', '.conf', '.ini', '.yaml', '.yml', '.json', '.sh', '.py', '.sql', '.rst', '.csv']);
+    if (!allowed.has(ext)) return { ok: false, error: '不支持的文件类型(仅限文本/配置/脚本类文档)' };
+    return { ok: true, doc: kbLib.importDoc(p, name) };
+  } catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('kb:remove', (_e, name) => {
@@ -1281,7 +1356,10 @@ ipcMain.handle('rec:replay', (_e, id) => {
 // 跳板机(SSH 代理,等价 ssh -J):先连跳板机,经它 forwardOut 开一条到目标的隧道,
 // 目标 SSH 连接把这条隧道当 sock 用,目标机的认证仍由用户自己的账号完成(跳板只转发字节)。
 // 失败时清理已建的跳板连接并抛出,调用方会走 ssh:connect 的失败分支。
-async function openJumpTunnel(sessionId, finalOpts) {
+// register=true:跳板连接登记到 jumpConns[sessionId],随主会话关闭(ssh:close/断开)一起收。
+// register=false:调用方自己持有(用于 SFTP 独立连接 —— 它有自己的生命周期,若也登记到
+// 同一个 sessionId 槽位,会把主会话的跳板连接覆盖掉,主连接那条从此没人关 = 泄漏)。
+async function openJumpTunnel(sessionId, finalOpts, register = true) {
   const j = finalOpts.jump;
   const jport = j.port || 22;
   const jumpConn = await sshClient.connectRaw({
@@ -1292,20 +1370,21 @@ async function openJumpTunnel(sessionId, finalOpts) {
     hostVerifier: connectOpts.makeHostVerifier(j.host, jport, finalOpts.autoTrustHostKey === true), // 跳板机指纹同样校验
     onKeyboardInteractive: makeKbdResponder(sessionId, { ...finalOpts, host: j.host, port: jport }), // 跳板可能也要域认证/OTP
   });
-  jumpConns.set(sessionId, jumpConn);
+  if (register) jumpConns.set(sessionId, jumpConn);
   try {
-    return await new Promise((resolve, reject) => {
+    const stream = await new Promise((resolve, reject) => {
       // 超时兜底:跳板机握手成功但转发永不响应时,别让标签永久卡"连接中"
       const timer = setTimeout(() => reject(new Error('跳板机转发超时')), 30000);
-      jumpConn.forwardOut(finalOpts.host, 0, finalOpts.host, finalOpts.port || 22, (err, stream) => {
+      jumpConn.forwardOut(finalOpts.host, 0, finalOpts.host, finalOpts.port || 22, (err, s) => {
         clearTimeout(timer);
         if (err) return reject(err);
-        resolve(stream);
+        resolve(s);
       });
     });
+    return { stream, conn: jumpConn };
   } catch (err) {
     try { jumpConn.end(); } catch { /* ignore */ }
-    jumpConns.delete(sessionId);
+    if (register && jumpConns.get(sessionId) === jumpConn) jumpConns.delete(sessionId);
     throw err;
   }
 }
@@ -1362,7 +1441,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
     finalOpts.onKeyboardInteractive = makeKbdResponder(sessionId, finalOpts);
     // 配了跳板机:先经跳板开隧道到目标,再在隧道上做目标机的 SSH 认证(等价 ssh -J)
     if (finalOpts.jump && finalOpts.jump.host) {
-      finalOpts.sock = await openJumpTunnel(sessionId, finalOpts);
+      finalOpts.sock = (await openJumpTunnel(sessionId, finalOpts)).stream;
     }
     const { conn, stream } = await sshClient.connect(finalOpts);
     // 非 utf8 会话(GBK/GB2312):建流式解码器,主进程转码后再发给渲染层
@@ -1604,6 +1683,25 @@ function __sftpLog(msg, extra) {
 async function getSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (!s) throw new Error('SSH 连接不存在或已断开');
+  if (s.sftp) return s.sftp;
+  // 并发去重:SFTP 首次打开要走"独立连接 → 探测 → 回退主连接",H3C 等慢设备可达数秒~20s。
+  // 这期间列表刷新、上传、家目录探测等都可能同时调用 getSftp;旧版各自开一条独立连接,
+  // 后完成的那条覆盖 s.sftp/s.sftpConn,先完成的那条再没人关(连接泄漏;H3C 单通道还会互相顶掉)。
+  // 现在共享同一个打开中的 Promise,失败后清除,下次调用重新尝试。
+  if (s._sftpOpening) return s._sftpOpening;
+  const p = openSftpChannel(sessionId);
+  s._sftpOpening = p;
+  try {
+    return await p;
+  } finally {
+    if (s._sftpOpening === p) s._sftpOpening = null;
+  }
+}
+
+// 真正的打开逻辑(调用方统一走 getSftp,由它做并发去重)
+async function openSftpChannel(sessionId) {
+  const s = sshSessions.get(sessionId);
+  if (!s) throw new Error('SSH 连接不存在或已断开');
   if (!s.sftp) {
     const t0 = Date.now();
     // 优先独立 SFTP 连接:H3C 等单通道设备在 shell 同连接开 SFTP 会顶掉 shell(终端失效)。
@@ -1638,14 +1736,26 @@ async function getSftp(sessionId) {
         opts.hostVerifier = connectOpts.makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
       }
       const connectOnce = async () => {
-        if (opts.jump && opts.jump.host) opts.sock = await openJumpTunnel(sessionId, opts);
-        const raw = await sshClient.connectRaw(opts);
+        // 跳板连接由这条独立 SFTP 连接自己持有(register=false):不占用主会话的
+        // jumpConns[sessionId] 槽位,否则主连接的跳板连接会被覆盖、再也关不掉。
+        let jumpConn = null;
+        let raw = null;
         try {
+          if (opts.jump && opts.jump.host) {
+            const j = await openJumpTunnel(sessionId, opts, false);
+            jumpConn = j.conn;
+            opts.sock = j.stream;
+          }
+          raw = await sshClient.connectRaw(opts);
           const sftp = await sshClient.openSftp(raw);
-          s.sftpConn = raw; s.sftp = sftp;
+          s.sftpConn = raw;
+          s.sftpJumpConn = jumpConn; // 随 SFTP 连接一起关(closeSftpConn/resetSftp)
+          s.sftp = sftp;
           return sftp;
         } catch (e) {
-          try { raw.end(); } catch { /* ignore */ }
+          // 任一步失败:连接与跳板隧道都要收掉,否则每次重试泄漏一条 SSH 连接
+          try { if (raw) raw.end(); } catch { /* ignore */ }
+          try { if (jumpConn) jumpConn.end(); } catch { /* ignore */ }
           throw e;
         }
       };
@@ -1692,7 +1802,7 @@ async function getSftp(sessionId) {
       } catch (e) {
         // 独立连接失败(OTP 复用被拒/设备限制/超时)→ 回退主连接 SFTP,不阻断功能
         __sftpLog('SFTP 独立连接失败,回退主连接', { sessionId, error: e && e.message, ms: Date.now() - t0 });
-        s.sftpConn = null; s.sftp = null; // 清掉独立连接残留(如有)
+        s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null; // 清掉独立连接残留(如有)
         await openOnMain();
         __sftpLog('SFTP 回退主连接成功', { sessionId, ms: Date.now() - t0 });
       }
@@ -1704,12 +1814,13 @@ async function getSftp(sessionId) {
   return s.sftp;
 }
 
-// 关掉会话的独立 SFTP 连接(会话断开/关标签时调用,幂等)
+// 关掉会话的独立 SFTP 连接 + 它自己的跳板连接(会话断开/关标签时调用,幂等)
 function closeSftpConn(sessionId) {
   const s = sshSessions.get(sessionId);
   if (s) {
     try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
-    s.sftpConn = null; s.sftp = null;
+    try { if (s.sftpJumpConn) { s.sftpJumpConn.end(); } } catch { /* ignore */ }
+    s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null;
   }
 }
 
@@ -1719,7 +1830,8 @@ function resetSftp(sessionId) {
   const s = sshSessions.get(sessionId);
   if (s) {
     try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
-    s.sftpConn = null; s.sftp = null;
+    try { if (s.sftpJumpConn) { s.sftpJumpConn.end(); } } catch { /* ignore */ }
+    s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null;
   }
 }
 
@@ -1736,6 +1848,8 @@ function hasActiveTransfer(sessionId) {
   for (const j of sftpJobs.values()) { if (j && j.sessionId === sessionId && !j.cancelled) return true; }
   return false;
 }
+
+// 本地文件名安全化见 lib/local-name.js(Windows 非法字符/保留设备名/结尾点空格/.. 穿越)。
 
 // 把目录和文件名拼成远程路径(统一用 / 分隔,处理 root 边界)
 function joinRemote(dir, name) {
@@ -1793,6 +1907,38 @@ function recordDownloadPartial(sessionId, localPath) {
   try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, 'd', localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
 }
 
+// 远程 shell 输出的家目录 → 绝对路径。
+// Unix 是 /root;/Windows OpenSSH(PowerShell)是 C:\Users\x —— Windows 上 SFTP 统一用
+// 正斜杠(C:/Users/x),否则后续 readdir/拼接会被反斜杠搞坏。客户端在 Windows 上连
+// Windows 目标时,旧版因只认 "/" 开头而永远回退 /tmp(不存在的目录)。
+function normalizeRemoteHome(p) {
+  const s = String(p || '').trim();
+  if (!s) return null;
+  if (/^\//.test(s)) return s;                            // Unix / chroot 视角
+  if (/^[A-Za-z]:[\\/]/.test(s)) return s.replace(/\\/g, '/'); // C:\Users\x → C:/Users/x
+  return null;
+}
+// 在会话主连接上 exec 一条命令并取最后一行输出;超时/失败返回 null(不阻塞调用方)
+function execProbePath(conn, cmd, timeoutMs) {
+  return new Promise((res) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; clearTimeout(to); res(v); } };
+    const to = setTimeout(() => finish(null), timeoutMs || 8000);
+    try {
+      conn.exec(cmd, (err, stream) => {
+        if (err || !stream) return finish(null);
+        let data = '';
+        stream.on('data', (d) => { data += d; });
+        stream.on('close', () => {
+          const p = String(data).trim().split('\n').pop() || '';
+          finish(normalizeRemoteHome(p));
+        });
+        stream.stderr.on('data', () => {});
+      });
+    } catch { finish(null); }
+  });
+}
+
 // 探测 SFTP 默认家目录:
 //   规则(用户要求):优先当前用户家目录;家目录在 SFTP 里不可访问(堡垒机 SFTP 被 chroot)
 //   或不存在时用 /tmp。显示路径与上传路径都用这里的结果,保证一致。
@@ -1805,28 +1951,36 @@ ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
   try {
     const s = sshSessions.get(sessionId);
     if (!s || !s.conn) return { ok: false, error: '连接不存在' };
-    // 1. exec 拿真实家目录
-    const home = await new Promise((res) => {
-      try {
-        s.conn.exec('pwd', (err, stream) => {
-          if (err || !stream) return res(null);
-          let data = '';
-          stream.on('data', (d) => { data += d; });
-          stream.on('close', () => {
-            const p = String(data).trim().split('\n').pop() || '';
-            res(/^\//.test(p) ? p : null);
-          });
-          stream.stderr.on('data', () => {});
-          setTimeout(() => res(null), 8000); // 超时兜底
-        });
-      } catch { res(null); }
-    });
+    // 1. exec 拿真实家目录。pwd 在 Windows cmd.exe 下不存在 → 再探 %USERPROFILE%
+    //    (PowerShell 下 pwd 可用;Linux 上第二探针只会输出字面量,被 normalize 拒绝)
+    let home = await execProbePath(s.conn, 'pwd');
+    if (!home) home = await execProbePath(s.conn, 'echo %USERPROFILE%');
     // 2. 用 SFTP 验证家目录可访问(readdir 能列出才算可用;chroot 下 /root 不可访问)
     if (home) {
       const sftp = await getSftp(sessionId).catch(() => null);
       if (sftp) {
-        const ok = await new Promise((res2) => sftp.readdir(home, (e) => res2(!e)));
-        if (ok) return { ok: true, home };
+        // 验证 readdir 必须有超时:慢/串行设备上这个请求可能一直不回调,旧版会让
+        // sftp:home 的 invoke 永久挂起(打开 SFTP 面板一直空白、没有任何反馈)。
+        // 超时按"可用"处理(沿用 exec pwd 的结果):随后 sftp:list 有 40s 超时 + 状态反馈,
+        // 若家目录真不可访问,会在列表处明确报错,而不是在这里无限等。
+        const verifyDir = (dir) => new Promise((res2) => {
+          let done = false;
+          const finish = (v) => { if (!done) { done = true; clearTimeout(to); res2(v); } };
+          const to = setTimeout(() => {
+            __sftpLog('家目录校验 readdir 超时(按可用处理)', { sessionId, dir });
+            finish(true);
+          }, 8000);
+          try { sftp.readdir(dir, (e) => finish(!e)); } catch { finish(true); }
+        });
+        let ok = await verifyDir(home);
+        let finalHome = home;
+        // 远程是 Windows OpenSSH 时,SFTP 视角常要求 "/C:/Users/x"(带前导斜杠),
+        // 而 exec 拿到的可能是 "C:/Users/x" —— 两种都试一次再回退。
+        if (!ok && /^[A-Za-z]:\//.test(home)) {
+          const alt = '/' + home;
+          if (await verifyDir(alt)) { ok = true; finalHome = alt; }
+        }
+        if (ok) return { ok: true, home: finalHome };
       }
     }
     // 3. 家目录不可访问/拿不到 → 回退 /tmp(SFTP 可访问的常用目录)
@@ -2082,7 +2236,9 @@ async function uploadDirRecursive(sessionId, sftp, localPath, target, prog, shou
   for (const u of uploaded) sftpSizes.set(knownSizeKey(sessionId, u.rp), u.size);
   __sftpLog('上传结束(目录,递归)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length });
   if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
-  return { ok: true, remotePath: target, isDir: true, count: uploaded.length, failed };
+  // uploadedPaths:逐文件成功清单(协议里 remotePath 只是目录)。渲染层用它逐行标 ✓,
+  // 否则部分失败时成功的文件行会被整批的 ok=false 误标成"✗ 失败"。
+  return { ok: true, remotePath: target, isDir: true, count: uploaded.length, uploadedPaths: uploaded.map((u) => u.rp), failed };
 }
 // 打包上传目录(Linux 主路径):本地 tar.gz → 单文件上传(不续传,每次重打)→ 远端解压 + 清理压缩包。
 // 打包/远端解压环节失败返回 null(调用方回退逐文件递归,保证 H3C 之外的目录上传不因单点失败挂掉);
@@ -2113,7 +2269,8 @@ async function uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, 
       // 压缩包上传失败:连接/传输问题,递归也会失败,直接报错(不回退,也别记续传——临时文件马上删)
       resetSftpIfBroken(sessionId, err);
       __sftpLog('压缩包上传失败', { sessionId, remoteArchive, ms: Date.now() - _t0, error: err && err.message });
-      return { ok: false, error: '压缩包上传失败: ' + ((err && err.message) || err) };
+      // remotePath(面板进度行用的目标路径)随失败返回:渲染层才能补出可见的失败行
+      return { ok: false, remotePath: target, error: '压缩包上传失败: ' + ((err && err.message) || err) };
     }
     sftpSizes.set(knownSizeKey(sessionId, remoteArchive), size);
     // 3. 远端解压 + 清理压缩包(一条命令;失败命令已结束 → 清压缩包后回退递归;
@@ -2126,7 +2283,7 @@ async function uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, 
         await execOnSession(sessionId, `rm -f ${shq(remoteArchive)}`, 15000).catch(() => {});
         return null; // 命令已结束(确实失败),清掉压缩包后回退递归上传
       }
-      return { ok: false, error: `远端解压超时,压缩包留在 ${remoteArchive}(可能仍在解压,可稍后手动 tar -xzf)` };
+      return { ok: false, remotePath: target, error: `远端解压超时,压缩包留在 ${remoteArchive}(可能仍在解压,可稍后手动 tar -xzf)` };
     }
     __sftpLog('打包上传完成', { sessionId, target, archive: remoteArchive, ms: Date.now() - _t0 });
     return { ok: true, remotePath: target, isDir: true, packed: true, count: 1 };
@@ -2146,7 +2303,7 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
   const sftp = await getSftp(sessionId);
   const isDir = fs.statSync(localPath).isDirectory();
   __sftpLog('上传开始', { sessionId, remoteDir, localPath, isDir });
-  const prog = (p) => emitSftpProgress(Object.assign({ op: 'upload', jobId }, p));
+  const prog = (p) => emitSftpProgress(Object.assign({ op: 'upload', jobId, sessionId }, p));
   const shouldCancel = makeShouldCancel(jobId);
   if (isDir) {
     const baseName = path.basename(localPath);
@@ -2176,7 +2333,9 @@ async function runUpload(sessionId, remoteDir, localPath, jobId) {
     recordUploadPartial(sessionId, sftp, remotePath, localPath); // 失败/取消:用真实已写字节更新中断点(远端半成品已保留)
     resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     __sftpLog(cancelled ? '上传已取消(远端半成品已保留,可续传)' : '上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-    return { ok: false, cancelled, error: err.message };
+    // remotePath 随失败结果返回:渲染层据此为"首个进度事件之前就失败"的文件补出可见行
+    // (否则单文件上传失败在传输面板里完全没有痕迹)。
+    return { ok: false, cancelled, error: err.message, remotePath };
   }
 }
 
@@ -2193,11 +2352,20 @@ function startUploadJob(sessionId, remoteDir, localPaths) {
         flushSftpProgress(jobId); // 该文件已完成:补发被节流的最后一条进度再传下一个,避免行停在 <100%
       }
       const ok = results.filter((r) => r.ok);
-      const failed = results.filter((r) => !r.ok);
+      // 目录递归上传的"逐文件失败"藏在结果的 failed 数组里(顶层仍是 ok:true),
+      // 旧版只取 !r.ok → 文件失败被吞掉,界面报"上传完成"。这里展开合并。
+      const failed = [
+        ...results.filter((r) => !r.ok),
+        ...results.flatMap((r) => (Array.isArray(r.failed)
+          ? r.failed.map((f) => ({ remotePath: f.rp, error: f.error }))
+          : [])),
+      ];
       // error 带出首个失败原因:渲染层状态栏能显示具体错误(否则逐路径失败只有面板"✗ 失败",看不见原因)
       const firstErr = (failed[0] && failed[0].error) || undefined;
-      // uploaded:本次成功上传的远端路径(渲染层据此高亮定位"传到了哪")
-      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, uploaded: ok.map((r) => r.remotePath).filter(Boolean), failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
+      // uploaded:本次成功上传的远端路径(渲染层据此高亮定位"传到了哪"+逐行标 ✓)。
+      // 目录递归上传的成功项在 uploadedPaths(每个文件)里;打包/单文件用 remotePath。
+      const uploaded = ok.flatMap((r) => (Array.isArray(r.uploadedPaths) ? r.uploadedPaths : [r.remotePath])).filter(Boolean);
+      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, uploaded, failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
     } catch (err) {
       sftpJobDone(jobId, { sessionId, op: 'upload', ok: false, error: err && err.message, cancelled: makeShouldCancel(jobId)() });
     }
@@ -2211,7 +2379,7 @@ function startDownloadJob(sessionId, kind, args) {
   sftpJobs.set(jobId, { cancelled: false, sessionId });
   setImmediate(async () => {
     const shouldCancel = makeShouldCancel(jobId);
-    const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId }, p));
+    const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId, sessionId }, p));
     try {
       let ok = false, failed, localPath;
       const sftp = await getSftp(sessionId);
@@ -2232,7 +2400,7 @@ function startDownloadJob(sessionId, kind, args) {
           throw err;
         }
       } else {
-        const { plans } = args;
+        const { plans, targetDir } = args;
         const total = plans.reduce((s, p) => s + (p.size || 0), 0);
         let done = 0, finished = 0;
         const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
@@ -2250,16 +2418,22 @@ function startDownloadJob(sessionId, kind, args) {
             return { ok: false, remotePath: p.rp, error: err.message };
           } finally { finished++; }
         });
-        ok = results.some((r) => r.ok);
+        // 空目录(plans 为空)不是失败:没有任何文件要传 = 成功(旧版 some([])=false → 静默无反馈)
+        ok = results.length ? results.some((r) => r.ok) : true;
         failed = results.filter((r) => !r.ok);
-        // 把每个文件的本地路径带回,渲染层盖到传输行(📂 打开所在文件夹用)
-        sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath: undefined, results, failed, cancelled: shouldCancel() });
+        // 把每个文件的本地路径带回,渲染层盖到传输行(📂 打开所在文件夹用);targetDir 供空目录/状态栏用
+        sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath: undefined, targetDir, results, failed, cancelled: shouldCancel() });
         return;
       }
       sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath, failed, cancelled: shouldCancel() });
     } catch (err) {
       resetSftpIfBroken(sessionId, err);
-      sftpJobDone(jobId, { sessionId, op: 'download', ok: false, error: err && err.message, cancelled: shouldCancel() });
+      // 单文件下载在"首个进度事件之前"失败(stat/读失败)时没有传输行;把失败条目带回去,
+      // 渲染层据此补出「✗ 失败」行(与批量下载一致,避免又变成"点了没反应")。
+      const failed = (kind === 'single' && args && args.remotePath)
+        ? [{ remotePath: args.remotePath, error: (err && err.message) || String(err) }]
+        : undefined;
+      sftpJobDone(jobId, { sessionId, op: 'download', ok: false, error: err && err.message, cancelled: shouldCancel(), failed });
     }
   });
   return { ok: true, jobId };
@@ -2295,25 +2469,25 @@ ipcMain.handle('sftp:uploadPaths', async (_e, { sessionId, remoteDir, localPaths
 ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
   try {
     const sftp = await getSftp(sessionId);
-    // 文件名取自远程路径,净化掉路径分隔符/.. (远程路径理论上可控,防保存时穿越)
-    const name = String(remotePath.split('/').filter(Boolean).pop() || 'download').replace(/[\\/:*?"<>|\r\n]+/g, '_').replace(/\.\./g, '_') || 'download';
+    // 文件名取自远程路径,按 Windows 规则净化(非法字符/保留设备名/结尾点空格/.. 穿越)
+    const name = safeLocalName(remotePath.split(/[\\/]/).filter(Boolean).pop() || 'download');
     // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答保存对话框,不弹原生窗口
     const save = process.env.POLARIS_AUTO_DL_DIR
       ? { canceled: false, filePath: path.join(process.env.POLARIS_AUTO_DL_DIR, name) }
       : await dialog.showSaveDialog(mainWindow, { title: '保存到本地', defaultPath: name });
     if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
     const localPath = save.filePath;
-    // 预检可写性(macOS TCC 保护目录):先试写再下载,失败立刻提示换目录
-    try {
-      const probe = localPath + '.wt';
-      fs.writeFileSync(probe, '');
-      fs.unlinkSync(probe);
-    } catch (err) {
+    // 预检可写性(macOS TCC 保护目录 / Windows 只读位置):先试写再下载,失败立刻提示换目录。
+    // 删除探测文件失败不算"不可写"(Windows 杀软可能短暂占用新建文件),残留 0 字节无妨。
+    const probe = localPath + '.wt';
+    try { fs.writeFileSync(probe, ''); }
+    catch (err) {
       const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
         ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
         : `保存位置不可写: ${err.message}`;
       return { ok: false, error: hint };
     }
+    try { fs.unlinkSync(probe); } catch { /* Windows:杀软占用导致删不掉,不影响下载 */ }
     const resumeFrom = resolveDownloadResume(sessionId, localPath);
     // 后台跑传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
     return startDownloadJob(sessionId, 'single', { remotePath, localPath, resumeFrom });
@@ -2339,33 +2513,53 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
         });
     if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
     const dir = pick.filePaths[0];
-    // 预检可写性:macOS 桌面/文稿/下载等受 TCC 保护,未授权时写入会 EPERM。
-    // 这里先试写一个临时文件,失败立刻返回明确提示 —— 避免"全部文件下载完才发现失败"。
-    try {
-      const probe = path.join(dir, `.polaris-wt-${Date.now()}`);
-      fs.writeFileSync(probe, '');
-      fs.unlinkSync(probe);
-    } catch (err) {
+    // 预检可写性:macOS 桌面/文稿/下载等受 TCC 保护,未授权时写入会 EPERM;Windows 只读目录同理。
+    // 先试写一个临时文件,失败立刻返回明确提示 —— 避免"全部文件下载完才发现失败"。
+    const probe = path.join(dir, `.polaris-wt-${Date.now()}`);
+    try { fs.writeFileSync(probe, ''); }
+    catch (err) {
       const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
         ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹(如 ~/sftp),或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
         : `保存位置不可写: ${err.message}`;
       return { ok: false, error: hint };
     }
+    try { fs.unlinkSync(probe); } catch { /* Windows:杀软占用导致删不掉,不影响下载 */ }
     // 先把目录展开成文件清单,算总字节 → 统一进度
     const plans = [];
+    const usedLeaves = new Set(); // 净化后重名(a:b / a*b)或 Windows 大小写冲突时避免互相覆盖
     for (const e of list) {
+      const rawLeaf = safeLocalName(e.remotePath.split(/[\\/]/).filter(Boolean).pop() || 'download');
+      let leaf = rawLeaf;
+      for (let n = 2; usedLeaves.has(leaf.toLowerCase()); n++) {
+        const dot = rawLeaf.lastIndexOf('.');
+        leaf = dot > 0 ? `${rawLeaf.slice(0, dot)} (${n})${rawLeaf.slice(dot)}` : `${rawLeaf} (${n})`;
+      }
+      usedLeaves.add(leaf.toLowerCase());
       if (e.isDir) {
-        const localTarget = path.join(dir, e.remotePath.split('/').filter(Boolean).pop() || 'dir');
+        const localTarget = path.join(dir, leaf);
+        // 空目录也要在本地建出来(否则勾选一个空文件夹下载,本地什么都没出现)
+        try { fs.mkdirSync(localTarget, { recursive: true }); } catch { /* 后续单文件写入会报具体错误 */ }
         plans.push(...(await sshClient.walkRemote(sftp, e.remotePath, localTarget)));
       } else {
-        plans.push({ rp: e.remotePath, lp: path.join(dir, path.basename(e.remotePath)), size: 0 });
+        plans.push({ rp: e.remotePath, lp: path.join(dir, leaf), size: 0 });
       }
     }
     // 后台跑批量传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
-    return startDownloadJob(sessionId, 'many', { plans });
+    return startDownloadJob(sessionId, 'many', { plans, targetDir: dir });
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// ---------- 全量日志 IPC ----------
+// 必须只注册一次:createWindow() 可能被重复调用(macOS activate / 重复解锁),而
+// ipcMain.handle 对同一 channel 二次注册会抛"Attempted to register a second handler",
+// 在 createWindow 里注册会让第二次解锁直接失败(窗口已建好却报错,难排查)。
+ipcMain.handle('app:log-dump', () => {
+  try { return { ok: true, content: appLog.dumpLogs() }; } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.on('app:log-dlog', (_e, lines) => {
+  if (Array.isArray(lines)) appLog.pushDlogLines(lines);
 });
 
 // ---------- 窗口 ----------
@@ -2412,13 +2606,7 @@ function createWindow() {
       } catch { /* ignore */ }
     }
   });
-  // 全量日志 IPC:渲染层 dlog(调试日志)批量转发落盘 + 下载日志导出
-  ipcMain.handle('app:log-dump', () => {
-    try { return { ok: true, content: appLog.dumpLogs() }; } catch (e) { return { ok: false, error: e.message }; }
-  });
-  ipcMain.on('app:log-dlog', (_e, lines) => {
-    if (Array.isArray(lines)) appLog.pushDlogLines(lines);
-  });
+  // 全量日志 IPC 已在模块加载时注册(app:log-dump / app:log-dlog),这里不再重复注册。
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -2632,8 +2820,16 @@ ipcMain.handle('lock:status', () => {
 ipcMain.handle('lock:change', (_e, { current, next }) => {
   try {
     if (!appLock.hasPassword()) return { ok: false, error: '尚未设置密码' };
-    if (!appLock.verifyPassword(current)) return { ok: false, error: '当前密码不正确' };
-    if (!next || String(next).length < 4) return { ok: false, error: '新密码至少 4 位' };
+    // 走带防暴力的校验(旧版直接 verifyPassword):否则连续试错被锁定的用户仍可通过
+    // lock:change 无限次猜旧密码,且一旦猜中 updatePassword 会 resetBrute() 清空锁定计数,
+    // 锁屏的递增延时形同虚设。
+    const v = appLock.verifyWithLock(current);
+    if (!v.ok) {
+      return { ok: false, locked: v.locked, error: v.locked ? `锁定中,请 ${v.remainingSec} 秒后再试` : '当前密码不正确' };
+    }
+    // 与锁屏首次设置口径一致(8 位):改密码入口不能成为绕过最小长度的后门。
+    // 密钥由密码 PBKDF2 派生,短密码会让整库加密形同虚设。
+    if (!next || String(next).length < 8) return { ok: false, error: '新密码至少 8 位' };
     appLock.updatePassword(next); // 更新锁的密码哈希
     dbPassword = next;            // 数据库用新密码重新加密(密钥由新密码派生)
     persistDb();
@@ -2679,6 +2875,9 @@ function openLockWindow() {
 
 // 用密码解密数据库并进入主界面(首次会迁移现有明文库)
 async function unlockApp(password) {
+  // 幂等:锁屏页回车 + 双击按钮/重复 IPC 都可能让 unlockApp 连跑两次。第二次会
+  // createWindow() 再建一个主窗口(第一个成为孤儿),且重复注册 IPC 处理器会抛错。
+  if (sessionStore) return;
   const dataPath = path.join(appLock.lockDir(), 'data.bin');
   const oldDb = path.join(appLock.lockDir(), 'sessions.db');
   let bytes = null;
