@@ -114,7 +114,29 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     if (id2 === 'file-pwd-input' && v2.endsWith('X')) ok('焦点掉到 BODY 后仍能恢复输入');
     else bad('BODY 焦点未恢复', JSON.stringify({ id2, v2 }));
 
-    // ④ 4 位密码被拒 + 提示 8 位;标签同步为 8 位
+    // ④ 真实导出入口不再调用原生 confirm(Windows 焦点恢复问题源),直接开密码弹窗并带数量提示
+    const exp = await ev(c, `(function(){
+      let called = false;
+      const old = window.confirm;
+      window.confirm = function(){ called = true; return true; };
+      exportSessions();
+      window.confirm = old;
+      return { called, hidden: els.filePwdModal.classList.contains('hidden'), hint: els.filePwdHint.textContent };
+    })()`);
+    if (!exp.called && !exp.hidden && /将导出/.test(exp.hint)) ok('导出入口不再走原生 confirm,直接打开密码弹窗');
+    else bad('导出入口仍走 confirm / 未打开弹窗', JSON.stringify(exp));
+    await ev(c, `closeFilePwd()`);
+
+    // ⑤ 延迟 600ms 的焦点抢夺(Windows 原生菜单/对话框常见)也能被 1s 重试拉回
+    await ev(c, `promptFilePwd('set', {type:'export', data:[]})`);
+    await sleep(600);
+    await ev(c, `(function(){ const t=[...state.tabs.values()][0]; t.term.focus(); return true; })()`);
+    await sleep(500);
+    const idLate = await activeId(c);
+    if (idLate === 'file-pwd-input') ok('延迟焦点抢夺后仍能自动拉回');
+    else bad('延迟焦点未拉回', String(idLate));
+
+    // ⑥ 4 位密码被拒 + 提示 8 位;标签同步为 8 位
     const short = await ev(c, `(function(){
       const a=document.getElementById('file-pwd-input'), b=document.getElementById('file-pwd-input2');
       a.value='abcd'; b.value='abcd'; document.getElementById('file-pwd-ok').click();
@@ -125,14 +147,14 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     if (!short.hidden && /至少\s*8\s*位/.test(short.msg) && /至少\s*8\s*位/.test(short.label)) ok('4 位密码被拒且提示/标签均为 8 位');
     else bad('长度校验/提示不一致', JSON.stringify(short));
 
-    // ⑤ 后端同样拒绝 <8 位(校验在弹保存框之前,不会卡住)
+    // ⑦ 后端同样拒绝 <8 位(校验在弹保存框之前,不会卡住)
     const be = await ev(c, `window.api.exportSessions([], '1234')`);
     if (be && be.ok === false && /8\s*位/.test(be.error || '')) ok('后端导出同样拒绝 <8 位');
     else bad('后端未拒绝短密码', JSON.stringify(be));
 
     await ev(c, `closeFilePwd()`);
 
-    // ⑥ 修改 App 密码弹窗同样具备焦点锁
+    // ⑧ 修改 App 密码弹窗同样具备焦点锁
     await ev(c, `(function(){ openPwdModal(); const t=[...state.tabs.values()][0]; t.term.focus(); return true; })()`);
     await sleep(350);
     const id3 = await activeId(c);

@@ -844,7 +844,16 @@ function resetAnsi() {
 // ---- 弹窗焦点锁(密码框“无法输入”的根因)----
 // 原生菜单关闭、终端重新聚焦、堡垒机 webview 抢焦点,都可能把焦点从刚打开的弹窗
 // 抢回终端;此后按键被 BODY 兜底转发进终端,密码框始终为空。
-// 打开弹窗时立即聚焦 + 下一帧/50ms/250ms 补聚焦;配合全局 focusin 守卫兜底。
+// Windows 上原生菜单/对话框关闭后的焦点恢复可能延迟,且可能滞留在窗口菜单栏:
+// 渲染层 focus() 不够 → 额外让主进程 focus 窗口/webContents,并延长补聚焦重试。
+let __lastWinFocusAt = 0;
+function ensureWindowFocus() {
+  if (document.hasFocus()) return;
+  const now = Date.now();
+  if (now - __lastWinFocusAt < 500) return; // 节流,避免连续重试刷 IPC
+  __lastWinFocusAt = now;
+  try { window.api && window.api.focusWindow && window.api.focusWindow(); } catch { /* ignore */ }
+}
 function focusModalInput(modalEl, inputEl) {
   if (!modalEl || !inputEl) return;
   const apply = () => {
@@ -853,10 +862,15 @@ function focusModalInput(modalEl, inputEl) {
     if (ae && modalEl.contains(ae) && ae !== modalEl) return; // 用户正在弹窗内操作
     try { inputEl.focus(); } catch { /* ignore */ }
   };
+  ensureWindowFocus(); // 只在弹窗刚打开时抢回 OS 焦点(用户刚发起操作)
   apply();
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+  // Windows 原生菜单/confirm 关闭后的焦点恢复可能晚于 250ms;多补几次,覆盖延迟恢复。
   setTimeout(apply, 50);
   setTimeout(apply, 250);
+  setTimeout(apply, 500);
+  setTimeout(apply, 1000);
+  setTimeout(apply, 2000);
 }
 
 // ---- 修改密码(App 密码锁 + 数据库整库重新加密) ----
@@ -886,11 +900,13 @@ async function changePassword() {
 
 // ---- 备份文件密码弹窗(导出设密码 set / 导入输密码 enter) ----
 let filePwdAction = null; // { type:'export', data } | { type:'import', buf }
-function promptFilePwd(mode, action) {
+function promptFilePwd(mode, action, detail) {
   filePwdAction = action;
   const isSet = mode === 'set';
   els.filePwdTitle.textContent = isSet ? '设置导出密码' : '输入备份密码';
-  els.filePwdHint.textContent = isSet ? '备份文件会用这个密码加密,导入时需输入它。' : '请输入该备份文件当初设置的密码。';
+  els.filePwdHint.textContent = isSet
+    ? (detail ? detail + ' ' : '') + '备份文件会用这个密码加密,导入时需输入它。'
+    : '请输入该备份文件当初设置的密码。';
   els.filePwdConfirmWrap.classList.toggle('hidden', !isSet);
   els.filePwdInput.value = '';
   els.filePwdInput2.value = '';
@@ -1579,12 +1595,13 @@ async function exportSessions() {
     label = `全部会话 ${rows.length} 台`;
   }
   if (!rows.length) { alert('没有可导出的会话'); return; }
-  if (!confirm(`将导出 ${label} 到加密备份文件(.polaris)。\n\n🔒 文件会用你设置的密码 AES 加密,密码不再明文落盘。\n\n继续?`)) return;
   const data = rows.map((s) => ({
     name: s.name, host: s.host, port: s.port, username: s.username,
     password: s.password || '', group: s.group_name || '默认分组',
   }));
-  promptFilePwd('set', { type: 'export', data }); // 设导出密码 → 加密导出
+  // 不再先弹原生 confirm():Windows 上原生对话框/菜单关闭后焦点恢复不稳定,
+  // 会把刚打开的密码框焦点抢走。数量/加密说明直接放到密码弹窗提示里。
+  promptFilePwd('set', { type: 'export', data }, `将导出 ${label}。`); // 设导出密码 → 加密导出
 }
 
 // 导出指定分组的全部会话(分组右键菜单"导出此分组")
@@ -1592,12 +1609,12 @@ async function exportGroup(gid, groupName) {
   const ids = new Set(collectGroupAndDescendants(Number(gid)));
   const rows = state.sessions.filter((s) => ids.has(Number(s.group_id)));
   if (!rows.length) { alert(`分组「${groupName}」没有会话可导出`); return; }
-  if (!confirm(`将导出分组「${groupName}」的 ${rows.length} 个会话到加密备份。\n\n🔒 文件会用你设置的密码 AES 加密。\n\n继续?`)) return;
   const data = rows.map((s) => ({
     name: s.name, host: s.host, port: s.port, username: s.username,
     password: s.password || '', group: groupName || '默认分组',
   }));
-  promptFilePwd('set', { type: 'export', data });
+  // 同 exportSessions:去掉原生 confirm,避免 Windows 焦点恢复问题
+  promptFilePwd('set', { type: 'export', data }, `将导出分组「${groupName}」的 ${rows.length} 个会话。`);
 }
 
 // 搜索词是完整 IP 地址(4 段点分十进制)→ 对主机 IP 精确匹配,避免子串误伤(搜 1.10 命中 1.100)
@@ -9935,6 +9952,8 @@ function bastionFocusCheckPending() {
 function bastionFocusCheck() {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
+  // 弹窗打开时不要抢焦点:否则密码/输入框会被 webview 每 500ms 抢一次(Windows 原生菜单场景更明显)
+  if (document.querySelector('.modal:not(.hidden)')) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板收起:不打扰
   if (!els.lockOverlay.classList.contains('hidden')) return; // 锁定中:webview 已 display:none
   // 右键菜单打开时不抢焦点:否则 guest 的 __bastionFocusTs 一更新,这里 wv.focus() 会

@@ -587,6 +587,17 @@ ipcMain.on('fs:reveal', (_e, p) => {
   try { if (p) shell.showItemInFolder(String(p)); } catch { /* ignore */ }
   if (process.env.POLARIS_AUTO_DL_DIR) console.log('[fs:reveal] ' + String(p)); // 测试观察点:真实调用了 reveal
 });
+// 渲染层需要把键盘焦点抢回网页时调用:Windows 原生菜单/对话框关闭后,焦点可能留在
+// 菜单栏或旧控件上,仅靠渲染层 input.focus() 无法恢复 OS 级别的键盘焦点。
+ipcMain.on('window:focus', () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+  } catch { /* ignore */ }
+});
 
 // 终端调试日志:把渲染层面板内容存到会话日志目录(排查终端/vim 按键问题用)
 ipcMain.handle('debug:save', (_e, text) => {
