@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.44**（2026-09-15）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.46**（2026-10-30）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -115,6 +115,8 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 29. **xlsx 依赖**（v1.0.43）：`package.json` 指向 SheetJS 官方 tarball `xlsx-0.20.3`（非 npm registry —— npm 线止于 0.18.5 且有 2 个 high 无法修复）。`npm ci`/CI 需能访问 cdn.sheetjs.com；`npm audit` 不再跟踪它。评估与 PoC 见 `docs/deps-xlsx-evaluation.md`
 
 30. **传输失败的可见性**（v1.0.44，renderer.js `onSftpDone` + lib/ssh-client.js）：传输行只在"首个进度事件"创建，**读失败/零字节失败的文件不会有行** → 用户看到的是"点了下载没反应"。规则:① 下载结束按 `failed` 列表补出「✗ 失败」行（含原因）;② 部分失败必须点出失败数（**不能被"已下载"掩盖**）;③ 主进程对逐文件失败写 `[SFTP]` 日志（排障唯一依据）;④ **读/写任一出错成对销毁两个流**（否则本地 0 字节文件写句柄泄漏,实测进程 lsof 可见残留 fd）;⑤ 远端报 0 字节时留痕（无法区分"真空文件"与"设备撒谎"）
+
+31. **分组层级与命名**（2026-10-30，lib/session-store.js + renderer.js）：① 树形/列表/网格共用同一份 `groups.parent_id` 数据；列表与树形共用 `buildGroupHierarchy/renderGroupHierarchy`（列表不折叠，仅缩进），修复"列表模式子分组不合并、目录结构不一致"；② 分组名从**全局唯一**改为**同一父级下唯一**——旧库 `name TEXT UNIQUE` 启动时自动重建 groups 表（保留 id），唯一性由部分索引 `ux_groups_root_name`（根级）与 `ux_groups_sibling_name`（同 parent_id）保证；不同父级允许同名（如 `生产/网络` 与 `测试/网络`）；③ 导入/旧 `group_name` 迁移只按**根级**名称解析；会话弹窗分组下拉显示完整路径（`父组 / 子组`）；④ 拖拽移动会话改用整行完整字段（私钥/口令/编码/协议/登录宏/跳板机/标签色），避免 updateSession 整行覆盖导致丢配置。回归：`verify-group-views.js`、`verify-group-name-unique.js`
 
 ## 运行与调试
 

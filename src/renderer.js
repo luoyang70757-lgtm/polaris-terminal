@@ -4,7 +4,7 @@
  * 会话列表(SQLite)→ 双击 → 建标签 + xterm 终端 → SSH 直连
  */
 
-/* global XTerm, XTermAddonFit, Terminal, FitAddon, XLSX */
+/* global XTerm, XTermAddonFit, Terminal, FitAddon */
 
 // ---- xterm 全局兼容 ----
 // 不同版本/构建的浏览器全局名不一样,这里统一归一成"类":
@@ -1698,15 +1698,63 @@ function renderSessionList(filter) {
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
 }
 
-// 按分组归类:Map<分组名, 会话数组>
-function groupSessions(sessions) {
-  const groups = new Map();
-  for (const s of sessions) {
-    const key = s.group_name || '默认分组';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(s);
+// ---- 分组层级:树形/列表共用 ----
+// 旧版列表视图按 group_name 平铺,子分组会被拆成互不相干的顶级节标题,
+// 导致「列表模式看不到层级、和树形模式目录结构不一致」。这里统一按 parent_id 建树。
+function buildGroupHierarchy() {
+  const ids = new Set(state.groups.map((g) => Number(g.id)));
+  const childrenOf = new Map(); // parent id|null → [group]
+  for (const g of state.groups) {
+    const pid = g.parent_id != null && ids.has(Number(g.parent_id)) ? Number(g.parent_id) : null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid).push(g);
   }
-  return groups;
+  return { ids, childrenOf };
+}
+
+function groupSessionsByGroupId(sessions) {
+  const by = new Map();
+  for (const s of sessions) {
+    const gid = Number(s.group_id);
+    if (!by.has(gid)) by.set(gid, []);
+    by.get(gid).push(s);
+  }
+  return by;
+}
+
+// 渲染整棵分组树。opts.flat=true → 列表模式(不折叠,层级用缩进表达;右键菜单/拖拽/选中与树形一致)
+function renderGroupHierarchy(sessions, container, opts = {}) {
+  const { ids, childrenOf } = buildGroupHierarchy();
+  const byGroup = groupSessionsByGroupId(sessions);
+  const flat = !!opts.flat;
+  const renderNode = (g, depth) => {
+    const gid = Number(g.id);
+    const collapsed = !flat && state.collapsedGroups.has(gid);
+    container.appendChild(makeGroupHead(g, depth, collapsed, { flat }));
+    if (collapsed) return;
+    for (const child of childrenOf.get(gid) || []) renderNode(child, depth + 1);
+    for (const s of byGroup.get(gid) || []) {
+      const row = makeSessionRow(s);
+      row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
+      row.style.paddingLeft = `${24 + depth * 18}px`;
+      container.appendChild(row);
+    }
+  };
+  for (const g of childrenOf.get(null) || []) renderNode(g, 0);
+  // 兜底:group_id 已失效/为空的会话不能凭空消失(正常会被迁移到「默认分组」,极少触发)
+  const orphans = sessions.filter((s) => !ids.has(Number(s.group_id)));
+  if (orphans.length) {
+    const head = document.createElement('div');
+    head.className = 'asset-group-head list-head';
+    head.style.paddingLeft = '8px';
+    head.textContent = `未分组 (${orphans.length})`;
+    container.appendChild(head);
+    for (const s of orphans) {
+      const row = makeSessionRow(s);
+      row.classList.add('host-item');
+      container.appendChild(row);
+    }
+  }
 }
 
 // 建一个会话行(名称 + 悬停地址;拖拽/双击/右键)
@@ -1798,16 +1846,23 @@ function collectGroupAndDescendants(gid) {
 }
 
 // 渲染一个分组头(支持缩进);depth 越深缩进越多
-function makeGroupHead(g, depth, collapsed) {
-  const gid = g.id;
+// opts.flat=true:列表模式(无折叠三角,层级只用缩进表达;右键菜单/拖拽/选中行为与树形一致)
+function makeGroupHead(g, depth, collapsed, opts) {
+  const flat = !!(opts && opts.flat);
+  const gid = Number(g.id);
   const isProd = !!g.is_prod;
-  const directCount = state.sessions.filter((s) => Number(s.group_id) === Number(gid)).length;
+  const directCount = state.sessions.filter((s) => Number(s.group_id) === gid).length;
   const head = document.createElement('div');
-  head.className = 'asset-group-head' + (isProd ? ' prod' : '');
+  head.className = 'asset-group-head' + (isProd ? ' prod' : '') + (flat ? ' list-head' : '');
   head.style.paddingLeft = `${8 + depth * 18}px`;
   const caret = document.createElement('span');
   caret.className = 'asset-group-caret';
-  caret.textContent = collapsed ? '▶' : '▼';
+  if (flat) {
+    caret.textContent = '';
+    caret.style.visibility = 'hidden'; // 占位对齐树形模式,但不提供折叠
+  } else {
+    caret.textContent = collapsed ? '▶' : '▼';
+  }
   const gname = document.createElement('span');
   gname.className = 'asset-group-name';
   gname.textContent = g.name + (isProd ? ' 🔴' : '');
@@ -1818,7 +1873,7 @@ function makeGroupHead(g, depth, collapsed) {
   head.appendChild(gname);
   head.appendChild(gcount);
   // 小三角:折叠/展开,同时把该组设为"全选"目标(用户点开分组=想操作这组)
-  caret.addEventListener('click', (e) => {
+  if (!flat) caret.addEventListener('click', (e) => {
     e.stopPropagation();
     if (collapsed) state.collapsedGroups.delete(gid);
     else state.collapsedGroups.add(gid);
@@ -1827,12 +1882,12 @@ function makeGroupHead(g, depth, collapsed) {
   });
   // 点分组头(除小三角):选中该组作为"全选"目标(并展开它),再点一次取消选中
   head.addEventListener('click', () => {
-    state.activeGroupId = (state.activeGroupId === gid) ? null : gid;
+    state.activeGroupId = (Number(state.activeGroupId) === gid) ? null : gid;
     state.collapsedGroups.delete(gid);
     scopeSelectionToTarget(); // 选中分组后:清除其他分组的勾选
     renderSessionList(els.inputSessionSearch.value);
   });
-  head.classList.toggle('active-group', Number(state.activeGroupId) === Number(gid));
+  head.classList.toggle('active-group', Number(state.activeGroupId) === gid);
   head.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     showCtxMenu(e.clientX, e.clientY, [
@@ -1892,78 +1947,14 @@ function renderSessionsTree(sessions, container) {
       }
     }
   }
-  // 构建分组层级(按 parent_id)
-  const childrenOf = new Map(); // parent_id → [group]
-  const ids = new Set(state.groups.map((g) => g.id));
-  for (const g of state.groups) {
-    const pid = g.parent_id && ids.has(g.parent_id) ? g.parent_id : null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid).push(g);
-  }
-  // 按分组收纳会话
-  const sessByGroup = new Map();
-  for (const s of sessions) {
-    if (!sessByGroup.has(s.group_id)) sessByGroup.set(s.group_id, []);
-    sessByGroup.get(s.group_id).push(s);
-  }
-  // 递归渲染:父折叠 → 跳过整棵子树
-  const renderNode = (g, depth) => {
-    const collapsed = state.collapsedGroups.has(g.id);
-    container.appendChild(makeGroupHead(g, depth, collapsed));
-    if (collapsed) return;
-    for (const child of childrenOf.get(g.id) || []) renderNode(child, depth + 1);
-    for (const s of sessByGroup.get(g.id) || []) {
-      const row = makeSessionRow(s);
-      row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
-      row.style.paddingLeft = `${24 + depth * 18}px`;
-      container.appendChild(row);
-    }
-  };
-  for (const g of childrenOf.get(null) || []) renderNode(g, 0);
+  // 与列表模式共用同一套 parent_id 分组层级,保证两种视图的目录结构一致
+  renderGroupHierarchy(sessions, container, { flat: false });
 }
 
-// 列表视图:分组作为节标题(不折叠),会话平铺
+// 列表视图:与树形模式同一套分组层级(子分组嵌套缩进;分组头可右键管理/拖拽),
+// 区别仅是列表模式不折叠、不显示折叠三角。
 function renderSessionsList(sessions, container) {
-  const groups = groupSessions(sessions);
-  // 没在搜索时,把空分组也显示出来
-  if (!(els.inputSessionSearch.value || '').trim()) {
-    for (const g of state.groups) {
-      if (!groups.has(g.name)) groups.set(g.name, []);
-    }
-  }
-  for (const [groupName, list] of groups) {
-    const g = state.groups.find((x) => x.name === groupName);
-    const isProd = !!(g && g.is_prod);
-    const head = document.createElement('div');
-    head.className = 'asset-group-head list-head' + (isProd ? ' prod' : '');
-    head.textContent = `${groupName}${isProd ? ' 🔴' : ''} (${list.length})`;
-    // 仍是拖拽投放目标
-    head.dataset.groupId = (state.groups.find((g) => g.name === groupName) || {}).id || groupName;
-    head.addEventListener('dragover', (e) => { e.preventDefault(); head.classList.add('drag-over'); });
-    head.addEventListener('dragleave', () => head.classList.remove('drag-over'));
-    head.addEventListener('drop', (e) => {
-      e.preventDefault();
-      head.classList.remove('drag-over');
-      const sid = parseInt(e.dataTransfer.getData('text/plain'), 10);
-      const gid = head.dataset.groupId;
-      if (sid && gid) moveSessionToGroup(sid, gid);
-    });
-    // 列表视图分组头:点击选中该分组作为"全选"目标(再点取消)
-    head.addEventListener('click', () => {
-      const gid = Number(head.dataset.groupId) || head.dataset.groupId; // dataset 是字符串,转回数字
-      if (gid) {
-        state.activeGroupId = (state.activeGroupId === gid) ? null : gid;
-        renderSessionList(els.inputSessionSearch.value);
-      }
-    });
-    head.classList.toggle('active-group', state.activeGroupId === Number(head.dataset.groupId) || state.activeGroupId === head.dataset.groupId);
-    container.appendChild(head);
-    for (const s of list) {
-      const r = makeSessionRow(s);
-      r.classList.add('host-item'); // 列表视图同样用紧凑小条(左侧竖线分隔+右侧留白)
-      container.appendChild(r);
-    }
-  }
+  renderGroupHierarchy(sessions, container, { flat: true });
 }
 
 // 网格视图:会话卡片
@@ -2899,9 +2890,12 @@ function newGroup(parentId) {
     onOk: async (name) => {
       name = (name || '').trim();
       if (!name) return;
-      const exists = state.groups.some((g) => g.name === name);
-      if (exists) { alert(`分组「${name}」已存在,无需重复创建`); return; }
-      const res = await window.api.createGroup(name, parent ? parent.id : null);
+      // 只要求**同一父级**下不重名:不同父组下可以都叫「生产」
+      const pid = parent ? Number(parent.id) : null;
+      const exists = state.groups.some((g) => g.name === name &&
+        (pid == null ? g.parent_id == null : Number(g.parent_id) === pid));
+      if (exists) { alert(`同一级下已存在分组「${name}」`); return; }
+      const res = await window.api.createGroup(name, pid);
       if (!res.ok) { alert(`新建分组失败: ${res.error}`); return; }
       loadSessions();
     },
@@ -2955,8 +2949,8 @@ async function deleteGroup(id, name) {
   // 安全校验:必须是对应真实分组(防止误传会话 id 等导致误删)
   const g = state.groups.find((x) => Number(x.id) === Number(id));
   if (!g) { alert('分组不存在,已取消删除'); return; }
-  // 默认分组是系统保留(所有无组连接都归它),不可删除
-  if (g.name === '默认分组') { alert('「默认分组」是系统保留分组,不能删除'); return; }
+  // 默认分组是系统保留(所有无组连接都归它),不可删除(只限制根级)
+  if (g.name === '默认分组' && g.parent_id == null) { alert('「默认分组」是系统保留分组,不能删除'); return; }
   const affected = collectGroupAndDescendants(Number(id));
   // 安全门槛:一次删除最多只能涉及 1 个顶级分组(防父链错乱/异常时误删多个顶级树)
   const topLevelInvolved = affected.filter((gid) => {
@@ -2994,16 +2988,26 @@ async function deleteGroup(id, name) {
 
 // 把会话拖拽移动到另一个分组(拖到分组文件夹头触发)
 async function moveSessionToGroup(sessionId, groupId) {
-  const s = state.sessions.find((x) => x.id === sessionId);
-  if (!s) return;
-  if (s.group_id === groupId) return; // 已在同组
-  const res = await window.api.updateSession(sessionId, {
+  const s = state.sessions.find((x) => Number(x.id) === Number(sessionId));
+  const gid = Number(groupId);
+  if (!s || !gid) return;
+  if (Number(s.group_id) === gid) return; // 已在同组
+  // 注意:updateSession 是整行覆盖(缺字段会被写成默认值),必须把连接配置完整带上,
+  // 否则拖一次分组就会丢掉私钥/口令/编码/协议/登录宏/跳板机/标签颜色。
+  const res = await window.api.updateSession(s.id, {
     name: s.name,
     host: s.host,
     port: s.port || 22,
     username: s.username,
     password: s.password || '',
-    groupId,
+    privateKey: s.private_key || '',
+    passphrase: s.passphrase || '',
+    encoding: s.encoding || 'utf8',
+    protocol: s.protocol || 'ssh',
+    tagColor: s.tag_color || '',
+    onConnect: s.on_connect || '',
+    jump: s.jump || null,
+    groupId: gid,
   });
   if (!res.ok) { alert(`移动失败: ${res.error}`); return; }
   setStatus(`已将「${s.name}」移动到分组`, 'var(--green)');
@@ -3023,13 +3027,27 @@ async function toggleGroupProd(gid, groupName) {
   await loadSessions(); // 重新拉分组/会话并重渲染
 }
 
+// 分组下拉框显示完整路径,不同父级下的同名分组(如 生产/网络、测试/网络)可区分
+function groupPathLabel(g) {
+  const byId = new Map(state.groups.map((x) => [Number(x.id), x]));
+  const parts = [];
+  const seen = new Set();
+  let cur = g;
+  while (cur && !seen.has(Number(cur.id))) {
+    seen.add(Number(cur.id));
+    parts.unshift(cur.name);
+    cur = cur.parent_id != null ? byId.get(Number(cur.parent_id)) : null;
+  }
+  return parts.join(' / ');
+}
+
 // 填充会话弹窗的分组下拉框(所有分组 + "新建分组..."入口)
 function fillGroupSelect() {
   els.fGroup.innerHTML = '';
   for (const g of state.groups) {
     const opt = document.createElement('option');
     opt.value = g.id;
-    opt.textContent = g.name;
+    opt.textContent = groupPathLabel(g);
     els.fGroup.appendChild(opt);
   }
   const opt = document.createElement('option');
@@ -3206,8 +3224,8 @@ function saveSession() {
       onOk: async (gname) => {
         gname = (gname || '').trim();
         if (!gname) return;
-        // 分组已存在 → 直接用现有的,不再报 UNIQUE 错
-        const exist = state.groups.find((g) => g.name === gname);
+        // 这里新建的是**根级**分组:只复用根级同名分组,子分组同名不冲突
+        const exist = state.groups.find((g) => g.name === gname && g.parent_id == null);
         if (exist) { await doSaveSession(exist.id); return; }
         const gres = await window.api.createGroup(gname);
         if (!gres.ok) { alert(`新建分组失败: ${gres.error}`); return; }
@@ -3446,10 +3464,27 @@ async function saveTemplate() {
 }
 
 // 方式二:Excel 文件导入
+// xlsx(930KB)不随首屏加载:只有真正选 Excel 导入时才注入脚本,减少 Windows 冷启动解析开销。
+let xlsxLoader = null;
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!xlsxLoader) {
+    xlsxLoader = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = '../node_modules/xlsx/dist/xlsx.full.min.js';
+      s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('Excel 解析库未初始化')));
+      s.onerror = () => { xlsxLoader = null; reject(new Error('Excel 解析库加载失败')); };
+      document.head.appendChild(s);
+    });
+  }
+  return xlsxLoader;
+}
+
 async function importFromExcel() {
   const file = els.importFile.files[0];
   if (!file) return;
   try {
+    const XLSX = await loadXlsx();
     const buf = await file.arrayBuffer(); // 把文件读成二进制
     const wb = XLSX.read(buf);             // SheetJS 解析成工作簿
     const sheet = wb.Sheets[wb.SheetNames[0]]; // 只读第一个 sheet

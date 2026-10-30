@@ -36,6 +36,8 @@ const setScope = (v) => `(function(){var s=document.getElementById('scope-select
     let c = null;
     for (let i = 0; i < 30; i++) { await sleep(400); const t2 = await listTargets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { c = await connect(m.webSocketDebuggerUrl); break; } }
     if (!c) throw new Error('主窗口未就绪');
+    // 主窗口 target 出现 ≠ renderer.js 已执行完;等全局 state 就绪再断言,避免首屏竞态。
+    for (let i = 0; i < 50; i++) { if (await ev(c, `typeof state === 'object' && !!state.settings`)) break; await sleep(200); }
 
     await check(c, '下拉存在且默认「全部」', `(function(){var s=document.getElementById('scope-select');return !!s && s.value==='all' && s.options.length===3;})()`);
     await check(c, '默认两个分组都在(🖥 主机)', groupVisible('🖥 主机'));

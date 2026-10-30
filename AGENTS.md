@@ -30,8 +30,14 @@
 POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu
 
 # 编译正式版
-npm run dist   # → release/mac/Polaris.app（macOS，未签名）
+npm run dist   # → release/mac/Polaris.app(macOS，未签名)
+# Windows(同时产出两种包):
+#   release/Polaris Setup <v>.exe     NSIS 安装版(启动快，推荐)
+#   release/Polaris Portable <v>.exe  portable 免安装版(每次启动自解压，较慢)
+npm run dist -- --win
 ```
+
+**启动慢排查**：数据目录 `logs/startup-error.log` 有分段打点；portable 版本的慢在"窗口出现前"(每次重解压 ~200MB)，详见 `docs/windows-startup-slow.md`。
 
 **数据目录**：`POLARIS_LOCK_DIR` 指定（默认 `~/.jms-terminal`）；开发用 `.polaris-data/`。数据库/密码锁/指纹/录制/归档/日志都在此目录。**`.polaris-data/`、`*.har`、`probe-*.js` 已 .gitignore，不入库。**
 
@@ -60,9 +66,9 @@ npm run dist   # → release/mac/Polaris.app（macOS，未签名）
 - e2e 验证：`node verify-<功能>.js`（自动 spawn electron + 调试端口 + 临时数据目录，用后 pkill）
 - 测试会杀掉正在运行的 app（pkill electron），测完需重启
 
-## 当前状态（截至 2026-09-11）
+## 当前状态（截至 2026-10-30）
 
-**当前版本 v1.0.44**（2026-09-15 发版；v1.0.44 修 SFTP 下载失败不可见 + 写句柄泄漏）：含敏感输入不落盘、取消传输保留半成品、批量传输并入加固管线、危险命令确认覆盖全部一键入口、批量连接不抢焦点、多堡垒机资产分键、xlsx 换官方 tarball 等；问题清单见 `docs/issues-2026-09-11.md`。
+**当前版本 v1.0.46**（2026-10-30 发版）：Windows 启动优化（NSIS 安装版 + portable 启动图 + V8 编译缓存 + ssh2/xlsx/tar 惰性加载 + 日志批量写盘 + locale 精简）；列表/树形视图统一按 `parent_id` 渲染分组层级（子分组嵌套，不再平铺）；分组名改为**同一父级下唯一**（旧库自动迁移，不同父级可同名）；拖拽移动会话不再丢私钥/跳板机等字段。历史问题清单见 `docs/issues-2026-09-11.md`，Windows 启动排查见 `docs/windows-startup-slow.md`。
 
 已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能与断点续传、命令补全与智能推荐、主题系统（25 套，各带 ANSI 色板）、AI 技能/知识库、SSH 隧道、录制回放、全量日志、堡垒机入口整合。
 详见 `CONTEXT.md` 的「已完成功能」「技术决策」。
