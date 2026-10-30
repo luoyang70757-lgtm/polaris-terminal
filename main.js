@@ -13,18 +13,76 @@ const path = require('path');
 const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
 
+// ---------- 便携版数据目录(必须在任何模块读写数据目录之前确定) ----------
+// 便携版(PORTABLE_EXECUTABLE_DIR 由 electron-builder portable 运行时注入,= exe 所在目录):
+// 所有数据(userData 设置/AI 配置 + 加密库/密码锁/指纹/录制/归档)统一放 exe 同目录的 .Polaris 文件夹,
+// 第一次运行自动创建,真正做到"数据随 exe 走",拷走文件夹即带全部数据。
+// 安装版:固定 userData 目录(改产品名/包名不会丢设置和 AI 配置)。
+// Windows 注意:便携 exe 常被放在 Program Files / 只读盘 / 只读 U 盘 → mkdir 会抛错,
+// 旧版在 appLog 初始化前直接崩溃(用户只看到"打不开、无日志")。这里探测失败就回退用户数据目录。
+function resolvePortableDataDir() {
+  const base = process.env.PORTABLE_EXECUTABLE_DIR;
+  if (!base) return null;
+  const dir = path.join(base, '.Polaris');
+  try {
+    fs.mkdirSync(dir, { recursive: true }); // 第一次运行自动创建
+    fs.accessSync(dir, fs.constants.W_OK);   // 只读目录也能 mkdir 成功(exe 目录已存在),必须验证可写
+    return dir;
+  } catch (err) {
+    const msg = '便携数据目录不可写(' + (err && err.message) + '),回退到用户数据目录: ' + dir;
+    try { console.warn('[MAIN] ' + msg); } catch { /* ignore */ }
+    return null;
+  }
+}
+const POLARIS_DATA_DIR = resolvePortableDataDir();
+if (POLARIS_DATA_DIR) {
+  app.setPath('userData', POLARIS_DATA_DIR);
+  process.env.POLARIS_LOCK_DIR = POLARIS_DATA_DIR; // 数据库/密码锁/指纹/录制/归档 走同一目录(app-lock 读取)
+} else {
+  // 测试环境(POLARIS_LOCK_DIR 已注入临时目录)→ userData 跟随,避免共享的真实配置/设置污染测试。
+  // 便携版回退时忽略 POLARIS_LOCK_DIR(它可能仍指向不可写的便携目录)。
+  const portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+  const testDir = portable ? null : process.env.POLARIS_LOCK_DIR;
+  app.setPath('userData', testDir ? path.join(testDir, 'userdata') : path.join(app.getPath('appData'), 'polaris'));
+  // 便携版回退:改回 app-lock 默认的 ~/.jms-terminal(用户目录,肯定可写;不在 Roaming 里,
+  // 不会被域漫游同步)。
+  if (portable) delete process.env.POLARIS_LOCK_DIR;
+}
+
 // ---- 启动诊断:早期崩溃(模块 require 失败/异常)记到独立文件 —— 排查 Windows 打不开 ----
 // app-log 在下面才加载,若它自身或它依赖的模块 require 失败,app 会在注册任何错误处理
 // 前崩溃、无任何日志。这里用最原始的 fs 先落一个启动痕迹,任何失败都能定位到具体模块。
+// 路径每次调用时重新取 POLARIS_LOCK_DIR(便携目录在上方已确定),避免早期日志落到错误目录。
 const __startupLog = (() => {
   try {
     const os = require('os');
-    const f = path.join(process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal'), 'logs', 'startup-error.log');
-    try { fs.mkdirSync(path.dirname(f), { recursive: true }); } catch { /* ignore */ }
-    return (m) => { try { fs.appendFileSync(f, `[${new Date().toISOString()}] ${m}\n`); } catch { /* ignore */ } };
+    const dirNow = () => process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal');
+    return (m) => {
+      try {
+        const f = path.join(dirNow(), 'logs', 'startup-error.log');
+        try { fs.mkdirSync(path.dirname(f), { recursive: true }); } catch { /* ignore */ }
+        fs.appendFileSync(f, `[${new Date().toISOString()}] ${m}\n`);
+      } catch { /* ignore */ }
+    };
   } catch { return () => {}; }
 })();
-__startupLog('main.js 加载开始');
+const __startupT0 = Date.now();
+// 启动分段打点:写入 <数据目录>/logs/startup-error.log,形如 "[+1234ms] 锁屏窗口已创建"。
+// Windows 启动慢时直接看这个文件:能区分"portable 解压/杀软扫描"与"主进程/解锁/渲染"哪一段慢。
+const __mark = (label) => __startupLog('[' + (Date.now() - __startupT0) + 'ms] ' + label);
+__mark('main.js 加载开始' + (POLARIS_DATA_DIR ? '(便携版数据目录: ' + POLARIS_DATA_DIR + ')' : ''));
+// V8 编译缓存:把主进程/本地模块的字节码缓存到 userData,第二次启动跳过重复解析。
+// Windows(尤其叠加 Defender)冷启动收益明显;Electron 43 内置 Node 24 支持 enableCompileCache。
+// 必须在 require 业务模块之前调用,否则本次启动已经解析完了。
+try {
+  const nodeModule = require('node:module');
+  if (typeof nodeModule.enableCompileCache === 'function') {
+    const cc = nodeModule.enableCompileCache(path.join(app.getPath('userData'), 'v8-compile-cache'));
+    const st = cc && cc.status;
+    __mark('编译缓存: ' + (st === 1 ? '已启用' : st === 2 ? '已存在' : st === 3 ? '不可写(已禁用)' : '未知') +
+      (cc && cc.directory ? ' (' + cc.directory + ')' : ''));
+  }
+} catch (e) { __mark('编译缓存启用失败: ' + (e && e.message)); }
 // 逐模块加载并留痕:任何一个 require 失败(如 node:sqlite 在当前 Electron 不可用)都会在
 // 启动时崩溃且无日志 —— 这里把失败模块名记到 startup-error.log,Windows 打不开时能定位。
 // 用 var(function 作用域)保证后续代码能访问到这些模块。
@@ -50,16 +108,16 @@ var sessionLog = __req('./lib/session-log', 'session-log');
 var tunnelLib = __req('./lib/tunnel', 'tunnel');
 var jmsApi = __req('./lib/jms-api', 'jms-api');
 var h3cApi = __req('./lib/h3c-api', 'h3c-api'); // H3C shterm 原生客户端(ses.fetch 走 persist:bastion 会话 cookie)
-var XLSX = __req('xlsx', 'xlsx');
+// xlsx / tar 不在这里 require:只在"导入模板 / 目录打包上传"时才用,
+// 启动时解析会拖慢 Windows 冷启动(尤其叠加 Defender 扫描)。按需加载见使用处。
 var appLog = __req('./lib/app-log', 'app-log');
-var tar = __req('tar', 'tar'); // 纯 JS tar:目录打包上传用,不依赖系统 tar(Windows 无系统 tar)
 var sftpSizes = __req('./lib/sftp-sizes', 'sftp-sizes'); // H3C 等设备上传文件真实大小持久化(覆盖显示 0)
 var connectOpts = __req('./lib/connect-opts', 'connect-opts'); // 共享:makeHostVerifier/resolvePrivateKey/withHostVerify
 var sessionGroups = __req('./lib/session-groups', 'session-groups'); // 分组/命令历史归档/快速命令/导入模板 IPC
 var sessionIpc = __req('./lib/session-ipc', 'session-ipc'); // 会话管理/导入导出/系统探测 IPC
 var fsUtil = __req('./lib/fs-util', 'fs-util'); // 原子写(Windows 杀软占用重试)
 var { safeLocalName } = __req('./lib/local-name', 'local-name'); // 远程文件名 → 本地安全名(Windows 保留名/非法字符)
-__startupLog('模块加载完成');
+__mark('模块加载完成');
 
 // ---------- 安全日志 ----------
 // 当 stdout/stderr 管道被关闭(如从终端启动后终端被关、后台运行、日志重定向断开)时,
@@ -83,6 +141,13 @@ function __forwardMainLog(level, args) {
     const msg = Array.from(args).map(String).join(' ');
     if (level === 'log' && msg.startsWith('[RENDERER]')) return;
     if (level === 'error' && __BENIGN_MAIN_ERROR.test(msg)) return; // 良性 webview 错误不刷调试面板
+    __sendMainLog(level, msg);
+  } catch { /* ignore */ }
+}
+// 仅转发到渲染层调试面板(不落盘):渲染层 console 已由 appLog.log('renderer') 单独落盘,
+// 旧版先 console.log 再 appLog.log 会把每条渲染层日志写两遍(Windows 上每写一次都可能触发杀软扫描)。
+function __sendMainLog(level, msg) {
+  try {
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.send('main:log', level, msg);
     }
@@ -113,47 +178,14 @@ app.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
   callback(true);
 });
 
-// ---------- 数据目录 ----------
-// 便携版(PORTABLE_EXECUTABLE_DIR 由 electron-builder portable 运行时注入,= exe 所在目录):
-// 所有数据(userData 设置/AI 配置 + 加密库/密码锁/指纹/录制/归档)统一放 exe 同目录的 .Polaris 文件夹,
-// 第一次运行自动创建,真正做到"数据随 exe 走",拷走文件夹即带全部数据。
-// 安装版:固定 userData 目录(改产品名/包名不会丢设置和 AI 配置)。
-// Windows 注意:便携 exe 常被放在 Program Files / 只读盘 / 只读 U 盘 → mkdir 会抛错,
-// 旧版在 appLog 初始化前直接崩溃(用户只看到"打不开、无日志")。这里探测失败就回退用户数据目录。
-function resolvePortableDataDir() {
-  const base = process.env.PORTABLE_EXECUTABLE_DIR;
-  if (!base) return null;
-  const dir = path.join(base, '.Polaris');
-  try {
-    fs.mkdirSync(dir, { recursive: true }); // 第一次运行自动创建
-    fs.accessSync(dir, fs.constants.W_OK);   // 只读目录也能 mkdir 成功(exe 目录已存在),必须验证可写
-    return dir;
-  } catch (err) {
-    const msg = '便携数据目录不可写(' + (err && err.message) + '),回退到用户数据目录: ' + dir;
-    try { __startupLog(msg); } catch { /* ignore */ }
-    try { console.warn('[MAIN] ' + msg); } catch { /* ignore */ }
-    return null;
-  }
-}
-const POLARIS_DATA_DIR = resolvePortableDataDir();
-if (POLARIS_DATA_DIR) {
-  app.setPath('userData', POLARIS_DATA_DIR);
-  process.env.POLARIS_LOCK_DIR = POLARIS_DATA_DIR; // 数据库/密码锁/指纹/录制/归档 走同一目录(app-lock 读取)
-} else {
-  // 测试环境(POLARIS_LOCK_DIR 已注入临时目录)→ userData 跟随,避免共享的真实配置/设置污染测试。
-  // 便携版回退时忽略 POLARIS_LOCK_DIR(它可能仍指向不可写的便携目录)。
-  const portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
-  const testDir = portable ? null : process.env.POLARIS_LOCK_DIR;
-  app.setPath('userData', testDir ? path.join(testDir, 'userdata') : path.join(app.getPath('appData'), 'polaris'));
-  // 便携版回退:改回 app-lock 默认的 ~/.jms-terminal(用户目录,肯定可写;不在 Roaming 里,
-  // 不会被域漫游同步)。
-  if (portable) delete process.env.POLARIS_LOCK_DIR;
-}
+// ---------- 数据目录已在上方确定(便携版/安装版) ----------
 
 // Windows 上部分显卡/虚拟机(Win11 测试环境常见)的 GPU 合成器命中测试有 bug:
-// 弹窗等"新合成层"能渲染出来但点击坐标定位失效(点了完全没反应)→ 关掉硬件加速。
-// 不影响任何功能,只影响渲染性能。必须在 app ready 前调用。
-if (process.platform === 'win32') app.disableHardwareAcceleration();
+// 弹窗等"新合成层"能渲染出来但点击坐标定位失效(点了完全没反应)→ 默认关掉硬件加速。
+// 代价:界面/终端走软件渲染,首帧和滚动更慢。显卡正常时可用 POLARIS_GPU=1 打开硬件加速。
+// 必须在 app ready 前调用。
+const FORCE_GPU = process.env.POLARIS_GPU === '1' || process.env.POLARIS_HW_ACCEL === '1';
+if (process.platform === 'win32' && !FORCE_GPU) app.disableHardwareAcceleration();
 
 // Linux 下 Electron 35+ 默认启用 Chromium 的 Fontations 新字体后端,小字号文字(菜单栏/工具栏)
 // 易发虚、不清晰。关闭它退回 FreeType 渲染,中英文小字更锐利。必须在 app ready / 创建窗口前设置。
@@ -2247,6 +2279,9 @@ async function uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, 
   const remoteArchive = joinRemote(remoteDir, baseName + '.tar.gz');
   const tmpFile = path.join(app.getPath('temp'), `polaris-pack-${jobId}-${++packSeq}.tar.gz`);
   const _t0 = Date.now();
+  // 惰性加载:tar 只在"目录打包上传"时用。加载失败按打包失败处理 → 回退逐文件递归上传。
+  let tar = null;
+  try { tar = require('tar'); } catch { /* 回退递归 */ }
   let created = false;
   try {
     if (shouldCancel && shouldCancel()) return { ok: false, error: '已取消' };
@@ -2583,6 +2618,7 @@ function createWindow() {
   // 正式版:带 ?boot=1 触发主窗口的科幻开机过场(解锁后"打开的瞬间");dev/测试不播,避免干扰
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'),
     DEV_MODE ? undefined : { query: { boot: '1' } });
+  mainWindow.webContents.once('did-finish-load', () => __mark('主界面页面加载完成'));
 
   // Windows: 打开主窗口时显式显示原生菜单栏(文件/编辑/…)。锁定流程会 setMenuBarVisibility(false),
   // 若此前锁定后退出/重建窗口,这里强制恢复,保证"打开应用就有菜单栏"。
@@ -2594,8 +2630,12 @@ function createWindow() {
     const message = evt && typeof evt === 'object' && 'message' in evt ? evt.message : msgOrLine;
     const level = evt && typeof evt === 'object' && 'level' in evt ? evt.level : levelOrMsg;
     if (message) {
-      console.log('[RENDERER]', message); // 控制台 + 落盘(main hook 已写)
-      appLog.log('renderer', message); // 显式落盘(含非 log 级别)
+      // 单一落盘:用 renderer 标签写一次;调试面板单独转发(不落盘)。
+      // 旧版 console.log('[RENDERER]', ...) 会让 main 日志钩子再写一份 [MAIN],每条翻倍。
+      // 仍保留 stdout(走未包装的原始 console.log),方便命令行/开发时看渲染层日志。
+      try { __safeLogImpl.call(console, '[RENDERER]', message); } catch { /* ignore */ }
+      __sendMainLog('log', '[RENDERER] ' + message);
+      appLog.log('renderer', message);
     }
     // 兼容旧 error.log 记录(error 级别仍写,供只读 error.log 的场景)
     if ((level === 'error' || level === 3) && message) {
@@ -2871,6 +2911,8 @@ function openLockWindow() {
   Menu.setApplicationMenu(null);
   lockWindow.setMenuBarVisibility(false);
   lockWindow.loadFile(path.join(__dirname, 'src', 'lock.html'));
+  __mark('锁屏窗口已创建,等待页面加载');
+  lockWindow.webContents.once('did-finish-load', () => __mark('锁屏页面加载完成(用户可见)'));
 }
 
 // 用密码解密数据库并进入主界面(首次会迁移现有明文库)
@@ -2882,17 +2924,26 @@ async function unlockApp(password) {
   const oldDb = path.join(appLock.lockDir(), 'sessions.db');
   let bytes = null;
   if (fs.existsSync(dataPath)) {
+    __mark('解锁:开始解密数据库');
     bytes = dbCrypto.decryptBytes(fs.readFileSync(dataPath), password); // 密码错会抛错
+    __mark('解锁:数据库解密完成');
   } else if (fs.existsSync(oldDb)) {
     bytes = fs.readFileSync(oldDb); // 首次启用加密:迁移现有明文库
     console.log('[MAIN] 首次启用加密,迁移现有数据库');
   }
   dbPassword = password;
   sessionStore = createStore(bytes ? Buffer.from(bytes) : null);
+  __mark('解锁:SQLite 反序列化完成');
   migratePasswords(); // 老明文密码 → safeStorage 加密(内存库内)
-  persistDb();        // 立即把库写成加密 data.bin
   createWindow();
   buildMenu();        // 解锁进主界面时重建菜单栏(防锁定期间被置空后残留)
+  __mark('解锁:主窗口已创建');
+  // 重新加密落盘不阻塞主界面:挪到下一轮事件循环(退出时 before-quit 仍会兜底)。
+  // 旧版在 createWindow 之前同步 PBKDF2+AES+写盘,弱 CPU 上会让"解锁后出界面"白等几百毫秒。
+  setImmediate(() => {
+    persistDb();
+    __mark('解锁:数据库重新加密落盘完成');
+  });
   if (lockWindow && !lockWindow.isDestroyed()) { lockWindow.close(); lockWindow = null; }
 }
 
@@ -2914,17 +2965,27 @@ app.whenReady().then(() => {
     });
   } catch (e) { console.warn('[MAIN] 响应头 charset 拦截失败(不影响使用):', e.message); }
   buildMenu();
-  migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
-  sftpPartials.prune(); // 加载续传记录 + 裁剪过期中断点(7 天前的丢弃,防磁盘表无限增长)
-  sftpSizes.prune(); // 加载上传真实大小记录 + 裁剪过期条目(30 天前的丢弃,H3C 列表跨会话仍能覆盖显示 0)
-  if (DEV_MODE) {
-    try {
-      require('./mock/mock-server').start();
-    } catch (err) {
-      console.warn('[MAIN] mock 服务器启动失败(可能已在运行):', err.message);
-    }
-  }
+  __mark('应用菜单就绪');
+  // 先出锁屏窗口:数据维护(迁移设置/裁剪续传表)放到首屏之后,
+  // 避免大 JSON/目录复制阻塞"用户看到窗口"这一步。
   openLockWindow(); // 先过密码锁,再开主界面
+  setImmediate(() => {
+    __mark('后台维护开始');
+    migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
+    sftpPartials.prune(); // 加载续传记录 + 裁剪过期中断点(7 天前的丢弃,防磁盘表无限增长)
+    sftpSizes.prune(); // 加载上传真实大小记录 + 裁剪过期条目(30 天前的丢弃,H3C 列表跨会话仍能覆盖显示 0)
+    if (DEV_MODE) {
+      try {
+        require('./mock/mock-server').start();
+      } catch (err) {
+        console.warn('[MAIN] mock 服务器启动失败(可能已在运行):', err.message);
+      }
+    }
+    __mark('后台维护完成');
+    // 空闲预热 ssh2:首次连接不再现场解析(启动最重的依赖,Windows 上可达数百毫秒)。
+    // 延迟 2.5s 避开首屏/解锁,不阻塞用户操作。
+    setTimeout(() => { try { sshClient.warmup(); } catch { /* ignore */ } }, 2500).unref();
+  });
 });
 
 app.on('activate', () => {
@@ -2936,6 +2997,7 @@ app.on('before-quit', () => {
   tunnels.clear();
   finalizeAllRecordings(); // 退出前把没停的录制都收尾(否则文件成孤儿)
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
+  try { appLog.flush(); } catch { /* ignore */ } // 应用日志批量写盘:退出前落完最后一批
   persistDb();             // 再确保数据库落盘
   sftpPartials.save();     // 续传记录兜底落盘(正常路径每次变更已同步写盘,这里无害防漏)
   // 退出前清除堡垒机浏览器的登录态(cookie)+ 缓存,但**保留 localStorage**:

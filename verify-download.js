@@ -71,6 +71,11 @@ async function main() {
       if (m) { c = await connect(m.webSocketDebuggerUrl); break; }
     }
     if (!c) throw new Error('解锁后主窗口未出现');
+    // 主窗口 target 出现 ≠ renderer.js 已执行完;等全局 state 就绪,避免偶发 ReferenceError。
+    for (let i = 0; i < 50; i++) {
+      if (await ev(c, `typeof state === 'object' && !!state.settings`)) break;
+      await sleep(200);
+    }
 
     // 连接 mock
     await ev(c, `window.api.createSession({ name: 'DL-A', host: '127.0.0.1', port: ${SSH}, username: 'admin', password: 'admin123' })`);

@@ -67,6 +67,13 @@ npm run dev          # 开发模式(自动拉起 mock SSH 服务器)
 # 有真实服务器时直接填真实 IP/账号/密码;配跳板机时在会话里填跳板地址
 ```
 
+### Windows 安装包怎么选(启动速度)
+
+- **推荐 `Polaris Setup <版本>.exe`(NSIS 安装版)**:安装一次,之后启动不再解压,冷启动通常 1–4 秒。
+- `Polaris Portable <版本>.exe`(portable 免安装版):**每次启动都会把约 200MB 运行时重新解压到 `%TEMP%`**,叠加 Defender 扫描后常见 5–40 秒。
+- 根因、确认方法与迁移步骤见 [`docs/windows-startup-slow.md`](docs/windows-startup-slow.md)。
+- 启动分段耗时见数据目录 `logs/startup-error.log`;显卡正常时可设 `POLARIS_GPU=1` 开启硬件加速。
+
 ## 代码结构
 
 ```

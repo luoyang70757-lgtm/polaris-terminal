@@ -1068,7 +1068,7 @@
   <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
   <script src="../node_modules/xterm-addon-search/lib/xterm-addon-search.js"></script>
   <script src="../node_modules/xterm-addon-webgl/lib/xterm-addon-webgl.js"></script>
-  <script src="../node_modules/xlsx/dist/xlsx.full.min.js"></script>
+  <!-- xlsx 不在这里同步加载:仅在"导入 → 从 Excel 文件导入"时由 renderer 动态注入(冷启动更快) -->
   <!-- 命令补全面板(输入提示):输入命令前缀弹候选,Tab 补全/点击补全。
        必须在 renderer.js 之前:renderer 顶部 els 绑定会在脚本执行时找它 -->
   <div id="cmd-complete-panel" class="cmd-complete-panel hidden"></div>

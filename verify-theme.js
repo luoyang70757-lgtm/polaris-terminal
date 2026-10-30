@@ -39,6 +39,11 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     let c = null;
     for (let i = 0; i < 30; i++) { await sleep(400); const t2 = await listTargets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { c = await connect(m.webSocketDebuggerUrl); break; } }
     if (!c) throw new Error('主窗口未就绪');
+    // 同 verify-applog:等 renderer.js 真正执行完再调用其全局函数。
+    for (let i = 0; i < 50; i++) {
+      if (await ev(c, `typeof openSettingsModal === 'function'`)) break;
+      await sleep(200);
+    }
 
     // 打开设置弹窗(下拉选项由 openSettingsModal() 动态构建,启动时为空)
     await ev(c, 'openSettingsModal()'); await sleep(150);

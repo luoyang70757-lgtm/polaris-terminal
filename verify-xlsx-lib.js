@@ -5,7 +5,7 @@
  *        已按评估换成官方 CDN tarball 0.20.3(API 一致 → 业务代码零改动)。
  *   断言:① 版本是 0.20.3(防悄悄退回旧 npm 线)
  *        ② 主进程那条链路(session-groups 的模板生成调用)原样可用 → 双 sheet 模板正确
- *        ③ 渲染层 dist 在 Chromium 里可用(script 标签/CSP 没挡住),能读主进程造的 .xlsx
+ *        ③ 渲染层 dist 在 Chromium 里可用(按需加载/CSP 没挡住),能读主进程造的 .xlsx
  * 运行: node verify-xlsx-lib.js(需 9378 空闲)
  */
 const { spawn, execSync } = require('child_process');
@@ -87,8 +87,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const c = await connect(main.webSocketDebuggerUrl);
     await sleep(800);
 
-    const v = await ev(c, `(typeof XLSX === 'object' && XLSX && XLSX.version) || 'NONE'`);
-    if (v === '0.20.3') ok('③ 渲染层 dist 可用且版本一致(XLSX.version = 0.20.3)');
+    // xlsx 已改为按需加载(不随首屏):显式触发一次,验证动态注入与 CSP 仍可用。
+    const v = await ev(c, `(async()=>{ const X = await loadXlsx(); return (X && X.version) || 'NONE'; })()`);
+    if (v === '0.20.3') ok('③ 渲染层按需加载 dist 成功且版本一致(XLSX.version = 0.20.3)');
     else bad('③ 渲染层 xlsx 未加载或版本不符', String(v));
 
     const b64 = fs.readFileSync(tpl).toString('base64');

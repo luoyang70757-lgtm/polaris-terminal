@@ -1,6 +1,6 @@
 {
   "name": "polaris-terminal",
-  "version": "1.0.45",
+  "version": "1.0.46",
   "description": "Polaris(北极星)· 科幻风 SSH/SFTP 终端工具",
   "main": "main.js",
   "scripts": {
@@ -36,9 +36,9 @@
       "main.js",
       "preload.js",
       "lib/**",
-      "src/**",
-      "mock/**"
+      "src/**"
     ],
+    "asar": true,
     "mac": {
       "target": [
         "dir"
@@ -56,8 +56,36 @@
     },
     "win": {
       "target": [
-        "portable"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "electronLanguages": [
+        "zh-CN",
+        "en-US"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Polaris",
+      "artifactName": "Polaris Setup ${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Polaris Portable ${version}.${ext}",
+      "splashImage": "build/splash.bmp"
     }
   },
   "allowScripts": {

@@ -5,7 +5,9 @@ name: Build & Release
 #   - push 到 main → 只传 Actions Artifact(不发布)
 #   - 打标签 v* → 编译 Windows 并发布到 Releases(自动发布)
 #   - 手动触发(workflow_dispatch,可填 version)→ 编译 Windows 并发布到 Releases(草稿)
-# 产物:release/Polaris <version>.exe(Windows portable)
+# 产物:
+#   release/Polaris Setup <version>.exe    NSIS 安装版(启动快,推荐)
+#   release/Polaris Portable <version>.exe portable 免安装版(每次启动自解压,较慢)
 on:
   push:
     branches: [ main ]
@@ -30,10 +32,10 @@ jobs:
         run: npm ci
       - name: Build Windows portable
         run: npm run dist -- --win
-      - name: Upload portable exe (artifact)
+      - name: Upload Windows packages (artifact)
         uses: actions/upload-artifact@v7
         with:
-          name: win-portable
+          name: win-packages
           path: release/*.exe
           if-no-files-found: error
 

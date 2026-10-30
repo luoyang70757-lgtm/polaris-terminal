@@ -70,6 +70,12 @@ async function main() {
       if (m) { c = await connect(m.webSocketDebuggerUrl); break; }
     }
     if (!c) throw new Error('解锁后主窗口未出现');
+    // 主窗口 target 出现 ≠ renderer.js 已执行完(target 在导航提交时就存在)。
+    // 旧版直接调用 dlog → 偶发 "dlog is not defined";这里等关键函数就绪。
+    for (let i = 0; i < 50; i++) {
+      if (await ev(c, `typeof dlog === 'function'`)) break;
+      await sleep(200);
+    }
 
     // 触发一些 dlog(模拟真实使用)
     await ev(c, `dlog('TEST', 'e2e 测试日志行: abc123')`);
@@ -78,7 +84,7 @@ async function main() {
 
     // ① 检查日志文件
     const logsDir = path.join(DIR, 'logs');
-    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir).filter((f) => f.endsWith('.log')) : [];
+    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir).filter((f) => /^app-\d{4}-\d{2}-\d{2}\.log$/.test(f)) : [];
     let fileContent = '';
     if (files.length) {
       const f = path.join(logsDir, files[files.length - 1]);
