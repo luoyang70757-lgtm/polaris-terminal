@@ -847,6 +847,12 @@ function resetAnsi() {
 // Windows 上原生菜单/对话框关闭后的焦点恢复可能延迟,且可能滞留在窗口菜单栏:
 // 渲染层 focus() 不够 → 额外让主进程 focus 窗口/webContents,并延长补聚焦重试。
 let __lastWinFocusAt = 0;
+// 多个弹窗叠加时(导入弹窗上面再开“输入备份密码”),DOM 中后出现的在上层。
+// 焦点/按键守卫必须操作最上层弹窗,否则会把按键抢到背后的导入弹窗(导入备份密码无法输入的根因)。
+function topVisibleModal() {
+  const modals = document.querySelectorAll('.modal:not(.hidden)');
+  return modals.length ? modals[modals.length - 1] : null;
+}
 function ensureWindowFocus() {
   if (document.hasFocus()) return;
   const now = Date.now();
@@ -2556,7 +2562,9 @@ window.addEventListener('keydown', (e) => {
 // 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
   // 弹窗打开时绝不允许按键漏进终端(焦点被抢走 → 用户看到的是“密码框无法输入”)
-  const openModal = document.querySelector('.modal:not(.hidden)');
+  // 注意:必须取“最上层”弹窗。导入时导入弹窗仍开着、密码弹窗叠在上面,
+  // 用 querySelector 会拿到先出现的导入弹窗,把按键/焦点抢到背后的输入框。
+  const openModal = topVisibleModal();
   if (openModal) {
     const ae0 = document.activeElement;
     if (!ae0 || !openModal.contains(ae0) || ae0 === openModal) {
@@ -9817,9 +9825,8 @@ els.filePwdInput2.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e
 // 弹窗焦点锁:任何弹窗打开期间,焦点被终端/原生菜单/堡垒机 webview 抢回时,
 // 自动拉回最上层弹窗里的第一个可输入元素(否则按键会漏进终端,密码框永远为空)。
 document.addEventListener('focusin', () => {
-  const modals = document.querySelectorAll('.modal:not(.hidden)');
-  if (!modals.length) return;
-  const modal = modals[modals.length - 1];
+  const modal = topVisibleModal();
+  if (!modal) return;
   const ae = document.activeElement;
   if (ae && modal.contains(ae) && ae !== modal) return; // 焦点已在弹窗内
   const inp = modal.querySelector('input:not([type="hidden"]):not([disabled]),textarea:not([disabled]),select:not([disabled])');
@@ -9830,9 +9837,8 @@ document.addEventListener('focusin', () => {
 // 弹窗内控件之间切换不受影响(activeElement 仍在 modal 内则直接返回)。
 document.addEventListener('focusout', () => {
   setTimeout(() => {
-    const modals = document.querySelectorAll('.modal:not(.hidden)');
-    if (!modals.length) return;
-    const modal = modals[modals.length - 1];
+    const modal = topVisibleModal();
+    if (!modal) return;
     const ae = document.activeElement;
     if (ae && modal.contains(ae) && ae !== modal) return;
     const inp = modal.querySelector('input:not([type="hidden"]):not([disabled]),textarea:not([disabled]),select:not([disabled])');
@@ -9953,7 +9959,7 @@ function bastionFocusCheck() {
   const wv = els.bastionWebview;
   if (!wv || !wv.executeJavaScript) return;
   // 弹窗打开时不要抢焦点:否则密码/输入框会被 webview 每 500ms 抢一次(Windows 原生菜单场景更明显)
-  if (document.querySelector('.modal:not(.hidden)')) return;
+  if (topVisibleModal()) return;
   if (els.bastionSlot.classList.contains('hidden')) return; // 面板收起:不打扰
   if (!els.lockOverlay.classList.contains('hidden')) return; // 锁定中:webview 已 display:none
   // 右键菜单打开时不抢焦点:否则 guest 的 __bastionFocusTs 一更新,这里 wv.focus() 会

@@ -154,7 +154,36 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
 
     await ev(c, `closeFilePwd()`);
 
-    // ⑧ 修改 App 密码弹窗同样具备焦点锁
+    // ⑧ 导入加密备份:导入弹窗仍开着,密码弹窗叠在上面
+    //    —— 按键必须进顶层密码框(旧版 querySelector 取到背后的导入弹窗,导致输入无效)
+    await ev(c, `(function(){
+      openImportModal();
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array([1,2,3])], 'x.polaris'));
+      els.importBackupFile.files = dt.files;
+      importBackupSelected();
+      return true;
+    })()`);
+    await sleep(500);
+    const imp = await ev(c, `(function(){
+      const t=[...state.tabs.values()][0]; t.term.focus(); // 模拟焦点被终端抢回
+      return { importVisible:!els.importModal.classList.contains('hidden'), pwdVisible:!els.filePwdModal.classList.contains('hidden') };
+    })()`);
+    await sleep(350);
+    const impActive = await activeId(c);
+    // 发真实 keydown(insertText 不经过 window keydown,测不出守卫选错弹窗)
+    for (const ch of ['a', 'b', 'c']) {
+      const vk = ch.toUpperCase().charCodeAt(0);
+      await c.call('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, code: 'Key' + ch.toUpperCase(), text: ch, unmodifiedText: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+      await c.call('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code: 'Key' + ch.toUpperCase(), windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    }
+    await sleep(200);
+    const impVal = await ev(c, `document.getElementById('file-pwd-input').value`);
+    if (imp.importVisible && imp.pwdVisible && impActive === 'file-pwd-input' && impVal === 'abc') ok('导入备份:双弹窗叠加时按键进入顶层密码框');
+    else bad('导入备份双弹窗焦点/按键异常', JSON.stringify({ imp, impActive, impVal }));
+    await ev(c, `closeFilePwd(); closeImportModal();`);
+
+    // ⑨ 修改 App 密码弹窗同样具备焦点锁
     await ev(c, `(function(){ openPwdModal(); const t=[...state.tabs.values()][0]; t.term.focus(); return true; })()`);
     await sleep(350);
     const id3 = await activeId(c);
