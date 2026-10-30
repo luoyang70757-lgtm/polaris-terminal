@@ -30,8 +30,11 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Build Windows portable
-        run: npm run dist -- --win
+      - name: Build Windows packages
+        # 发布统一交给下面的 release job（softprops/action-gh-release + GITHUB_TOKEN）。
+        # 必须显式 --publish never：electron-builder 26 在 tag 构建时会尝试隐式发布，
+        # 而 build job 没有 GH_TOKEN → 打包完成后报错退出（NSIS target 会触发）。
+        run: npm run dist -- --win --publish never
       - name: Upload Windows packages (artifact)
         uses: actions/upload-artifact@v7
         with:
