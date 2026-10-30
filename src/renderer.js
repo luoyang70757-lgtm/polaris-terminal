@@ -841,12 +841,30 @@ function resetAnsi() {
   applyTheme();
 }
 
+// ---- 弹窗焦点锁(密码框“无法输入”的根因)----
+// 原生菜单关闭、终端重新聚焦、堡垒机 webview 抢焦点,都可能把焦点从刚打开的弹窗
+// 抢回终端;此后按键被 BODY 兜底转发进终端,密码框始终为空。
+// 打开弹窗时立即聚焦 + 下一帧/50ms/250ms 补聚焦;配合全局 focusin 守卫兜底。
+function focusModalInput(modalEl, inputEl) {
+  if (!modalEl || !inputEl) return;
+  const apply = () => {
+    if (modalEl.classList.contains('hidden')) return;
+    const ae = document.activeElement;
+    if (ae && modalEl.contains(ae) && ae !== modalEl) return; // 用户正在弹窗内操作
+    try { inputEl.focus(); } catch { /* ignore */ }
+  };
+  apply();
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(apply);
+  setTimeout(apply, 50);
+  setTimeout(apply, 250);
+}
+
 // ---- 修改密码(App 密码锁 + 数据库整库重新加密) ----
 function openPwdModal() {
   els.pwdCurrent.value = els.pwdNew.value = els.pwdConfirm.value = '';
   els.pwdMsg.classList.add('hidden');
   els.pwdModal.classList.remove('hidden');
-  els.pwdCurrent.focus();
+  focusModalInput(els.pwdModal, els.pwdCurrent);
 }
 function closePwdModal() { els.pwdModal.classList.add('hidden'); }
 async function changePassword() {
@@ -878,7 +896,7 @@ function promptFilePwd(mode, action) {
   els.filePwdInput2.value = '';
   els.filePwdMsg.classList.add('hidden');
   els.filePwdModal.classList.remove('hidden');
-  els.filePwdInput.focus();
+  focusModalInput(els.filePwdModal, els.filePwdInput);
 }
 function closeFilePwd() { filePwdAction = null; els.filePwdModal.classList.add('hidden'); }
 async function confirmFilePwd() {
@@ -2520,6 +2538,16 @@ window.addEventListener('keydown', (e) => {
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
 // 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
+  // 弹窗打开时绝不允许按键漏进终端(焦点被抢走 → 用户看到的是“密码框无法输入”)
+  const openModal = document.querySelector('.modal:not(.hidden)');
+  if (openModal) {
+    const ae0 = document.activeElement;
+    if (!ae0 || !openModal.contains(ae0) || ae0 === openModal) {
+      const inp = openModal.querySelector('input:not([type="hidden"]):not([disabled]),textarea:not([disabled]),select:not([disabled])');
+      if (inp) { e.preventDefault(); try { inp.focus(); } catch { /* ignore */ } }
+      return;
+    }
+  }
   if (!state.tabs || !state.tabs.size) return;
   const k = e.key;
   if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock' || k === 'Escape') return;
@@ -2925,7 +2953,7 @@ function requirePassword(description, onOk) {
     els.confirmPwdInput.value = '';
     els.confirmPwdMsg.classList.add('hidden');
     els.confirmPwdModal.classList.remove('hidden');
-    els.confirmPwdInput.focus();
+    focusModalInput(els.confirmPwdModal, els.confirmPwdInput);
   });
 }
 let confirmPwdAction = null;
@@ -9515,8 +9543,8 @@ function showPrompt({ title, label, value, onOk, password }) {
   els.promptInput.type = password ? 'password' : 'text'; // 快捷连接问密码时隐藏明文
   promptCallback = onOk;
   els.promptModal.classList.remove('hidden');
-  els.promptInput.focus();
-  els.promptInput.select();
+  focusModalInput(els.promptModal, els.promptInput);
+  try { els.promptInput.select(); } catch { /* ignore */ }
 }
 
 function closePrompt() {
@@ -9766,6 +9794,34 @@ els.importExternalFile.addEventListener('change', importExternalSelected);
 // 备份文件密码弹窗
 els.filePwdOk.addEventListener('click', confirmFilePwd);
 els.filePwdCancel.addEventListener('click', closeFilePwd);
+els.filePwdInput.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e.preventDefault(); confirmFilePwd(); } });
+els.filePwdInput2.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e.preventDefault(); confirmFilePwd(); } });
+
+// 弹窗焦点锁:任何弹窗打开期间,焦点被终端/原生菜单/堡垒机 webview 抢回时,
+// 自动拉回最上层弹窗里的第一个可输入元素(否则按键会漏进终端,密码框永远为空)。
+document.addEventListener('focusin', () => {
+  const modals = document.querySelectorAll('.modal:not(.hidden)');
+  if (!modals.length) return;
+  const modal = modals[modals.length - 1];
+  const ae = document.activeElement;
+  if (ae && modal.contains(ae) && ae !== modal) return; // 焦点已在弹窗内
+  const inp = modal.querySelector('input:not([type="hidden"]):not([disabled]),textarea:not([disabled]),select:not([disabled])');
+  if (inp) { try { inp.focus(); } catch { /* ignore */ } }
+}, true);
+
+// 焦点离开弹窗(掉到 BODY/终端/webview)时,下一个 tick 拉回弹窗输入框;
+// 弹窗内控件之间切换不受影响(activeElement 仍在 modal 内则直接返回)。
+document.addEventListener('focusout', () => {
+  setTimeout(() => {
+    const modals = document.querySelectorAll('.modal:not(.hidden)');
+    if (!modals.length) return;
+    const modal = modals[modals.length - 1];
+    const ae = document.activeElement;
+    if (ae && modal.contains(ae) && ae !== modal) return;
+    const inp = modal.querySelector('input:not([type="hidden"]):not([disabled]),textarea:not([disabled]),select:not([disabled])');
+    if (inp) { try { inp.focus(); } catch { /* ignore */ } }
+  }, 0);
+}, true);
 els.importTemplate.addEventListener('click', saveTemplate); // 下载导入模板
 els.btnBroadcast.addEventListener('click', toggleBroadcast); // 广播模式开关
 els.btnConnect.addEventListener('click', toggleConnectDisconnect); // 连接/中断二合一

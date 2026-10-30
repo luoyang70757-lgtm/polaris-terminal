@@ -118,6 +118,8 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 31. **分组层级与命名**（2026-10-30，lib/session-store.js + renderer.js）：① 树形/列表/网格共用同一份 `groups.parent_id` 数据；列表与树形共用 `buildGroupHierarchy/renderGroupHierarchy`（列表不折叠，仅缩进），修复"列表模式子分组不合并、目录结构不一致"；② 分组名从**全局唯一**改为**同一父级下唯一**——旧库 `name TEXT UNIQUE` 启动时自动重建 groups 表（保留 id），唯一性由部分索引 `ux_groups_root_name`（根级）与 `ux_groups_sibling_name`（同 parent_id）保证；不同父级允许同名（如 `生产/网络` 与 `测试/网络`）；③ 导入/旧 `group_name` 迁移只按**根级**名称解析；会话弹窗分组下拉显示完整路径（`父组 / 子组`）；④ 拖拽移动会话改用整行完整字段（私钥/口令/编码/协议/登录宏/跳板机/标签色），避免 updateSession 整行覆盖导致丢配置。回归：`verify-group-views.js`、`verify-group-name-unique.js`
 
+32. **弹窗焦点锁（导出密码无法输入）**（2026-10-30，renderer.js）：导出加密备份的「设置导出密码」弹窗打开后，原生菜单关闭/终端重聚焦/堡垒机 webview 可能把焦点抢回终端，随后按键被 BODY 兜底转发进终端 → 密码框永远为空（实测复现）。修法：① `focusModalInput` 立即聚焦 + rAF/50ms/250ms 补聚焦；② 全局 `focusin` 守卫：焦点落到弹窗外时拉回最上层弹窗第一个可输入元素；③ 全局 `focusout` 守卫：下一个 tick 拉回；④ 全局 keydown：弹窗打开且焦点不在弹窗内时绝不把按键转发给终端。同时统一密码长度口径为 **8 位**（前端标签/渲染层校验/`sessions:export` 后端校验；旧 4 位备份仍可导入）。回归：`verify-export-password.js`（6/6）
+
 ## 运行与调试
 
 ```bash
