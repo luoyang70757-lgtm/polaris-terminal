@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.48**（2026-10-30）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.49**（2026-10-30）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -118,7 +118,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 31. **分组层级与命名**（2026-10-30，lib/session-store.js + renderer.js）：① 树形/列表/网格共用同一份 `groups.parent_id` 数据；列表与树形共用 `buildGroupHierarchy/renderGroupHierarchy`（列表不折叠，仅缩进），修复"列表模式子分组不合并、目录结构不一致"；② 分组名从**全局唯一**改为**同一父级下唯一**——旧库 `name TEXT UNIQUE` 启动时自动重建 groups 表（保留 id），唯一性由部分索引 `ux_groups_root_name`（根级）与 `ux_groups_sibling_name`（同 parent_id）保证；不同父级允许同名（如 `生产/网络` 与 `测试/网络`）；③ 导入/旧 `group_name` 迁移只按**根级**名称解析；会话弹窗分组下拉显示完整路径（`父组 / 子组`）；④ 拖拽移动会话改用整行完整字段（私钥/口令/编码/协议/登录宏/跳板机/标签色），避免 updateSession 整行覆盖导致丢配置。回归：`verify-group-views.js`、`verify-group-name-unique.js`
 
-32. **弹窗焦点锁（导出密码无法输入）**（2026-10-30，renderer.js + preload.js + main.js）：导出加密备份的「设置导出密码」弹窗打开后，原生菜单关闭/终端重聚焦/堡垒机 webview 可能把焦点抢回终端，随后按键被 BODY 兜底转发进终端 → 密码框永远为空（实测复现）。修法：① `focusModalInput` 立即聚焦 + rAF/50/250/500/1000/2000ms 补聚焦；② 全局 `focusin`/`focusout` 守卫：焦点落到弹窗外时拉回最上层弹窗第一个可输入元素；③ 全局 keydown：弹窗打开且焦点不在弹窗内时绝不把按键转发给终端；④ **v1.0.48 加固**：导出流程去掉原生 `confirm()`（数量/加密说明并入密码弹窗），避免 Windows 上 confirm 关闭后的焦点恢复抢走密码框；新增 `window:focus` IPC（主进程 show/focus + webContents.focus）恢复 OS 级焦点；弹窗打开期间暂停 `bastionFocusCheck`，避免 webview 每 500ms 抢焦点。同时统一密码长度口径为 **8 位**（前端标签/渲染层校验/`sessions:export` 后端校验；旧 4 位备份仍可导入）。回归：`verify-export-password.js`（8/8）
+32. **弹窗焦点锁（导出密码无法输入）**（2026-10-30，renderer.js + preload.js + main.js）：导出加密备份的「设置导出密码」弹窗打开后，原生菜单关闭/终端重聚焦/堡垒机 webview 可能把焦点抢回终端，随后按键被 BODY 兜底转发进终端 → 密码框永远为空（实测复现）。修法：① `focusModalInput` 立即聚焦 + rAF/50/250/500/1000/2000ms 补聚焦；② 全局 `focusin`/`focusout` 守卫：焦点落到弹窗外时拉回最上层弹窗第一个可输入元素；③ 全局 keydown：弹窗打开且焦点不在弹窗内时绝不把按键转发给终端；④ **v1.0.48 加固**：导出流程去掉原生 `confirm()`（数量/加密说明并入密码弹窗），避免 Windows 上 confirm 关闭后的焦点恢复抢走密码框；新增 `window:focus` IPC（主进程 show/focus + webContents.focus）恢复 OS 级焦点；弹窗打开期间暂停 `bastionFocusCheck`，避免 webview 每 500ms 抢焦点。同时统一密码长度口径为 **8 位**（前端标签/渲染层校验/`sessions:export` 后端校验；旧 4 位备份仍可导入）。回归：`verify-export-password.js`（9/9）；⑤ **v1.0.49**：导入加密备份时导入弹窗仍开着、密码弹窗叠在上面，旧 keydown 守卫用 `querySelector` 取到背后的导入弹窗，把按键抢到导入框 → 新增 `topVisibleModal()`（DOM 中最后一个可见 `.modal`）统一用于 keydown/focusin/focusout/bastionFocusCheck。
 
 ## 运行与调试
 
