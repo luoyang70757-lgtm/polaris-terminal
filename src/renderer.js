@@ -599,8 +599,9 @@ const els = {
   palette: $('palette'),
   paletteInput: $('palette-input'),
   paletteResults: $('palette-results'),
-  btnHelp: $('btn-help'),
-  helpModal: $('help-modal'),
+  btnAbout: $('btn-about'),
+  aboutModal: $('about-modal'),
+  aboutVersion: $('about-version'),
   helpCloseX: $('help-close-x'),
   helpClose: $('help-close'),
 };
@@ -9943,6 +9944,7 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:export') exportSessions();
   else if (ch === 'menu:toggle-panel') toggleSessionPanel();
   else if (ch === 'menu:settings') openSettingsModal();
+  else if (ch === 'menu:about') openAbout();
   else if (ch === 'menu:split-v') splitActivePane('v');
   else if (ch === 'menu:split-h') splitActivePane('h');
   else if (ch === 'menu:sftp') toggleSftpPanel();
@@ -11482,7 +11484,7 @@ els.kbdFields.addEventListener('keydown', (e) => {
 // ⌘K 命令面板:输入即达(动作 / 会话),VS Code / Linear 风格
 // =====================================================================
 const COMMANDS = [
-  { name: '使用说明', hint: '📖', run: () => openHelp() },
+  { name: '关于 Polaris', hint: 'ℹ️', run: () => openAbout() },
   { name: '新建会话', hint: '⌘N', run: () => openSessionModal(null) },
   { name: '快捷连接', hint: '', run: () => toggleQuickConnect() },
   { name: '新建分组', hint: '', run: () => newGroup() },
@@ -11590,17 +11592,21 @@ els.paletteInput.addEventListener('keydown', (e) => {
 });
 els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
 
-// ---------- 使用说明弹窗 ----------
-function openHelp() {
-  els.helpModal.classList.remove('hidden');
+// ---------- 关于弹窗(只展示版本 + 简介) ----------
+function openAbout() {
+  els.aboutModal.classList.remove('hidden');
   closeSettingsModal(); // 从设置弹窗进来时,顺手关掉设置,避免叠弹窗
+  // 版本号来自主进程 app.getVersion()(与安装包/package.json 一致)
+  window.api.appAbout().then((r) => {
+    if (r && r.version) els.aboutVersion.textContent = 'v' + r.version;
+  }).catch(() => { /* 取不到就保留占位 */ });
 }
-function closeHelp() { els.helpModal.classList.add('hidden'); }
-els.btnHelp.addEventListener('click', openHelp);
-els.helpCloseX.addEventListener('click', closeHelp);
-els.helpClose.addEventListener('click', closeHelp);
-els.helpModal.addEventListener('mousedown', (e) => { if (e.target === els.helpModal) closeHelp(); });
-els.helpModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelp(); });
+function closeAbout() { els.aboutModal.classList.add('hidden'); }
+els.btnAbout.addEventListener('click', openAbout);
+$('about-close-x').addEventListener('click', closeAbout);
+$('about-close').addEventListener('click', closeAbout);
+els.aboutModal.addEventListener('mousedown', (e) => { if (e.target === els.aboutModal) closeAbout(); });
+els.aboutModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAbout(); });
 
 // =====================================================================
 // 启动:加载设置 + 会话列表

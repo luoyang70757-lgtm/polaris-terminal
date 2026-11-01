@@ -2608,6 +2608,11 @@ ipcMain.on('app:log-dlog', (_e, lines) => {
   if (Array.isArray(lines)) appLog.pushDlogLines(lines);
 });
 
+// 「关于」弹窗:只回版本号(渲染层没有 nodeIntegration,拿不到 app.getVersion())
+ipcMain.handle('app:about', () => {
+  try { return { ok: true, version: app.getVersion() }; } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ---------- 窗口 ----------
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -2679,7 +2684,7 @@ function buildMenu() {
     ...(isMac ? [{
       label: app.name,
       submenu: [
-        { role: 'about', label: '关于 Polaris' },
+        { label: '关于 Polaris', click: send('menu:about') }, // 统一走应用内「关于」弹窗(版本 + 简介)
         { type: 'separator' },
         { label: '设置…', accelerator: 'Cmd+,', click: send('menu:settings') }, // macOS 惯例:偏好设置放 App 菜单
         { type: 'separator' },

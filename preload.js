@@ -170,6 +170,7 @@ contextBridge.exposeInMainWorld('api', {
   readClipboard: () => clipboard.readText(),
 
   // ---- 全量日志 ----
+  appAbout: () => ipcRenderer.invoke('app:about'),
   appLogDump: () => ipcRenderer.invoke('app:log-dump'),
   appLogDlog: (lines) => ipcRenderer.send('app:log-dlog', lines),
 
