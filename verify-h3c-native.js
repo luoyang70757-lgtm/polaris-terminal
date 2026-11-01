@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-h3c-native.js — 验证 H3C 堡垒机"原生 API"链路(替代 webview 注入钩子):
  *   ① 注入钩子已删:window.__bastionFetchAll 不存在;焦点桥在(Webview 浏览时焦点修复)
@@ -16,23 +17,23 @@ try { fs.writeFileSync(OUT, ''); } catch {}
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-h3cn-'));
 const PORT = 9383, SSH = 2241, HTTP = 8146;
-function freePort(p){ try{ execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`);}catch{} }
-function killTree(proc){ try{ if(proc&&proc.pid) process.kill(-proc.pid,'SIGKILL'); }catch{} }
 freePort(PORT); freePort(SSH); freePort(HTTP);
 // mock-server.js 自带 /shterm 控制台 + API + SSH 网关(一个进程两服务)
 const mockProc = spawn('node', ['mock/mock-server.js'], {
   env: { ...process.env, MOCK_HTTP_PORT: String(HTTP), MOCK_SSH_PORT: String(SSH) },
   stdio: ['ignore','ignore','ignore'], detached: true,
 });
-const appProc = spawn('node_modules/.bin/electron', ['.','--dev',`--remote-debugging-port=${PORT}`,'--no-sandbox','--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.','--dev',`--remote-debugging-port=${PORT}`,'--no-sandbox','--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, MOCK_SSH_PORT: String(SSH), MOCK_HTTP_PORT: String(HTTP), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore','ignore','ignore'], detached: true,
 });
-setTimeout(() => { try{ killTree(appProc); }catch{} try{ killTree(mockProc); }catch{} }, 150000);
+guardTimeout(150000, appProc);
+guardTimeout(150000, mockProc);
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 async function targets(){ for(let i=0;i<50;i++){ try{ const r=await fetch(`http://127.0.0.1:${PORT}/json`); const j=await r.json(); const p=j.find(t=>t.type==='page'&&/解锁|Polaris/.test(t.title||'')); if(p) return j; }catch{} await sleep(400);} throw new Error('no targets'); }
 function connect(url){ return new Promise((res,rej)=>{ const ws=new WebSocket(url); let id=0; const pend=new Map(); ws.onopen=()=>res({ call(m,p={}){return new Promise(r=>{const mid=++id;pend.set(mid,r);ws.send(JSON.stringify({id:mid,method:m,params:p}));});}, close(){ws.close();} }); ws.onerror=e=>rej(e); ws.onmessage=e=>{const m=JSON.parse(e.data); if(m.id&&pend.has(m.id)){pend.get(m.id)(m.result);pend.delete(m.id);}}; }); }
-async function ev(c,expr){ const r=await c.call('Runtime.evaluate',{expression:expr,awaitPromise:true,returnByValue:true}); if(r.exceptionDetails) throw new Error('JS异常: '+JSON.stringify(r.exceptionDetails).slice(0,600)+' @ '+expr.slice(0,120)); return r.result&&r.result.value; }
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 async function evT(c, expr, ms) { return Promise.race([ev(c, expr), sleep(ms || 5000).then(() => 'EV-TIMEOUT')]); }
 let passed=0, failed=0;
 const ok=(n)=>{passed++;w('  ✓ '+n);};

@@ -13,7 +13,7 @@
  * 运行: node verify-bastion-har.js(需 9377 空闲)
  */
 const { spawn, execSync } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 let passed = 0, failed = 0;
@@ -42,11 +42,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 300));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 (async () => {
   console.log('\n=== 真实 HAR → 资产解析/合并(原生链路同款纯函数) ===\n');
@@ -72,7 +69,7 @@ async function ev(c, expr) {
   const PORT = 9377;
   try { execSync('pkill -f "polaris-terminal/node_modules/electron" 2>/dev/null'); } catch { /* 无残留 */ }
   freePort(PORT);
-  const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`], {
+  const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`], {
     env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
     stdio: ['ignore', 'ignore', 'ignore'], detached: true,
   });

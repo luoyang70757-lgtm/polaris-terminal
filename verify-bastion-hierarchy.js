@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-bastion-hierarchy.js — 验证堡垒机分组层级渲染 + 收藏分组自动获取:
  *  ① 业务根(中华人寿大连IDC,取自资产 dirPath[0])作为父级显示,其下目录缩进、不漏目录
@@ -11,15 +12,16 @@ const { spawn } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-bhier-'));
 const PORT = 9384;
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
-setTimeout(() => { try { process.kill(-appProc.pid, 'SIGKILL'); } catch {} process.exit(1); }, 100000).unref();
+guardTimeout(100000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function listTargets() { for (let i = 0; i < 40; i++) { try { const r = await fetch(`http://127.0.0.1:${PORT}/json`); return await r.json(); } catch {} await sleep(400); } throw new Error('targets 未就绪'); }
 function connect(url) { return new Promise((resolve, reject) => { const ws = new WebSocket(url); let id = 0; const pending = new Map(); ws.onopen = () => resolve({ call(m, p = {}) { return new Promise((res) => { const mid = ++id; pending.set(mid, res); ws.send(JSON.stringify({ id: mid, method: m, params: p })); }); }, close() { ws.close(); } }); ws.onerror = (e) => reject(e); ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } }; }); }
-async function ev(c, expr) { const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 500) + ' @ ' + expr.slice(0, 80)); return r.result && r.result.value; }
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e : '')); };

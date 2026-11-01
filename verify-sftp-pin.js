@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-sftp-pin.js — 验证 SFTP 面板"按标签各自的状态"(每个标签独立记忆
  *   自己的 SFTP 开关与浏览目录;修复:旧行为切换标签会自动把 SFTP 绑到新连接)。
@@ -19,12 +20,6 @@ const net = require('net');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-sftppin-'));
 const PORT = 9355, SSH = 2231, HTTP = 8131;
 
-function freePort(p) {
-  try { execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch { /* ignore */ }
-}
-function killTree(proc) {
-  try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch { /* ignore */ }
-}
 function waitPort(p, ms) {
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -38,11 +33,11 @@ function waitPort(p, ms) {
 }
 
 freePort(PORT); freePort(SSH); freePort(HTTP);
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, MOCK_SSH_PORT: String(SSH), MOCK_HTTP_PORT: String(HTTP), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
-setTimeout(() => killTree(appProc), 150000);
+guardTimeout(150000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function targets() {
@@ -69,11 +64,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 120));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 let passed = 0, failed = 0;
 const RESULT_FILE = path.join(os.tmpdir(), 'verify-sftp-pin-result.txt');

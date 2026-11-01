@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 // 验证两个修复:
 //  ① 堡垒机面板拖到最窄/最宽时 最小化/关闭 按钮都在视口内(flex-wrap + 动态宽度上限)
 //  ② 左侧已保存堡垒机连接:右键菜单含「🔌 断开连接」,活动连接徽标 🔗n 显示,断开函数能命中正确会话
@@ -6,16 +7,16 @@ const { spawn } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-pfix-'));
 const PORT = 9380;
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
-setTimeout(() => { try { process.kill(-appProc.pid, 'SIGKILL'); } catch {} process.exit(1); }, 120000).unref();
+guardTimeout(120000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function listTargets() { for (let i = 0; i < 40; i++) { try { const r = await fetch(`http://127.0.0.1:${PORT}/json`); return await r.json(); } catch {} await sleep(400); } throw new Error('targets 未就绪'); }
 function connect(url) { return new Promise((resolve, reject) => { const ws = new WebSocket(url); let id = 0; const pending = new Map(); ws.onopen = () => resolve({ call(m, p = {}) { return new Promise((res) => { const mid = ++id; pending.set(mid, res); ws.send(JSON.stringify({ id: mid, method: m, params: p })); }); }, close() { ws.close(); } }); ws.onerror = reject; ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } }; }); }
-async function ev(c, expr) { const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 300) + ' @ ' + expr.slice(0, 80)); return r.result && r.result.value; }
-
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 (async () => {
   console.log('\n=== 验证:面板按钮可见 + 连接断开功能 ===\n');
   let ok = 0, fail = 0;

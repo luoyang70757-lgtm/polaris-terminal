@@ -1,12 +1,12 @@
 'use strict';
 // 截取"打开 app 未连任何主机"时会话列表的渲染效果,确认分割线是否显示
 const { spawn } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-shots-'));
 const PORT = 9342;
 freePort(PORT);
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
@@ -27,11 +27,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails.exception && r.exceptionDetails.exception.description));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 async function shot(c, file) { const r = await c.call('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(file, Buffer.from(r.data, 'base64')); console.log('已保存:', file); }
 (async () => {
   let failed = 0;

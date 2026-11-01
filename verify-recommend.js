@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-recommend.js — 端到端验证智能命令推荐(参考 Chaterm):
  *   ① IPC:addCmdHistory 后 cmd:recommend 返回"历史高频优先 + 常用库补齐"
@@ -17,12 +18,6 @@ const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-rec-'));
 const PORT = 9357;
 const LOG_DIR = path.join(__dirname, 'logs');
 
-function freePort(p) {
-  try { execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch { /* ignore */ }
-}
-function killTree(proc) {
-  try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch { /* ignore */ }
-}
 function waitPort(p, ms) {
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -39,11 +34,11 @@ function waitPort(p, ms) {
 try { execSync('pkill -f "polaris-terminal/node_modules/electron" 2>/dev/null'); } catch { /* ignore */ }
 freePort(PORT); freePort(8080); freePort(2222);
 
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
-setTimeout(() => killTree(appProc), 150000); // 兜底超时
+guardTimeout(150000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function targets() {
@@ -70,11 +65,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 120));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };

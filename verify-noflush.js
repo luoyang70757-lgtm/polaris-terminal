@@ -1,3 +1,4 @@
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 // 验证:堡垒机资产轮询"数据没变化不刷新"
 //   ① 两轮轮询数据相同(但对象每次重建/键序不同)→ changed=false → 不调 renderSessionList
 //   ② 数据真变化 → changed=true → 调 renderSessionList
@@ -10,8 +11,6 @@ const OUT = process.env.VERIFY_OUT || os.tmpdir() + '/verify-noflush-result.txt'
 const w = (s) => fs.appendFileSync(OUT, s + '\n');
 const log = (s) => { try { console.log(s); } catch {} };
 
-function freePort(p) { try { execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch {} }
-function killTree(proc) { try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch {} }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function targets(PORT) {
@@ -38,23 +37,19 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 120));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 async function main() {
   fs.writeFileSync(OUT, '');
   const PORT = 9410;
   const DIR = fs.mkdtempSync(os.tmpdir() + '/polaris-noflush-');
   freePort(PORT);
-  const app = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+  const app = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
     env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
     stdio: 'ignore', detached: true,
   });
-  setTimeout(() => killTree(app), 150000);
-
+  guardTimeout(150000, app);
   try {
     const ts = await targets(PORT);
     const lock = await connect(ts.find((t) => /解锁/.test(t.title || '')).webSocketDebuggerUrl);

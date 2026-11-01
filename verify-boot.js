@@ -6,14 +6,14 @@
  * 运行: node verify-boot.js(需 9352 空闲;注意:无 --dev → DEV_MODE=false → 播放过场)
  */
 const { spawn } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-boot-'));
 const PORT = 9352;
 freePort(PORT);
 // 不传 --dev:正式版路径(带 ?boot=1),验证过场真会播
-const appProc = spawn('node_modules/.bin/electron', ['.', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
@@ -34,11 +34,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 90));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e : '')); };

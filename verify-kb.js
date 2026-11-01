@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-kb.js — 端到端验证用户知识库(参考 Chaterm):
  *   ① IPC:导入文档(kbImport)→ kbList 列出 → kbSearch 检索出命中片段
@@ -13,8 +14,6 @@ try { fs.writeFileSync(OUT, ''); } catch {}
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-kb-'));
 const PORT = 9369, SSH = 2236, HTTP = 8136, AI_PORT = 9372;
-function freePort(p){ try{ execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`);}catch{} }
-function killTree(proc){ try{ if(proc&&proc.pid) process.kill(-proc.pid,'SIGKILL'); }catch{} }
 freePort(PORT); freePort(SSH); freePort(HTTP); freePort(AI_PORT);
 // mock AI:记录请求体,返回纯文本
 const http = require('http');
@@ -33,15 +32,16 @@ aiServer.listen(AI_PORT, '127.0.0.1');
 // 测试用文档
 const DOC_PATH = path.join(os.tmpdir(), 'kb-test-nginx.md');
 fs.writeFileSync(DOC_PATH, '# Nginx 排障手册\n\n## 502 Bad Gateway\n\n表示后端服务不可用,检查 upstream 与后端进程。\n\ntail -f /var/log/nginx/error.log\n\nnginx -t\n');
-const appProc = spawn('node_modules/.bin/electron', ['.','--dev',`--remote-debugging-port=${PORT}`,'--no-sandbox','--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.','--dev',`--remote-debugging-port=${PORT}`,'--no-sandbox','--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, MOCK_SSH_PORT: String(SSH), MOCK_HTTP_PORT: String(HTTP), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore','ignore','ignore'], detached: true,
 });
-setTimeout(() => killTree(appProc), 120000);
+guardTimeout(120000, appProc);
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 async function targets(){ for(let i=0;i<50;i++){ try{ const r=await fetch(`http://127.0.0.1:${PORT}/json`); const j=await r.json(); const p=j.find(t=>t.type==='page'&&/解锁|Polaris/.test(t.title||'')); if(p) return j; }catch{} await sleep(400);} throw new Error('no targets'); }
 function connect(url){ return new Promise((res,rej)=>{ const ws=new WebSocket(url); let id=0; const pend=new Map(); ws.onopen=()=>res({ call(m,p={}){return new Promise(r=>{const mid=++id;pend.set(mid,r);ws.send(JSON.stringify({id:mid,method:m,params:p}));});}, close(){ws.close();} }); ws.onerror=e=>rej(e); ws.onmessage=e=>{const m=JSON.parse(e.data); if(m.id&&pend.has(m.id)){pend.get(m.id)(m.result);pend.delete(m.id);}}; }); }
-async function ev(c,expr){ const r=await c.call('Runtime.evaluate',{expression:expr,awaitPromise:true,returnByValue:true}); if(r.exceptionDetails) throw new Error('JS异常: '+JSON.stringify(r.exceptionDetails).slice(0,600)+' @ '+expr.slice(0,120)); return r.result&&r.result.value; }
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 let passed=0, failed=0;
 const ok=(n)=>{passed++;w('  ✓ '+n);};
 const bad=(n,e)=>{failed++;w('  ✗ '+n+(e?' -> '+e:''));};

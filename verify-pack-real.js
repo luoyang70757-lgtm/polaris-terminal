@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-pack-real.js — 真实 Linux 主机上验证"目录打包上传"(方案 B)全链路:
  *   探测(真实 tar/gzip)→ 本地纯 JS tar 打包 → SFTP 单文件上传 → 远端 tar -xzf 解压 → 清理压缩包。
@@ -21,8 +22,6 @@ if (!PASS) { console.error('请设置环境变量 REAL_PASS 传入真实主机�
 const OUT = process.env.VERIFY_OUT || os.tmpdir() + '/verify-pack-real-result.txt';
 const w = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch {} };
 
-function freePort(p) { try { require('child_process').execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch {} }
-function killTree(proc) { try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch {} }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function targets(PORT) {
   for (let i = 0; i < 50; i++) {
@@ -39,11 +38,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 120));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 // 本地目录树 + 统计
 const RAND = Date.now();
@@ -76,11 +72,11 @@ async function main() {
   const CDP = 9417;
   const DIR = fs.mkdtempSync(os.tmpdir() + '/polaris-packreal-');
   freePort(CDP);
-  const app = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${CDP}`, '--no-sandbox', '--disable-gpu'], {
+  const app = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${CDP}`, '--no-sandbox', '--disable-gpu'], {
     env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
     stdio: 'ignore', detached: true,
   });
-  setTimeout(() => killTree(app), 180000);
+  guardTimeout(180000, app);
   let c = null; // 函数级:finally 清理远端也要用
   let remoteDir = null;
   const sid = 'sess-real';

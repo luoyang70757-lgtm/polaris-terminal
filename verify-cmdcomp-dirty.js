@@ -9,7 +9,7 @@
  * 运行: node verify-cmdcomp-dirty.js(需 9371/2246 空闲)
  */
 const { spawn, execSync } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-ccdirty-'));
@@ -21,7 +21,7 @@ process.env.MOCK_HTTP_PORT = String(SSH + 100);
 const { start } = require('./mock/mock-server');
 start();
 
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
@@ -42,11 +42,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 300));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 // 真实按键(CDP 可信事件)——必须走 xterm 的 onData 才会改写 inputDirty/inputBuf
 async function tap(c, key, code, win, mac, text) {
   const k = { key, code, windowsVirtualKeyCode: win, nativeVirtualKeyCode: mac };

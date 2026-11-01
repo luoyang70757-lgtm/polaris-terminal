@@ -9,7 +9,7 @@
  * 运行: node verify-xlsx-lib.js(需 9378 空闲)
  */
 const { spawn, execSync } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const XLSX = require('xlsx');
 
@@ -51,7 +51,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     freePort(PORT); freePort(SSH);
     process.env.MOCK_SSH_PORT = String(SSH);
     process.env.MOCK_HTTP_PORT = String(SSH + 100);
-    const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`], {
+    const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`], {
       env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
       stdio: ['ignore', 'ignore', 'ignore'], detached: true,
     });
@@ -71,12 +71,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         ws2.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
       });
     }
-    async function ev(c, expr) {
-      const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-      if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 300));
-      return r.result && r.result.value;
-    }
-    let lockT = null;
+    // CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+    async function ev(c, expr) { return evaluate(c, expr); }
+        let lockT = null;
     for (let i = 0; i < 50; i++) { lockT = (await targets()).find((t) => /解锁/.test(t.title || '')); if (lockT) break; await sleep(400); }
     const lock = await connect(lockT.webSocketDebuggerUrl);
     for (let i = 0; i < 30; i++) { if (await ev(lock, `!!document.getElementById('pw')`)) break; await sleep(300); }

@@ -1,4 +1,5 @@
 'use strict';
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
  * verify-skills.js — 端到端验证 Agent Skill 技能库(参考 Chaterm 实现):
  *   ① IPC:skillsSave / skillsList / skillsGet / skillsSetEnabled / skillsDelete 全链路
@@ -15,18 +16,12 @@ const path = require('path');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-skills-'));
 const PORT = 9356;
 
-function freePort(p) {
-  try { require('child_process').execSync(`lsof -ti tcp:${p} | xargs kill -9 2>/dev/null`); } catch { /* ignore */ }
-}
-function killTree(proc) {
-  try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch { /* ignore */ }
-}
 freePort(PORT);
-const appProc = spawn('node_modules/.bin/electron', ['.', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
-setTimeout(() => killTree(appProc), 120000); // 兜底超时
+guardTimeout(120000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function targets() {
@@ -53,11 +48,8 @@ function connect(url) {
     ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } };
   });
 }
-async function ev(c, expr) {
-  const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 600) + ' @ ' + expr.slice(0, 120));
-  return r.result && r.result.value;
-}
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 
 let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };

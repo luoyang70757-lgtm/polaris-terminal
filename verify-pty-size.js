@@ -7,7 +7,7 @@
  * 运行: node verify-pty-size.js(需 9367/2242 空闲;脚本进程内 mock,不冲突 app 的 --dev mock)
  */
 const { spawn } = require('child_process');
-const { freePort, killTree, guardTimeout } = require('./test-helper');
+const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'polaris-pty-'));
 const PORT = 9358, SSH = 2242;
@@ -19,7 +19,7 @@ const origLog = console.log.bind(console);
 console.log = (...a) => { mockLog.push(a.join(' ')); origLog(...a); };
 const { start } = require('./mock/mock-server');
 start();
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'pipe', 'pipe'], detached: true,
 });
@@ -30,7 +30,8 @@ guardTimeout(120000, appProc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function targets() { for (let i = 0; i < 40; i++) { try { const r = await fetch(`http://127.0.0.1:${PORT}/json`); const j = await r.json(); const p = j.find((t) => t.type === 'page' && /解锁|Polaris/.test(t.title || '')); if (p) return j; } catch {} await sleep(400); } throw new Error('targets 未就绪'); }
 function connect(url) { return new Promise((resolve, reject) => { const ws = new WebSocket(url); let id = 0; const pending = new Map(); ws.onopen = () => resolve({ call(m, p = {}) { return new Promise((res) => { const mid = ++id; pending.set(mid, res); ws.send(JSON.stringify({ id: mid, method: m, params: p })); }); } }); ws.onerror = reject; ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result); pending.delete(m.id); } }; }); }
-async function ev(c, expr) { const r = await c.call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error('JS异常: ' + JSON.stringify(r.exceptionDetails).slice(0, 500) + ' @ ' + expr.slice(0, 80)); return r.result && r.result.value; }
+// CDP 求值(ReferenceError 自动重试,见 test-helper.evaluate)
+async function ev(c, expr) { return evaluate(c, expr); }
 (async () => {
   console.log('\n=== 连接时服务器 PTY 尺寸验证(80x24 → 真实尺寸) ===\n');
   let failed = 0; const ok = (n, x) => console.log('  ✓ ' + n + (x ? `(${x})` : '')); const bad = (n, x) => { failed++; console.error('  ✗ ' + n + (x ? ' -> ' + x : '')); };
