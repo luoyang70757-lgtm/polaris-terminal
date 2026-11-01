@@ -68,7 +68,7 @@ npm run dist -- --win
    - 键盘导航：roving tabindex（全树一个 Tab 停靠点），↑↓ 移动、← 折叠/回父级、→ 展开/进子项、Enter 连接或折叠、Shift+F10 右键；行键为 `t:<host|bastion>` / `g:<gid>` / `s:<sid>`
    - 回归用例：`verify-groups-mature.js`（84 条：结构一致性、折叠、搜索剪枝、计数、键盘、持久化、拖拽排序、规模压测）+ `verify-groups-order.js`（19 条纯 Node：老库补列迁移、moveGroup 语义、防环）
 
-10. **界面字号与布局约定**：所有 UI 字号都由 `--ui-font`（设置里的「界面字体大小」）派生，档位变量 `--fs-2xs/--fs-xs/--fs-sm/--fs-md/--fs-base/--fs-lg` = ui-font −4/−3/−2/−1/+0/+1（默认 13px 时与旧像素值完全一致）。**新增样式不要写死 `font-size: 11px` 之类**，用 `var(--fs-sm)`；终端字号走 `settings.fontSize`，与 UI 无关。布局红线：会话列表行缩进只用 `padding-left`（行上不要再加 `margin-left`，否则 `width:max-content` 会顶出 6px 横向滚动条）；`.asset-tree` 固定 `overflow-x: hidden`；固定高度面板（如 `#sftp-panel`）里的工具栏必须 `flex-shrink: 0` 且允许 `flex-wrap`，否则大字号换行后按钮会被裁一半。回归：`verify-ui-layout.js`（21 条：默认档位、17px 缩放、横向溢出、标题/提示单行、SFTP 工具栏不裁切）。
+10. **界面字号 / 字体 / 布局约定**：所有 UI 字号都由 `--ui-font`（设置里的「界面字体大小」）派生，档位变量 `--fs-2xs/--fs-xs/--fs-sm/--fs-md/--fs-base/--fs-lg` = ui-font −4/−3/−2/−1/+0/+1（默认 13px 时与旧像素值完全一致）。**新增样式不要写死 `font-size: 11px` 之类**，用 `var(--fs-sm)`；终端字号走 `settings.fontSize`，与 UI 无关；**界面字体族**走 `settings.uiFontFamily`（`''`=内置自动栈：`-apple-system`/SF Pro/苹方 → Windows 雅黑 → Linux Noto，苹果设备优先命中 SF/苹方），设置项 `#set-ui-font-family` 支持 自动 / SF Pro / 苹方 / 雅黑 / Noto / 自定义，applyTheme 注入 `--ui-font-family`。主题只保留 **10 套精选**（dark/light/termiusDark/termiusLight/solarizedDark/nord/dracula/catppuccinMocha/gruvboxDark/rosePine），已删主题的旧配置自动回落 dark。布局红线：会话列表行缩进只用 `padding-left`（行上不要再加 `margin-left`，否则 `width:max-content` 会顶出 6px 横向滚动条）；`.asset-tree` 固定 `overflow-x: hidden`；固定高度面板（如 `#sftp-panel`）里的工具栏必须 `flex-shrink: 0` 且允许 `flex-wrap`，否则大字号换行后按钮会被裁一半。回归：`verify-ui-layout.js`（21 条：默认档位、17px 缩放、横向溢出、标题/提示单行、SFTP 工具栏不裁切）。
 
 ## 安全约定
 
@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.55**（2026-11-01）：**新建/编辑会话弹窗精简**——默认只显示必要字段（名称 / 主机+端口 / 用户名+密码 / 分组 / 测试连接），协议、私钥、私钥口令、跳板机、终端编码、登录宏收进折叠的「高级选项」（编辑带高级设置的会话会自动展开）；弹窗从"要滚动才能看到保存"变成一屏放下。回归：`verify-session-modal.js`（13 条）。
+**当前版本 v1.0.56**（2026-11-01）：**精简主题 + 苹果字体 + 全量回归**——主题从 25 套精简到 10 套精选（旧配置自动回落 dark）；新增「界面字体」设置与苹果字体支持（默认字体栈改为 SF Pro / 苹方优先，终端字体补 `ui-monospace`/`SFMono-Regular`）；修「选自定义字体时输入框被 sync 回滚」；跑通全量回归 `test-all.js`（84 个 verify 脚本，76 全绿 / 548 条断言，失败项均为预存用例漂移或环境依赖）。回归：新增 `verify-ui-font.js`（12 条）。
+
+上一版本 v1.0.55（2026-11-01）：**新建/编辑会话弹窗精简**——默认只显示必要字段（名称 / 主机+端口 / 用户名+密码 / 分组 / 测试连接），协议、私钥、私钥口令、跳板机、终端编码、登录宏收进折叠的「高级选项」（编辑带高级设置的会话会自动展开）；弹窗从"要滚动才能看到保存"变成一屏放下。回归：`verify-session-modal.js`（13 条）。
 
 v1.0.54（2026-11-01）：**「帮助 → 关于」只留版本 + 简介**——原「📖 使用说明」长文档（快速开始/快捷键表/九大功能说明）整块删除，改为「关于」弹窗：Logo「Polaris 北极星」、版本号（主进程 `app.getVersion()` 经 IPC `app:about` 下发）、一段 161 字简介；设置弹窗入口改「ℹ️ 关于」、命令面板/菜单/菜单栏统一指向同一弹窗。回归：`verify-about.js`（15 条）。
 
@@ -98,7 +100,7 @@ v1.0.54（2026-11-01）：**「帮助 → 关于」只留版本 + 简介**——
 
 之前版本 v1.0.49（2026-10-30 发版）：修复导入加密备份时密码框被背后的导入弹窗抢按键（多弹窗叠加时取最上层弹窗）；导出加密备份密码框焦点加固（去掉导出前原生 confirm、主进程 `window:focus`、补聚焦重试 2s、弹窗期间暂停 webview 抢焦点），密码长度口径统一为 8 位；Windows 启动优化（NSIS 安装版 + portable 启动图 + V8 编译缓存 + ssh2/xlsx/tar 惰性加载 + 日志批量写盘 + locale 精简）；列表/树形视图统一按 `parent_id` 渲染分组层级（子分组嵌套，不再平铺）；分组名改为**同一父级下唯一**（旧库自动迁移，不同父级可同名）；拖拽移动会话不再丢私钥/跳板机等字段。历史问题清单见 `docs/issues-2026-09-11.md`，Windows 启动排查见 `docs/windows-startup-slow.md`。
 
-已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能与断点续传、命令补全与智能推荐、主题系统（25 套，各带 ANSI 色板）、AI 技能/知识库、SSH 隧道、录制回放、全量日志、堡垒机入口整合。
+已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能与断点续传、命令补全与智能推荐、主题系统（10 套精选，各带 ANSI 色板）、AI 技能/知识库、SSH 隧道、录制回放、全量日志、堡垒机入口整合。
 详见 `CONTEXT.md` 的「已完成功能」「技术决策」。
 
 **依赖注意**：`xlsx` 用 SheetJS 官方 CDN tarball（非 npm registry，见 `docs/deps-xlsx-evaluation.md`），`npm ci`/CI 需能访问 cdn.sheetjs.com。

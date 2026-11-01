@@ -45,20 +45,10 @@ const THEMES = {
     term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
     ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
-  green: {
-    name: '经典绿', appearance: 'dark',
-    term: { background: '#001b00', foreground: '#33ff33', cursor: '#33ff33', selectionBackground: '#0e6b0e', selectionForeground: '#ffffff' },
-    ansi: ['#005500', '#ff4455', '#00cc44', '#cccc00', '#00aa88', '#cc44cc', '#00aaaa', '#00aa00', '#007700', '#ff6677', '#22ff66', '#ffee22', '#22ddbb', '#ff66ff', '#33dddd', '#ffffff'],
-  },
   solarizedDark: {
     name: 'Solarized 深', appearance: 'dark',
     term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
     ansi: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5', '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
-  },
-  solarizedLight: {
-    name: 'Solarized 浅', appearance: 'light',
-    term: { background: '#fdf6e3', foreground: '#657b83', cursor: '#657b83', selectionBackground: '#d9d2b5', selectionForeground: '#073642' },
-    ansi: ['#eee8d5', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#fdf6e3', '#586e75', '#cb4b16', '#073642', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#002b36'],
   },
   nord: {
     name: 'Nord', appearance: 'dark',
@@ -70,12 +60,6 @@ const THEMES = {
     term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
     ansi: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff'],
   },
-  onedark: {
-    name: 'One Dark', appearance: 'dark',
-    term: { background: '#282c34', foreground: '#abb2bf', cursor: '#528bff', selectionBackground: '#5c78d6', selectionForeground: '#ffffff' },
-    ansi: ['#21252b', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#abb2bf', '#5c6370', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
-  },
-  // ---- 以下预设只写配色 + 各主题 ANSI 色板,UI 变量走 deriveUiTokens 派生 ----
   termiusDark: {
     name: 'Graphite 深', appearance: 'dark',
     term: { background: '#222426', foreground: '#c9c9c9', cursor: '#c9c9c9', selectionBackground: '#3e4142', selectionForeground: '#ffffff' },
@@ -86,81 +70,20 @@ const THEMES = {
     term: { background: '#f5f5f5', foreground: '#222426', cursor: '#222426', selectionBackground: '#d9dcdE', selectionForeground: '#222426' },
     ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
   },
-  flexokiDark: {
-    name: 'Ember 深', appearance: 'dark',
-    term: { background: '#100f0f', foreground: '#c6c3b5', cursor: '#c6c3b5', selectionBackground: '#282726', selectionForeground: '#ffffff' },
-    ansi: ['#100f0f', '#af3029', '#66800b', '#ad8301', '#205ea6', '#a02f6f', '#24837b', '#cecdc3', '#575653', '#d14d41', '#879a39', '#d0a215', '#4385be', '#ce5d97', '#3aa99f', '#e6e4d9'],
-  },
-  flexokiLight: {
-    name: 'Canvas 浅', appearance: 'light',
-    term: { background: '#fffcf0', foreground: '#100f0f', cursor: '#100f0f', selectionBackground: '#e6e4d9', selectionForeground: '#100f0f' },
-    ansi: ['#6f6e69', '#af3029', '#66800b', '#ad8301', '#205ea6', '#a02f6f', '#24837b', '#c8c5bf', '#6f6e69', '#d14d41', '#879a39', '#d0a215', '#4385be', '#ce5d97', '#3aa99f', '#1c1b1a'],
-  },
-  kanagawaWave: {
-    name: 'Tide 靛', appearance: 'dark',
-    term: { background: '#1f1f28', foreground: '#dcd7ba', cursor: '#dcd7ba', selectionBackground: '#363646', selectionForeground: '#ffffff' },
-    ansi: ['#090618', '#c34043', '#76946a', '#c0a36e', '#7e9cd8', '#957fb8', '#6a9589', '#c8c093', '#727169', '#e82424', '#98bb6c', '#e6c384', '#7fb4ca', '#938aa9', '#7aa89f', '#dcd7ba'],
-  },
-  kanagawaDragon: {
-    name: 'Forge 铜', appearance: 'dark',
-    term: { background: '#181616', foreground: '#c5c9c5', cursor: '#c5c9c5', selectionBackground: '#2d2a2e', selectionForeground: '#ffffff' },
-    ansi: ['#0d0c0c', '#c4746e', '#8a9a7b', '#c4b28a', '#8ba4b0', '#a292a3', '#8ea4a2', '#c8c093', '#a6a69c', '#e46876', '#98bb6c', '#e6c384', '#7fb4ca', '#938aa9', '#7aa89f', '#dcd7ba'],
-  },
-  kanagawaLotus: {
-    name: 'Dawn 花', appearance: 'light',
-    term: { background: '#f2ecbc', foreground: '#545464', cursor: '#545464', selectionBackground: '#b9b577', selectionForeground: '#ffffff' },
-    ansi: ['#f2ecbc', '#c84053', '#6d894e', '#77713f', '#597b8f', '#8a5a83', '#5b8d8a', '#545464', '#b8b4a0', '#d7474f', '#a9a050', '#8f8947', '#708d9c', '#985f8f', '#6a8d88', '#545464'],
-  },
-  hackerBlue: {
-    name: 'Pulse 蓝', appearance: 'dark',
-    term: { background: '#001020', foreground: '#33aaff', cursor: '#33aaff', selectionBackground: '#003a6e', selectionForeground: '#ffffff' },
-    ansi: ['#00224a', '#4488ff', '#22ccaa', '#ffcc44', '#5599ff', '#cc66ff', '#44ddff', '#88aacc', '#00336e', '#66aaff', '#44eebb', '#ffdd66', '#77bbff', '#dd88ff', '#66eeff', '#ffffff'],
-  },
-  hackerGreen: {
-    name: 'Pulse 绿', appearance: 'dark',
-    term: { background: '#001300', foreground: '#00ff66', cursor: '#00ff66', selectionBackground: '#006e2a', selectionForeground: '#ffffff' },
-    ansi: ['#003300', '#33ff66', '#00ff88', '#dddd00', '#44ffcc', '#ff55ff', '#00ddcc', '#88cc88', '#004400', '#66ff88', '#33ffaa', '#ffee55', '#77ffdd', '#ff88ff', '#55ffdd', '#ffffff'],
-  },
   catppuccinMocha: {
     name: 'Truffle 摩卡', appearance: 'dark',
     term: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#45475a', selectionForeground: '#ffffff' },
     ansi: ['#45475a', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#bac2de', '#585b70', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#a6adc8'],
-  },
-  catppuccinLatte: {
-    name: 'Cream 拿铁', appearance: 'light',
-    term: { background: '#eff1f5', foreground: '#4c4f69', cursor: '#dc8a78', selectionBackground: '#ccd0da', selectionForeground: '#4c4f69' },
-    ansi: ['#5c5f77', '#d20f39', '#40a02b', '#df8e1d', '#1e66f5', '#ea76cb', '#179299', '#acb0be', '#6c6f85', '#d20f39', '#40a02b', '#df8e1d', '#1e66f5', '#ea76cb', '#179299', '#8c8fa1'],
   },
   gruvboxDark: {
     name: 'Grove 苔', appearance: 'dark',
     term: { background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2', selectionBackground: '#3c3836', selectionForeground: '#ffffff' },
     ansi: ['#282828', '#cc241d', '#98971a', '#d79921', '#458588', '#b16286', '#689d6a', '#a89984', '#928374', '#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#ebdbb2'],
   },
-  // ---- T4:Termius 热门主题(官方配色 + 各主题色板,只写配色,UI 走派生)----
   rosePine: {
     name: '松雾 Rosé Pine', appearance: 'dark',
     term: { background: '#191724', foreground: '#e0def4', cursor: '#f6c177', selectionBackground: '#2a2837', selectionForeground: '#ffffff' },
     ansi: ['#26233a', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4', '#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4'],
-  },
-  nightOwl: {
-    name: '夜枭 Night Owl', appearance: 'dark',
-    term: { background: '#011627', foreground: '#d6deeb', cursor: '#80a4c2', selectionBackground: '#1d3b53', selectionForeground: '#ffffff' },
-    ansi: ['#011627', '#ef5350', '#22da6e', '#addb67', '#82aaff', '#c792ea', '#21c7a8', '#ffffff', '#575f73', '#ef5350', '#22da6e', '#addb67', '#82aaff', '#c792ea', '#21c7a8', '#ffffff'],
-  },
-  everforestDark: {
-    name: '森野深 Everforest', appearance: 'dark',
-    term: { background: '#2d353b', foreground: '#d3c6aa', cursor: '#d3c6aa', selectionBackground: '#475258', selectionForeground: '#ffffff' },
-    ansi: ['#4b565c', '#e67e80', '#a7c080', '#dbbc7f', '#7fbbb3', '#d699b6', '#83c092', '#d3c6aa', '#5c6a72', '#e67e80', '#a7c080', '#dbbc7f', '#7fbbb3', '#d699b6', '#83c092', '#d3c6aa'],
-  },
-  everforestLight: {
-    name: '森野浅 Everforest', appearance: 'light',
-    term: { background: '#fdf6e3', foreground: '#5c6a72', cursor: '#5c6a72', selectionBackground: '#d8caac', selectionForeground: '#5c6a72' },
-    ansi: ['#5c6a72', '#f85552', '#8da101', '#dfa000', '#3a94c5', '#df69ba', '#35a77c', '#dfdcc9', '#9da9a0', '#f85552', '#8da101', '#dfa000', '#3a94c5', '#df69ba', '#35a77c', '#dfdcc9'],
-  },
-  aura: {
-    name: '霞光 Aura', appearance: 'dark',
-    term: { background: '#21202e', foreground: '#edecee', cursor: '#a277ff', selectionBackground: '#363447', selectionForeground: '#ffffff' },
-    ansi: ['#15141b', '#ff6767', '#61ffca', '#ffca85', '#a277ff', '#a277ff', '#61ffca', '#edecee', '#4d4d66', '#ff6767', '#61ffca', '#ffca85', '#a277ff', '#ff6767', '#61ffca', '#edecee'],
   },
 };
 
@@ -385,6 +308,9 @@ const els = {
   setCloseX: $('set-close-x'),
   setFontSize: $('set-font-size'),
   setUiFontSize: $('set-ui-font-size'),
+  setUiFontFamily: $('set-ui-font-family'),
+  setUiFontFamilyCustom: $('set-ui-font-family-custom'),
+  setUiFontFamilyCustomWrap: $('set-ui-font-family-custom-wrap'),
   setFontFamily: $('set-font-family'),
   setFontFamilyCustom: $('set-font-family-custom'),
   setFontFamilyCustomWrap: $('set-font-family-custom-wrap'),
@@ -640,6 +566,7 @@ const state = {
     aiActiveVendor: '',  // 当前激活的厂商名(AI 对话用这家)
     fontSize: 13,               // 终端字体大小
     uiFontSize: 13,             // 界面字体大小(工具栏/会话列表等,与终端字号独立)
+    uiFontFamily: '',           // 界面字体(''=自动栈:苹果 SF Pro/苹方 → Windows 雅黑 → Linux Noto)
     fontFamily: '"SF Mono", Menlo, Consolas, "Courier New", monospace', // 终端字体
     autoReconnect: true,        // 断线自动重连开关
     verifyHostKey: true,        // 服务器指纹校验(known_hosts)
@@ -748,6 +675,9 @@ function applyTheme() {
   const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
   for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
   root.setProperty('--ui-font', (state.settings.uiFontSize || 13) + 'px'); // 界面字体大小(工具栏/列表等)
+  // 界面字体族(''=用 styles.css 里的自动栈:苹果 SF Pro/苹方 → Windows 雅黑 → Linux Noto)
+  if (state.settings.uiFontFamily) root.setProperty('--ui-font-family', state.settings.uiFontFamily);
+  else root.removeProperty('--ui-font-family');
   const ansi = state.settings.customAnsi || th.ansi || DEFAULT_ANSI; // ANSI 16 色:用户自定义优先,否则用主题自带色板,兜底默认
   for (const t of state.tabs.values()) {
     try {
@@ -786,6 +716,7 @@ function openSettingsModal() {
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
   els.setUiFontSize.value = state.settings.uiFontSize || 13;
+  syncUiFontFamilyControls(); // 界面字体下拉(苹果 SF/苹方/雅黑/Noto/自定义)
   syncFontFamilyControls();
   els.setAutoReconnect.checked = state.settings.autoReconnect !== false;
   els.setVerify.checked = state.settings.verifyHostKey !== false;
@@ -1002,6 +933,20 @@ function syncFontFamilyControls() {
     els.setFontFamily.value = '__custom__';
     els.setFontFamilyCustom.value = cur;
     els.setFontFamilyCustomWrap.style.display = '';
+  }
+}
+
+// 界面字体下拉 ↔ 自定义输入同步(与终端字体的 syncFontFamilyControls 同款逻辑)
+function syncUiFontFamilyControls() {
+  const cur = state.settings.uiFontFamily || '';
+  const opts = [...els.setUiFontFamily.options].map((o) => o.value);
+  if (opts.includes(cur) && cur !== '__custom__') {
+    els.setUiFontFamily.value = cur;
+    els.setUiFontFamilyCustomWrap.style.display = 'none';
+  } else {
+    els.setUiFontFamily.value = '__custom__';
+    els.setUiFontFamilyCustom.value = cur;
+    els.setUiFontFamilyCustomWrap.style.display = '';
   }
 }
 
@@ -10463,13 +10408,36 @@ els.setUiFontSize.addEventListener('change', () => {
   saveSettings();
   applyTheme(); // 应用新界面字号(--ui-font)
 });
-els.setFontFamily.addEventListener('change', () => {
-  if (els.setFontFamily.value !== '__custom__') {
-    state.settings.fontFamily = els.setFontFamily.value;
-    saveSettings();
-    applyFontSettings();
+els.setUiFontFamily.addEventListener('change', () => {
+  if (els.setUiFontFamily.value === '__custom__') {
+    // 选「自定义…」→ 立刻露出输入框(不能走 sync:那时 settings 还是预设值,会被回滚成预设)
+    els.setUiFontFamilyCustomWrap.style.display = '';
+    if (!els.setUiFontFamilyCustom.value) els.setUiFontFamilyCustom.value = state.settings.uiFontFamily || '';
+    els.setUiFontFamilyCustom.focus();
+    return;
   }
-  syncFontFamilyControls(); // 同步下拉与自定义输入框(选「自定义…」→ 显示并回填;选预设 → 隐藏)
+  state.settings.uiFontFamily = els.setUiFontFamily.value;
+  saveSettings();
+  applyTheme(); // 立即生效(--ui-font-family)
+  syncUiFontFamilyControls();
+});
+els.setUiFontFamilyCustom.addEventListener('change', () => {
+  state.settings.uiFontFamily = els.setUiFontFamilyCustom.value.trim();
+  saveSettings();
+  applyTheme();
+});
+els.setFontFamily.addEventListener('change', () => {
+  if (els.setFontFamily.value === '__custom__') {
+    // 选「自定义…」→ 立刻露出输入框并回填当前值(同界面字体,避免被 sync 回滚)
+    els.setFontFamilyCustomWrap.style.display = '';
+    if (!els.setFontFamilyCustom.value) els.setFontFamilyCustom.value = state.settings.fontFamily || '';
+    els.setFontFamilyCustom.focus();
+    return;
+  }
+  state.settings.fontFamily = els.setFontFamily.value;
+  saveSettings();
+  applyFontSettings();
+  syncFontFamilyControls(); // 选预设 → 隐藏自定义输入框
 });
 els.setFontFamilyCustom.addEventListener('change', () => {
   const v = els.setFontFamilyCustom.value.trim();

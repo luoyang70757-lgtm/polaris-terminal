@@ -574,9 +574,23 @@
       <label class="field"><span>界面字体大小(工具栏/会话列表等,与终端字号独立)</span>
         <input id="set-ui-font-size" type="number" min="11" max="20" value="13" />
       </label>
+      <label class="field"><span>界面字体(苹果设备默认用 SF Pro / 苹方)</span>
+        <select id="set-ui-font-family" class="select">
+          <option value=''>自动(苹果 SF Pro / 苹方 · Windows 雅黑 · Linux Noto)</option>
+          <option value='-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", Arial, sans-serif'>苹果系统字体(SF Pro)</option>
+          <option value='"PingFang SC", "Hiragino Sans GB", "Heiti SC", -apple-system, sans-serif'>苹方(中文,苹果设计)</option>
+          <option value='"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif'>微软雅黑(Windows)</option>
+          <option value='"Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif'>Noto / 思源黑体</option>
+          <option value='__custom__'>自定义…(直接输入 font-family)</option>
+        </select>
+      </label>
+      <label class="field" id="set-ui-font-family-custom-wrap" style="display:none"><span>自定义界面字体名</span>
+        <input id="set-ui-font-family-custom" class="input" type="text" placeholder='如 "HarmonyOS Sans SC", "PingFang SC", sans-serif(逗号分隔回退链;需系统已安装)' />
+      </label>
       <label class="field"><span>终端字体</span>
         <select id="set-font-family" class="select">
-          <option value='"SF Mono", Menlo, Consolas, monospace'>SF Mono (macOS 默认)</option>
+          <option value='ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace'>系统等宽(苹果 ui-monospace / SF Mono)</option>
+          <option value='"SF Mono", SFMono-Regular, Menlo, Consolas, monospace'>SF Mono (macOS 默认)</option>
           <option value='Monaco, Menlo, Consolas, monospace'>Monaco (macOS 经典)</option>
           <option value='Menlo, Consolas, "Courier New", monospace'>Menlo (macOS)</option>
           <option value='Consolas, Menlo, "Courier New", monospace'>Consolas (Windows)</option>

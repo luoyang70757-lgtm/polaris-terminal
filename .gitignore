@@ -62,3 +62,4 @@ polaris-logs-*.zip
 # ---- 虚拟机/资产清单导出(含内网 IP/人员信息,不入库)----
 /虚拟机_*.csv
 /verify-shots/
+/list-*.png

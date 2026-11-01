@@ -53,8 +53,12 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     // ① 下拉结构
     await check(c, '下拉含「跟随系统(auto)」选项', `(function(){var s=document.getElementById('set-theme');return !!s.querySelector('option[value="auto"]');})()`);
     await check(c, '下拉分 深色/浅色 两个 optgroup', `document.getElementById('set-theme').querySelectorAll('optgroup').length===2`);
-    await check(c, '选项总数 = auto + 25 预设', `document.getElementById('set-theme').options.length===26`);
-    await check(c, '新增预设已注册(12 + T4 新 5 套)', `['termiusDark','termiusLight','flexokiDark','flexokiLight','kanagawaWave','kanagawaDragon','kanagawaLotus','hackerBlue','hackerGreen','catppuccinMocha','catppuccinLatte','gruvboxDark','rosePine','nightOwl','everforestDark','everforestLight','aura'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
+    await check(c, '选项总数 = auto + 10 套精选预设(25 → 10 精简)', `document.getElementById('set-theme').options.length===11`);
+    await check(c, '精选预设齐全(深/浅/石墨/雾白/Solarized/Nord/Dracula/Catppuccin/Gruvbox/松雾)',
+      `['dark','light','termiusDark','termiusLight','solarizedDark','nord','dracula','catppuccinMocha','gruvboxDark','rosePine'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
+    await check(c, '已精简掉的主题不再出现在下拉里(经典绿/Nord外的 15 套)',
+      `!['green','solarizedLight','onedark','flexokiDark','flexokiLight','kanagawaWave','kanagawaDragon','kanagawaLotus','hackerBlue','hackerGreen','catppuccinLatte','nightOwl','everforestDark','everforestLight','aura'].some(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
+    await check(c, '旧用户存的已删主题自动回落到深空(dark)', `(function(){state.settings.theme='kanagawaWave';applyTheme();var ok=getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#070c18';state.settings.theme='dark';applyTheme();return ok;})()`);
 
     // ② 新预设纯派生
     await ev(c, applyTheme('catppuccinMocha')); await sleep(120);
@@ -63,10 +67,10 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     await check(c, 'catppuccinMocha → --border 派生 = #42424f(提亮方向)', `${cssVar('--border')}==='#42424f'`);
 
     // ③ 浅色派生方向(--border 比 bg 深)
-    await ev(c, applyTheme('catppuccinLatte')); await sleep(120);
-    await check(c, 'catppuccinLatte → --bg = #eff1f5', `${cssVar('--bg')}==='#eff1f5'`);
+    await ev(c, applyTheme('termiusLight')); await sleep(120);
+    await check(c, 'termiusLight(Mist 浅)→ --bg = #f5f5f5', `${cssVar('--bg')}==='#f5f5f5'`);
     const borderDir = await ev(c, `(function(){var d=function(x){x=x.replace('#','');return [0,2,4].map(function(i){return parseInt(x.slice(i,i+2),16)});};var bg=d(document.documentElement.style.getPropertyValue('--bg')),bd=d(document.documentElement.style.getPropertyValue('--border'));return bd[0]+bd[1]+bd[2] < bg[0]+bg[1]+bg[2];})()`);
-    if (borderDir) ok('catppuccinLatte → --border 比 bg 深(浅色方向)'); else bad('catppuccinLatte → --border 比 bg 深(浅色方向)');
+    if (borderDir) ok('termiusLight → --border 比 bg 深(浅色方向)'); else bad('termiusLight → --border 比 bg 深(浅色方向)');
 
     // ④ 旧预设统一走派生(删手写 css)→ --bg 取 term.bg,零回归
     await ev(c, applyTheme('dark')); await sleep(120);
