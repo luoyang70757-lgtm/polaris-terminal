@@ -25,9 +25,15 @@
 
 ## 运行方式
 
+> 新机器/重新 clone 的环境搭建（依赖、Electron 二进制镜像、Windows 下的 dev/e2e 差异）见 **`docs/dev-setup.md`**。
+
 ```bash
+# 依赖（xlsx 走 cdn.sheetjs.com；postinstall 会确保 Electron 二进制）
+npm ci
+
 # 开发模式（自动拉起 mock 服务器）
 POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu
+# Windows 用 npm run dev（.bin/electron 是 Unix 脚本，Windows 无法直接执行）
 
 # 编译正式版
 npm run dist   # → release/mac/Polaris.app(macOS，未签名)
@@ -53,6 +59,14 @@ npm run dist -- --win
 6. **右键菜单防刷屏**：菜单打开后 250ms 内的 click 视为"右键残留"忽略（`ctxMenuOpenedAt`）；空菜单数组不注册 contextmenu
 7. **堡垒机资产轮询**：`pollBastionAssets` 只对 H3C 站点（URL 含 `/shterm`）运行，15s 低频兜底 + 用户操作时事件驱动；数据无变化不刷新（`stableJson` 键序无关比较）。**H3C 资产是主进程原生拉取**（`lib/h3c-api.js` + `h3c:*` IPC），不再注入 webview 钩子；登录成功自动最小化面板（`bastionLoginState`/`bastionLoginMode` 状态机），会话过期自动弹出重登
 8. **全量日志**：`lib/app-log.js` 把主进程 console + 渲染层 console + dlog + 异常写入 `数据目录/logs/app-YYYYMMDD.log`（按天轮转 10MB）；调试面板「⬇ 下载日志」导出完整日志
+9. **会话列表分组视图（列表/树形共用一套）**：`renderSessionList` → `renderSessionsTree/List` → 同一个 `renderGroupHierarchy`（按 `groups.parent_id` 建树）；列表模式只是 `flat=true`（不折叠、无折叠三角，层级用缩进表达），右键/拖拽/选中与树形完全一致。约定：
+   - 缩进 `groupIndent(depth)`：前 3 层 18px/层，第 4 层起 10px/层（深层不把主机名挤没）；行上带 `data-depth`
+   - 分组计数 `(直属/合计)`，父组下主机在子组里时显示 `(0/3)` 而非误导性的 `(0)`；分组头 `title` 显示完整路径
+   - 搜索时 `prune`：没有命中后代的分组整棵不渲染，且忽略折叠自动展开命中路径（清空搜索后折叠态原样恢复）
+   - 折叠状态持久化：`settings.collapsedGroupIds` / `collapsedTopHost` / `collapsedTopBastion`（`null` = 首次运行全部折叠）
+   - 分组拖拽排序：`groups.sort_order`（同级间 10，0 = 未排过 → 回退按名称，保证升级后顺序不变）。拖分组头：**中间 = 变成子分组**，上/下边缘 = 插到同级前/后；IPC `groups:move(id, parentId, beforeId)`，数据层做环检测 + 「默认分组」不允许挂到别人下面
+   - 键盘导航：roving tabindex（全树一个 Tab 停靠点），↑↓ 移动、← 折叠/回父级、→ 展开/进子项、Enter 连接或折叠、Shift+F10 右键；行键为 `t:<host|bastion>` / `g:<gid>` / `s:<sid>`
+   - 回归用例：`verify-groups-mature.js`（84 条：结构一致性、折叠、搜索剪枝、计数、键盘、持久化、拖拽排序、规模压测）+ `verify-groups-order.js`（19 条纯 Node：老库补列迁移、moveGroup 语义、防环）
 
 ## 安全约定
 
@@ -66,9 +80,11 @@ npm run dist -- --win
 - e2e 验证：`node verify-<功能>.js`（自动 spawn electron + 调试端口 + 临时数据目录，用后 pkill）
 - 测试会杀掉正在运行的 app（pkill electron），测完需重启
 
-## 当前状态（截至 2026-10-30）
+## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.49**（2026-10-30 发版）：修复导入加密备份时密码框被背后的导入弹窗抢按键（多弹窗叠加时取最上层弹窗）；导出加密备份密码框焦点加固（去掉导出前原生 confirm、主进程 `window:focus`、补聚焦重试 2s、弹窗期间暂停 webview 抢焦点），密码长度口径统一为 8 位；Windows 启动优化（NSIS 安装版 + portable 启动图 + V8 编译缓存 + ssh2/xlsx/tar 惰性加载 + 日志批量写盘 + locale 精简）；列表/树形视图统一按 `parent_id` 渲染分组层级（子分组嵌套，不再平铺）；分组名改为**同一父级下唯一**（旧库自动迁移，不同父级可同名）；拖拽移动会话不再丢私钥/跳板机等字段。历史问题清单见 `docs/issues-2026-09-11.md`，Windows 启动排查见 `docs/windows-startup-slow.md`。
+**当前版本 v1.0.50**（2026-11-01 发版）：会话列表分组体验对齐成熟产品（Xshell / FinalShell）——父分组计数改 `(直属/合计)`（`华东 (0/3)` 不再误报空）、分组头悬停显示完整路径、**搜索时只保留命中路径并自动展开折叠分组**、折叠/展开状态持久化（`collapsedGroupIds` + 顶部分组）、**分组拖拽排序与拖成子分组**（新表字段 `groups.sort_order`，老库自动补列且顺序不变，数据层防环）、**侧边栏全键盘导航**（roving tabindex，↑↓←→ / Enter / Shift+F10）、深层缩进步长收窄（3 层后 18→10px）、「定位到会话列表」自动展开折叠分组并支持树形/列表模式闪烁。回归：`verify-groups-mature.js`（84 条）+ `verify-groups-order.js`（19 条）。
+
+之前版本 v1.0.49（2026-10-30 发版）：修复导入加密备份时密码框被背后的导入弹窗抢按键（多弹窗叠加时取最上层弹窗）；导出加密备份密码框焦点加固（去掉导出前原生 confirm、主进程 `window:focus`、补聚焦重试 2s、弹窗期间暂停 webview 抢焦点），密码长度口径统一为 8 位；Windows 启动优化（NSIS 安装版 + portable 启动图 + V8 编译缓存 + ssh2/xlsx/tar 惰性加载 + 日志批量写盘 + locale 精简）；列表/树形视图统一按 `parent_id` 渲染分组层级（子分组嵌套，不再平铺）；分组名改为**同一父级下唯一**（旧库自动迁移，不同父级可同名）；拖拽移动会话不再丢私钥/跳板机等字段。历史问题清单见 `docs/issues-2026-09-11.md`，Windows 启动排查见 `docs/windows-startup-slow.md`。
 
 已完成：堡垒机（JMS/H3C）对接、SFTP 面板全功能与断点续传、命令补全与智能推荐、主题系统（25 套，各带 ANSI 色板）、AI 技能/知识库、SSH 隧道、录制回放、全量日志、堡垒机入口整合。
 详见 `CONTEXT.md` 的「已完成功能」「技术决策」。

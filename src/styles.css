@@ -330,6 +330,19 @@ select.select:focus { border-color: var(--accent); }
   margin-left: 12px;
 }
 .asset-group-head:hover { color: var(--text); background: var(--bg-hover); }
+/* 分组拖拽提示:上/下边缘 = 插到同级的它前/后(横线),中间 = 变成它的子分组(虚线框) */
+.asset-group-head.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.asset-group-head.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.asset-group-head.drop-inside { background: rgba(45, 212, 254, 0.16); outline: 1px dashed var(--accent); outline-offset: -1px; }
+.asset-group-head.dragging { opacity: 0.45; }
+/* 键盘导航聚焦环:→↑↓← 在会话列表里移动时的可见焦点(只用 :focus-visible,鼠标点击不出环) */
+.asset-group-head:focus-visible,
+.asset-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
 .asset-group-head.drag-over { background: var(--accent); color: #fff; } /* 拖拽悬停高亮 */
 .asset-item.dragging { opacity: 0.4; }
 /* 当前选中的分组:提示"全选"会针对这一组 */
@@ -1000,6 +1013,18 @@ input[type="checkbox"] {
 
 /* 会话卡片"定位"时的闪烁提示 */
 .session-card.flash { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow 0.3s; }
+/* 树形/列表模式下的"定位到会话列表"闪烁:会话行同样高亮提示 */
+.asset-item.flash {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+  animation: asset-flash 1.4s ease-in-out 1;
+}
+@keyframes asset-flash {
+  0%, 100% { background: transparent; }
+  25% { background: rgba(45, 212, 254, 0.22); }
+  60% { background: rgba(45, 212, 254, 0.1); }
+}
 
 /* 工具栏按钮的"开启"态(广播模式高亮) */
 .btn-mini.active { background: var(--accent); color: #fff; }

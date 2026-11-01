@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('api', {
   createGroup: (name, parentId) => ipcRenderer.invoke('groups:create', name, parentId),
   renameGroup: (id, name) => ipcRenderer.invoke('groups:rename', id, name),
   setGroupProd: (id, flag) => ipcRenderer.invoke('groups:setProd', id, flag),
+  moveGroup: (id, parentId, beforeId) => ipcRenderer.invoke('groups:move', id, parentId, beforeId),
   deleteGroup: (id) => ipcRenderer.invoke('groups:delete', id),
 
   // ---- SSH 直连 ----

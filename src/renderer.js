@@ -649,6 +649,9 @@ const state = {
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
     sessionView: 'tree',        // 会话列表视图: 'tree'树形 | 'list'列表 | 'grid'网格
+    collapsedGroupIds: null,    // 上次折叠的分组 id 列表(null=从未保存过 → 首次启动全部折叠;之后记住用户展开/折叠)
+    collapsedTopHost: null,     // 上次「🖥 主机」顶级分组是否折叠(null=首次启动用默认收起)
+    collapsedTopBastion: null,  // 同上(「🛡 堡垒机」)
     debugPanelPos: null,        // 调试日志面板位置 {x, y}(null=默认右下角)
     bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
@@ -1479,9 +1482,20 @@ async function loadSessions() {
   if (res.ok) {
     state.sessions = res.sessions;
     state.groups = gres.ok ? gres.groups : [];
-    // 默认不打开分组:启动时全部分组折叠(只显示分组头,展开后主机才出现);本次会话内展开/折叠状态会记住
+    // 恢复折叠状态:优先用上次保存的(localStorage),从未保存过才用"首次启动全部折叠"的老默认。
+    // 之前只存内存 → 每次重启所有分组又收起来,深层分组的用户要重新一层层点开。
     if (!groupsCollapsedOnBoot) {
-      for (const g of state.groups) state.collapsedGroups.add(g.id);
+      const saved = Array.isArray(state.settings.collapsedGroupIds) ? state.settings.collapsedGroupIds : null;
+      state.collapsedGroups.clear();
+      if (saved) {
+        const live = new Set(state.groups.map((g) => Number(g.id)));
+        for (const id of saved) if (live.has(Number(id))) state.collapsedGroups.add(Number(id));
+      } else {
+        for (const g of state.groups) state.collapsedGroups.add(g.id);
+      }
+      // 顶级分组(主机/堡垒机)的展开状态也记住
+      if (typeof state.settings.collapsedTopHost === 'boolean') state.collapsedTopHost = state.settings.collapsedTopHost;
+      if (typeof state.settings.collapsedTopBastion === 'boolean') state.collapsedTopBastion = state.settings.collapsedTopBastion;
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
@@ -1654,6 +1668,7 @@ function filterSessions(filter) {
 // 按视图渲染会话列表:树形(tree)/列表(list)/网格(grid)
 // 顶层分成两个分组:「🖥 主机」(所有普通会话分组)+「🛡 堡垒机」(JMS/H3C 资产)
 function renderSessionList(filter) {
+  const kbWasInside = els.sessionTree.contains(document.activeElement); // 重渲染后把键盘焦点还回去
   els.sessionTree.innerHTML = '';
   const f = (filter || '').toLowerCase();
   const sessions = filterSessions(filter);
@@ -1664,6 +1679,7 @@ function renderSessionList(filter) {
   const mkTopHead = (label, which) => {
     const head = document.createElement('div');
     head.className = 'asset-group-head top-group';
+    head.dataset.topGroup = which; // 键盘导航用:'host' | 'bastion'
     const caret = document.createElement('span');
     caret.className = 'asset-group-caret';
     caret.textContent = topCollapsed[which] ? '▶' : '▼';
@@ -1675,6 +1691,7 @@ function renderSessionList(filter) {
     head.addEventListener('click', () => {
       if (which === 'host') state.collapsedTopHost = !state.collapsedTopHost;
       else state.collapsedTopBastion = !state.collapsedTopBastion;
+      persistTopCollapsed();
       renderSessionList(els.inputSessionSearch.value);
     });
     // 顶级分组右键:主机分组 → 创建主机会话;堡垒机分组 → 创建堡垒机连接
@@ -1716,8 +1733,8 @@ function renderSessionList(filter) {
       } else {
         const view = state.settings.sessionView || 'tree';
         if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
-        else if (view === 'list') renderSessionsList(sessions, hostContainer);
-        else renderSessionsTree(sessions, hostContainer);
+        else if (view === 'list') renderSessionsList(sessions, hostContainer, filter);
+        else renderSessionsTree(sessions, hostContainer, filter);
       }
       els.sessionTree.appendChild(hostContainer);
     }
@@ -1737,6 +1754,147 @@ function renderSessionList(filter) {
     }
   }
   refreshSelectAllBtn(); // 搜索词/勾选变化都同步"全选/取消全选"按钮文案
+  kbSyncTabStop(kbWasInside); // 重建 DOM 后恢复 roving tabindex / 键盘焦点
+}
+
+// =====================================================================
+// 会话列表键盘导航(参考 Xshell/FinalShell 的侧边栏树)
+//   ↑↓ 上下移动、← 折叠/回到父分组、→ 展开/进入子项、Enter 连接或折叠、Shift+F10 右键菜单
+//   Tab 进来只停一次(roving tabindex),不会把几十行逐个 Tab 一遍。
+// =====================================================================
+const KB_ROW_SEL = '.asset-group-head, .asset-item';
+let kbRowKey = null; // 当前键盘焦点行:'t:<host|bastion>' / 'g:<分组id>' / 's:<会话id>'
+function kbRowKeyOf(el) {
+  if (!el || !el.dataset) return null;
+  if (el.dataset.topGroup) return `t:${el.dataset.topGroup}`;
+  if (el.dataset.groupId) return `g:${el.dataset.groupId}`;
+  if (el.dataset.sessionId) return `s:${el.dataset.sessionId}`;
+  return null;
+}
+// 可导航行:顶级分组头(🖥 主机 / 🛡 堡垒机) + 真实分组头 + 真实会话行
+// (JMS/H3C 资产行不参与:它们是合成条目,键盘上没有稳定的定位键)
+function kbRows() {
+  return [...els.sessionTree.querySelectorAll(KB_ROW_SEL)].filter((el) => kbRowKeyOf(el));
+}
+function kbFocus(key) {
+  if (!key) return false;
+  const rows = kbRows();
+  const el = rows.find((x) => kbRowKeyOf(x) === key) || null;
+  if (!el) return false;
+  kbRowKey = key;
+  for (const r of rows) r.tabIndex = -1;
+  el.tabIndex = 0;
+  try { el.focus({ preventScroll: false }); } catch { /* ignore */ }
+  return true;
+}
+function kbSyncTabStop(restoreFocus) {
+  const rows = kbRows();
+  if (!rows.length) { kbRowKey = null; return; }
+  const cur = kbRowKey ? rows.find((x) => kbRowKeyOf(x) === kbRowKey) : null;
+  if (!cur) kbRowKey = null;
+  for (const r of rows) r.tabIndex = -1;
+  (cur || rows[0]).tabIndex = 0;
+  if (restoreFocus && cur) { try { cur.focus({ preventScroll: true }); } catch { /* ignore */ } }
+}
+function kbParentGroupId(el) {
+  if (el.dataset.groupId) {
+    const g = state.groups.find((x) => Number(x.id) === Number(el.dataset.groupId));
+    return g && g.parent_id != null ? Number(g.parent_id) : null;
+  }
+  const s = state.sessions.find((x) => Number(x.id) === Number(el.dataset.sessionId));
+  return s && s.group_id != null ? Number(s.group_id) : null;
+}
+function kbHandleKeydown(e) {
+  const el = e.target;
+  const key = kbRowKeyOf(el);
+  if (!key) return;
+  const rows = kbRows();
+  const idx = rows.indexOf(el);
+  if (idx < 0) return;
+  const topWhich = el.dataset.topGroup || null; // 'host' | 'bastion'
+  const isGroup = !topWhich && el.classList.contains('asset-group-head');
+  const gid = isGroup ? Number(el.dataset.groupId) : null;
+  const topCollapsedNow = () => (topWhich === 'host' ? state.collapsedTopHost : state.collapsedTopBastion);
+  const setTopCollapsed = (v) => {
+    if (topWhich === 'host') state.collapsedTopHost = v;
+    else state.collapsedTopBastion = v;
+    persistTopCollapsed();
+  };
+  const collapsed = topWhich ? topCollapsedNow() : (isGroup && state.collapsedGroups.has(gid));
+  const rerender = () => { renderSessionList(els.inputSessionSearch.value); kbFocus(key); };
+  const go = (target) => { if (target) { e.preventDefault(); kbFocus(kbRowKeyOf(target)); } };
+  switch (e.key) {
+    case 'ArrowDown': go(rows[idx + 1]); break;
+    case 'ArrowUp': go(rows[idx - 1]); break;
+    case 'Home': go(rows[0]); break;
+    case 'End': go(rows[rows.length - 1]); break;
+    case 'ArrowRight': {
+      if (!topWhich && !isGroup) break;
+      e.preventDefault();
+      if (collapsed) {
+        if (topWhich) setTopCollapsed(false); else { state.collapsedGroups.delete(gid); persistCollapsedGroups(); }
+        rerender();
+      } else {
+        // 已展开 → 进入第一个子项(子项深度必然大于本行;顶级分组没有 depth,直接取下一行)
+        const next = rows[idx + 1];
+        if (next && (topWhich || Number(next.dataset.depth) > Number(el.dataset.depth))) kbFocus(kbRowKeyOf(next));
+      }
+      break;
+    }
+    case 'ArrowLeft': {
+      if (!topWhich && !isGroup && !el.dataset.sessionId) break;
+      e.preventDefault();
+      if (topWhich) {
+        if (!collapsed) { setTopCollapsed(true); rerender(); }
+        break;
+      }
+      if (isGroup && !collapsed) { state.collapsedGroups.add(gid); persistCollapsedGroups(); rerender(); break; }
+      const pid = kbParentGroupId(el); // 折叠分组 / 会话行 → 跳到父分组头
+      if (pid != null) kbFocus(`g:${pid}`);
+      break;
+    }
+    case 'Enter':
+    case ' ': {
+      e.preventDefault();
+      if (topWhich) { setTopCollapsed(!collapsed); rerender(); break; }
+      if (isGroup) {
+        // 同鼠标点击分组头:选中该组为"全选"目标并展开
+        state.activeGroupId = Number(state.activeGroupId) === gid ? null : gid;
+        state.collapsedGroups.delete(gid);
+        persistCollapsedGroups();
+        scopeSelectionToTarget();
+        rerender();
+      } else {
+        const s = state.sessions.find((x) => Number(x.id) === Number(el.dataset.sessionId));
+        if (s) connectToServer(s); // 同双击
+      }
+      break;
+    }
+    case 'ContextMenu': // Shift+F10 / 菜单键 → 同右键
+    case 'F10': {
+      if (e.key === 'F10' && !e.shiftKey) break;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 24, clientY: r.bottom }));
+      break;
+    }
+    default: break;
+  }
+}
+els.sessionTree.addEventListener('keydown', kbHandleKeydown);
+els.sessionTree.addEventListener('focusin', (e) => { const k = kbRowKeyOf(e.target); if (k) kbRowKey = k; });
+
+// 折叠状态持久化:写入 settings(localStorage)→ 重启后保持上次的展开/折叠,
+// 不用每次都把分组全部收起来再逐个点开。
+function persistCollapsedGroups() {
+  state.settings.collapsedGroupIds = [...state.collapsedGroups].map(Number);
+  saveSettings();
+}
+// 顶级分组(🖥 主机 / 🛡 堡垒机)的展开状态也持久化
+function persistTopCollapsed() {
+  state.settings.collapsedTopHost = !!state.collapsedTopHost;
+  state.settings.collapsedTopBastion = !!state.collapsedTopBastion;
+  saveSettings();
 }
 
 // ---- 分组层级:树形/列表共用 ----
@@ -1763,21 +1921,46 @@ function groupSessionsByGroupId(sessions) {
   return by;
 }
 
+// 分组层级缩进:前 3 层每层 18px(层次清楚),更深每层收为 10px。
+// 不收紧的话 5 层缩进就要 90px,窄侧边栏里主机名直接被省略号吃掉。
+function groupIndent(depth) {
+  const d = Math.max(0, Number(depth) || 0);
+  return Math.min(d, 3) * 18 + Math.max(0, d - 3) * 10;
+}
+
 // 渲染整棵分组树。opts.flat=true → 列表模式(不折叠,层级用缩进表达;右键菜单/拖拽/选中与树形一致)
+// 搜索时剪枝:只渲染"自身或后代里有命中主机"的分组(保留命中路径)。
+// 否则搜一个 IP 会把全部分组头连同 (0) 一起渲染出来,十几行全是空文件夹。
 function renderGroupHierarchy(sessions, container, opts = {}) {
   const { ids, childrenOf } = buildGroupHierarchy();
   const byGroup = groupSessionsByGroupId(sessions);
   const flat = !!opts.flat;
+  const prune = !!opts.prune;
+  const matchMemo = new Map();
+  const subtreeHasMatch = (gid) => {
+    if (matchMemo.has(gid)) return matchMemo.get(gid);
+    let hit = (byGroup.get(gid) || []).length > 0;
+    if (!hit) {
+      for (const c of childrenOf.get(gid) || []) {
+        if (subtreeHasMatch(Number(c.id))) { hit = true; break; }
+      }
+    }
+    matchMemo.set(gid, hit);
+    return hit;
+  };
   const renderNode = (g, depth) => {
     const gid = Number(g.id);
-    const collapsed = !flat && state.collapsedGroups.has(gid);
+    if (prune && !subtreeHasMatch(gid)) return; // 无命中后代 → 整个子树跳过
+    // 搜索时忽略折叠状态:命中路径自动展开(否则命中的主机被藏在折叠的分组里,搜了等于没搜)
+    const collapsed = !flat && !prune && state.collapsedGroups.has(gid);
     container.appendChild(makeGroupHead(g, depth, collapsed, { flat }));
     if (collapsed) return;
     for (const child of childrenOf.get(gid) || []) renderNode(child, depth + 1);
     for (const s of byGroup.get(gid) || []) {
       const row = makeSessionRow(s);
       row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
-      row.style.paddingLeft = `${24 + depth * 18}px`;
+      row.style.paddingLeft = `${24 + groupIndent(depth)}px`;
+      row.dataset.depth = String(depth); // 键盘导航靠它判断父子关系
       container.appendChild(row);
     }
   };
@@ -1821,6 +2004,7 @@ function makeSessionRow(s) {
   const name = document.createElement('span');
   name.className = 'name';
   name.textContent = s.name;
+  item.dataset.sessionId = s.id; // 键盘导航/自动化测试定位用
   item.appendChild(check);
   item.appendChild(icon);
   item.appendChild(name);
@@ -1893,9 +2077,13 @@ function makeGroupHead(g, depth, collapsed, opts) {
   const gid = Number(g.id);
   const isProd = !!g.is_prod;
   const directCount = state.sessions.filter((s) => Number(s.group_id) === gid).length;
+  // 含子分组的合计:父分组下 0 台直属但子分组里有主机时,只显示 (0) 会让人以为里面是空的
+  const scopeIds = new Set(collectGroupAndDescendants(gid));
+  const totalCount = state.sessions.filter((s) => scopeIds.has(Number(s.group_id))).length;
   const head = document.createElement('div');
   head.className = 'asset-group-head' + (isProd ? ' prod' : '') + (flat ? ' list-head' : '');
-  head.style.paddingLeft = `${8 + depth * 18}px`;
+  head.style.paddingLeft = `${8 + groupIndent(depth)}px`;
+  head.dataset.depth = String(depth); // 键盘导航靠它判断父子关系
   const caret = document.createElement('span');
   caret.className = 'asset-group-caret';
   if (flat) {
@@ -1909,22 +2097,30 @@ function makeGroupHead(g, depth, collapsed, opts) {
   gname.textContent = g.name + (isProd ? ' 🔴' : '');
   const gcount = document.createElement('span');
   gcount.className = 'asset-group-count';
-  gcount.textContent = `(${directCount})`;
+  // 直属/合计不同时写成 (直属/合计),如「华东 (0/3)」
+  gcount.textContent = totalCount > directCount ? `(${directCount}/${totalCount})` : `(${directCount})`;
   head.appendChild(caret);
   head.appendChild(gname);
   head.appendChild(gcount);
+  // 悬停提示:完整路径(深层同名分组靠缩进区分不够)+ 主机数 + 操作提示
+  const path = groupPathLabel(g);
+  head.title = `${path}\n`
+    + (totalCount > directCount ? `直属 ${directCount} 台 · 含子分组共 ${totalCount} 台` : `${directCount} 台主机`)
+    + `\n${flat ? '列表模式(自动全展开)' : '点三角折叠/展开'} · 拖动主机到此处可移入 · 右键管理`;
   // 小三角:折叠/展开,同时把该组设为"全选"目标(用户点开分组=想操作这组)
   if (!flat) caret.addEventListener('click', (e) => {
     e.stopPropagation();
     if (collapsed) state.collapsedGroups.delete(gid);
     else state.collapsedGroups.add(gid);
     state.activeGroupId = gid;
+    persistCollapsedGroups();
     renderSessionList(els.inputSessionSearch.value);
   });
   // 点分组头(除小三角):选中该组作为"全选"目标(并展开它),再点一次取消选中
   head.addEventListener('click', () => {
     state.activeGroupId = (Number(state.activeGroupId) === gid) ? null : gid;
     state.collapsedGroups.delete(gid);
+    persistCollapsedGroups();
     scopeSelectionToTarget(); // 选中分组后:清除其他分组的勾选
     renderSessionList(els.inputSessionSearch.value);
   });
@@ -1941,11 +2137,46 @@ function makeGroupHead(g, depth, collapsed, opts) {
     ]);
   });
   head.dataset.groupId = gid;
-  head.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; head.classList.add('drag-over'); });
-  head.addEventListener('dragleave', () => head.classList.remove('drag-over'));
+  // ---- 分组拖拽:① 拖到分组头「中间」= 变成它的子分组;② 拖到上/下边缘 = 插到同级的它前/后 ----
+  head.draggable = true;
+  head.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('application/x-polaris-group', String(gid));
+    e.dataTransfer.effectAllowed = 'move';
+    head.classList.add('dragging');
+  });
+  head.addEventListener('dragend', () => {
+    head.classList.remove('dragging');
+    head.classList.remove('drag-over', 'drop-before', 'drop-after', 'drop-inside');
+  });
+  const isGroupDrag = (e) => {
+    try { return e.dataTransfer && [...e.dataTransfer.types].includes('application/x-polaris-group'); }
+    catch { return false; }
+  };
+  // 拖到分组头的哪个区:上 28% = 插到前面、下 28% = 插到后面、中间 = 成为子分组
+  const dropZoneOf = (e) => {
+    const r = head.getBoundingClientRect();
+    const y = e.clientY - r.top;
+    if (y < r.height * 0.28) return 'before';
+    if (y > r.height * 0.72) return 'after';
+    return 'inside';
+  };
+  head.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    head.classList.remove('drag-over', 'drop-before', 'drop-after', 'drop-inside');
+    if (isGroupDrag(e)) head.classList.add('drop-' + dropZoneOf(e));
+    else head.classList.add('drag-over'); // 会话拖进来 = 移进本分组
+  });
+  head.addEventListener('dragleave', () => head.classList.remove('drag-over', 'drop-before', 'drop-after', 'drop-inside'));
   head.addEventListener('drop', (e) => {
     e.preventDefault();
-    head.classList.remove('drag-over');
+    const zone = isGroupDrag(e) ? dropZoneOf(e) : null;
+    head.classList.remove('drag-over', 'drop-before', 'drop-after', 'drop-inside');
+    if (isGroupDrag(e)) {
+      const from = parseInt(e.dataTransfer.getData('application/x-polaris-group'), 10);
+      if (from && gid && from !== gid) moveGroupTo(from, gid, zone);
+      return;
+    }
     const sid = parseInt(e.dataTransfer.getData('text/plain'), 10);
     if (sid && gid) moveSessionToGroup(sid, gid);
   });
@@ -1953,7 +2184,7 @@ function makeGroupHead(g, depth, collapsed, opts) {
 }
 
 // 树形视图:支持分组嵌套(子分组缩进显示),父折叠时整棵子树隐藏
-function renderSessionsTree(sessions, container) {
+function renderSessionsTree(sessions, container, filter) {
   // 最近连接:只在未搜索时显示在列表最顶部,点击/双击可一键重连
   if (!(els.inputSessionSearch.value || '').trim()) {
     const recentSessions = state.recent
@@ -1989,13 +2220,14 @@ function renderSessionsTree(sessions, container) {
     }
   }
   // 与列表模式共用同一套 parent_id 分组层级,保证两种视图的目录结构一致
-  renderGroupHierarchy(sessions, container, { flat: false });
+  // 搜索时 prune:没有命中主机(含子分组)的分组头不渲染
+  renderGroupHierarchy(sessions, container, { flat: false, prune: !!String(filter || '').trim() });
 }
 
 // 列表视图:与树形模式同一套分组层级(子分组嵌套缩进;分组头可右键管理/拖拽),
 // 区别仅是列表模式不折叠、不显示折叠三角。
-function renderSessionsList(sessions, container) {
-  renderGroupHierarchy(sessions, container, { flat: true });
+function renderSessionsList(sessions, container, filter) {
+  renderGroupHierarchy(sessions, container, { flat: true, prune: !!String(filter || '').trim() });
 }
 
 // 网格视图:会话卡片
@@ -2920,7 +3152,21 @@ function locateInSessionList(sessionId) {
   const t = state.tabs.get(sessionId);
   if (!t || !t.session) return;
   activateTab(sessionId);
-  const el = document.querySelector(`[data-session-id="${t.session.id}"]`);
+  // 树形模式下会话可能藏在折叠的分组里 → 先展开它所在分组和全部祖先,否则根本闪不到
+  const s = state.sessions.find((x) => Number(x.id) === Number(t.session.id));
+  let needRender = false;
+  if (s && s.group_id != null) {
+    let gid = Number(s.group_id);
+    for (let guard = 0; gid && guard < 64; guard++) {
+      if (state.collapsedGroups.delete(gid)) needRender = true;
+      const g = state.groups.find((x) => Number(x.id) === gid);
+      gid = g && g.parent_id != null ? Number(g.parent_id) : null;
+    }
+    if (state.collapsedTopHost) { state.collapsedTopHost = false; needRender = true; }
+    if (needRender) { persistCollapsedGroups(); renderSessionList(els.inputSessionSearch.value); }
+  }
+  // 限定在会话树内查:分屏面板也带 data-session-id,不能闪错地方
+  const el = document.querySelector(`#session-tree [data-session-id="${t.session.id}"]`);
   if (el) {
     el.scrollIntoView({ block: 'center' });
     el.classList.add('flash');
@@ -3065,6 +3311,50 @@ async function moveSessionToGroup(sessionId, groupId) {
   if (!res.ok) { alert(`移动失败: ${res.error}`); return; }
   setStatus(`已将「${s.name}」移动到分组`, 'var(--green)');
   loadSessions();
+}
+
+// 拖拽移动分组(参考 Xshell 的文件夹拖拽):
+//   zone='inside' → 变成目标分组的子分组
+//   zone='before'/'after' → 插到目标分组的同级的它前/后
+async function moveGroupTo(fromId, targetId, zone) {
+  const from = state.groups.find((x) => Number(x.id) === Number(fromId));
+  const target = state.groups.find((x) => Number(x.id) === Number(targetId));
+  if (!from || !target) return;
+  const inside = zone === 'inside';
+  const parentId = inside ? Number(target.id) : (target.parent_id != null ? Number(target.parent_id) : null);
+  const beforeId = inside ? null : (zone === 'before' ? Number(target.id) : nextSiblingId(target));
+  if (inside && (Number(from.id) === Number(target.id) || isGroupDescendant(target.id, from.id))) {
+    setStatus('不能把分组移动到它自己或它的子分组里', 'var(--orange)');
+    return;
+  }
+  // 父级不变且顺序也不变 → 不用发请求
+  if (Number(from.parent_id == null ? -1 : from.parent_id) === Number(parentId == null ? -1 : parentId)
+    && Number(from.id) === Number(beforeId)) return;
+  const res = await window.api.moveGroup(Number(from.id), parentId, beforeId);
+  if (!res.ok) { setStatus(`移动失败: ${res.error}`, 'var(--red)'); return; }
+  setStatus(inside ? `已将「${from.name}」移到「${target.name}」里` : `已调整「${from.name}」的顺序`, 'var(--green)');
+  if (inside) state.collapsedGroups.delete(Number(target.id)); // 新子分组要看得见
+  await loadSessions();
+}
+
+// target 同一父级下的下一个分组 id(没有就 null = 排到最后)
+function nextSiblingId(target) {
+  const pid = target.parent_id != null ? Number(target.parent_id) : null;
+  const sibs = state.groups.filter((g) => (g.parent_id != null ? Number(g.parent_id) : null) === pid);
+  const i = sibs.findIndex((g) => Number(g.id) === Number(target.id));
+  const next = i >= 0 ? sibs[i + 1] : null;
+  return next ? Number(next.id) : null;
+}
+
+// rootId 是否在 ancestorId 的子树里(防拖拽成环)
+function isGroupDescendant(rootId, ancestorId) {
+  let cur = Number(rootId);
+  for (let guard = 0; cur && guard < 128; guard++) {
+    if (cur === Number(ancestorId)) return true;
+    const g = state.groups.find((x) => Number(x.id) === cur);
+    cur = g && g.parent_id != null ? Number(g.parent_id) : 0;
+  }
+  return false;
 }
 
 // 切换分组的"生产环境"标记(生产分组红色警示 + 危险命令确认)
