@@ -67,7 +67,8 @@ async function clickTest(c, host, port) {
     await sleep(1200);
 
     // A. 登录宏 textarea 深色样式(不是默认白框)
-    await ev(c, `openSessionModal(null)`);
+    // 登录宏现在收在「高级选项」里 → 先展开再量样式
+    await ev(c, `openSessionModal(null); document.getElementById('session-advanced').open = true`);
     await sleep(300);
     const ta = JSON.parse(await ev(c, `(function(){ const t=document.getElementById('f-on-connect'); const cs=getComputedStyle(t); return JSON.stringify({w:cs.width, bg:cs.backgroundColor, color:cs.color, mono:cs.fontFamily, h:t.offsetHeight}); })()`));
     if (ta.w !== '0px' && ta.bg !== 'rgba(0, 0, 0, 0)' && ta.color !== 'rgb(0, 0, 0)' && ta.h >= 30) {

@@ -66,8 +66,28 @@ body {
 .field-check input { width: auto; }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
-/* 会话弹窗"测试连接":按钮 + 内联结果,占一行 */
-.test-conn-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+/* 会话弹窗"测试连接":按钮 + 内联结果(放在分组行右侧,不再单独占一整行) */
+.test-conn-row { display: flex; align-items: center; gap: 8px; }
+.test-conn-field { flex: 0 0 auto; }
+.port-field { flex: 0 0 96px !important; }
+/* 新建/编辑会话:高级选项折叠区(协议/私钥/跳板机/编码/登录宏 默认收起) */
+.adv-field {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin: 2px 0 12px;
+}
+.adv-field > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  font-size: var(--fs-md); color: var(--text-dim);
+  display: flex; align-items: baseline; gap: 6px;
+}
+.adv-field > summary::-webkit-details-marker { display: none; }
+.adv-field > summary::before { content: '▸'; font-size: var(--fs-sm); }
+.adv-field[open] > summary::before { content: '▾'; }
+.adv-field[open] > summary { color: var(--text); margin-bottom: 10px; }
+.adv-field .adv-hint { font-size: var(--fs-sm); color: var(--text-dim); opacity: 0.8; }
+.adv-field .adv-inner { border-top: 1px solid var(--border); padding-top: 10px; }
+.adv-field .adv-inner .field:last-child { margin-bottom: 2px; }
+.key-pick { flex: 0 0 auto; white-space: nowrap; }
 .tcr { font-size: var(--fs-md); line-height: 1; }
 .tcr-run { color: var(--text-dim); }
 .tcr-ok { color: var(--green); }
@@ -747,7 +767,7 @@ input[type="checkbox"] {
   padding: 5px 7px; border-radius: 4px;
 }
 .modal-x:hover { background: var(--bg-hover); color: var(--text); }
-.modal-card.wide { width: 400px; }
+.modal-card.wide { width: 420px; }
 .modal-card::-webkit-scrollbar { width: 6px; }
 .modal-card::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }
 .modal-card::-webkit-scrollbar-track { background: transparent; }

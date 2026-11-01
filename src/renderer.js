@@ -220,6 +220,7 @@ const els = {
   sessionModalTitle: $('session-modal-title'),
   fProtocol: $('f-protocol'),
   fSshOnly: $('f-ssh-only'),
+  sessionAdvanced: $('session-advanced'),
   fPortLabel: $('f-port-label'),
   fUsernameLabel: $('f-username-label'),
   fPasswordLabel: $('f-password-label'),
@@ -3397,6 +3398,16 @@ function openSessionModal(session, presetGroupId) {
   els.fEncoding.value = session ? (session.encoding || 'utf8') : 'utf8';
   els.fOnConnect.value = session ? (session.on_connect || '') : '';
   applySessionProtocol(proto); // 按协议切换字段可见性/标签
+  // 高级选项默认收起(新建时只看到 名称/主机/端口/用户名/密码/分组);
+  // 编辑已有会话时,只要有任一高级设置就自动展开,避免"明明配了却看不到"
+  els.sessionAdvanced.open = !!(session && (
+    (session.protocol && session.protocol !== 'ssh')
+    || session.private_key
+    || session.passphrase
+    || (session.encoding && session.encoding !== 'utf8')
+    || session.on_connect
+    || (session.jump && session.jump.host)
+  ));
   fillGroupSelect();
   els.fGroup.value = session && session.group_id != null
     ? String(session.group_id)
