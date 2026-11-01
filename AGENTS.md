@@ -59,7 +59,7 @@ npm run dist -- --win
 6. **右键菜单防刷屏**：菜单打开后 250ms 内的 click 视为"右键残留"忽略（`ctxMenuOpenedAt`）；空菜单数组不注册 contextmenu
 7. **堡垒机资产轮询**：`pollBastionAssets` 只对 H3C 站点（URL 含 `/shterm`）运行，15s 低频兜底 + 用户操作时事件驱动；数据无变化不刷新（`stableJson` 键序无关比较）。**H3C 资产是主进程原生拉取**（`lib/h3c-api.js` + `h3c:*` IPC），不再注入 webview 钩子；登录成功自动最小化面板（`bastionLoginState`/`bastionLoginMode` 状态机），会话过期自动弹出重登
 8. **全量日志**：`lib/app-log.js` 把主进程 console + 渲染层 console + dlog + 异常写入 `数据目录/logs/app-YYYYMMDD.log`（按天轮转 10MB）；调试面板「⬇ 下载日志」导出完整日志
-9. **会话列表分组视图（列表/树形共用一套）**：`renderSessionList` → `renderSessionsTree/List` → 同一个 `renderGroupHierarchy`（按 `groups.parent_id` 建树）；列表模式只是 `flat=true`（不折叠、无折叠三角，层级用缩进表达），右键/拖拽/选中与树形完全一致。约定：
+9. **会话列表分组视图（列表/树形共用一套）**：`renderSessionList` → `renderSessionsTree/List` → 同一个 `renderGroupHierarchy`（按 `groups.parent_id` 建树）；列表模式只是 `flat=true`（仅保留 `list-head` 类名做样式/测试区分）；**两种视图都能折叠三角收起来**，共用同一套 `state.collapsedGroups` 持久化状态，右键/拖拽/选中/键盘完全一致。约定：
    - 缩进 `groupIndent(depth)`：前 3 层 18px/层，第 4 层起 10px/层（深层不把主机名挤没）；行上带 `data-depth`
    - 分组计数 `(直属/合计)`，父组下主机在子组里时显示 `(0/3)` 而非误导性的 `(0)`；分组头 `title` 显示完整路径
    - 搜索时 `prune`：没有命中后代的分组整棵不渲染，且忽略折叠自动展开命中路径（清空搜索后折叠态原样恢复）
@@ -82,7 +82,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.50**（2026-11-01 发版）：会话列表分组体验对齐成熟产品（Xshell / FinalShell）——父分组计数改 `(直属/合计)`（`华东 (0/3)` 不再误报空）、分组头悬停显示完整路径、**搜索时只保留命中路径并自动展开折叠分组**、折叠/展开状态持久化（`collapsedGroupIds` + 顶部分组）、**分组拖拽排序与拖成子分组**（新表字段 `groups.sort_order`，老库自动补列且顺序不变，数据层防环）、**侧边栏全键盘导航**（roving tabindex，↑↓←→ / Enter / Shift+F10）、深层缩进步长收窄（3 层后 18→10px）、「定位到会话列表」自动展开折叠分组并支持树形/列表模式闪烁。回归：`verify-groups-mature.js`（84 条）+ `verify-groups-order.js`（19 条）。
+**当前版本 v1.0.51**（2026-11-01）：**列表模式也能折叠了**——之前 `flat=true` 关掉了折叠三角、只能全展开一个长列表；现在两种视图共用同一套折叠状态（`state.collapsedGroups` + 持久化），点三角即收/展，切视图不丢，搜索时仍自动展开命中路径。
+
+上一版本 v1.0.50（2026-11-01 发版）：会话列表分组体验对齐成熟产品（Xshell / FinalShell）——父分组计数改 `(直属/合计)`（`华东 (0/3)` 不再误报空）、分组头悬停显示完整路径、**搜索时只保留命中路径并自动展开折叠分组**、折叠/展开状态持久化（`collapsedGroupIds` + 顶部分组）、**分组拖拽排序与拖成子分组**（新表字段 `groups.sort_order`，老库自动补列且顺序不变，数据层防环）、**侧边栏全键盘导航**（roving tabindex，↑↓←→ / Enter / Shift+F10）、深层缩进步长收窄（3 层后 18→10px）、「定位到会话列表」自动展开折叠分组并支持树形/列表模式闪烁。回归：`verify-groups-mature.js`（84 条）+ `verify-groups-order.js`（19 条）。
 
 之前版本 v1.0.49（2026-10-30 发版）：修复导入加密备份时密码框被背后的导入弹窗抢按键（多弹窗叠加时取最上层弹窗）；导出加密备份密码框焦点加固（去掉导出前原生 confirm、主进程 `window:focus`、补聚焦重试 2s、弹窗期间暂停 webview 抢焦点），密码长度口径统一为 8 位；Windows 启动优化（NSIS 安装版 + portable 启动图 + V8 编译缓存 + ssh2/xlsx/tar 惰性加载 + 日志批量写盘 + locale 精简）；列表/树形视图统一按 `parent_id` 渲染分组层级（子分组嵌套，不再平铺）；分组名改为**同一父级下唯一**（旧库自动迁移，不同父级可同名）；拖拽移动会话不再丢私钥/跳板机等字段。历史问题清单见 `docs/issues-2026-09-11.md`，Windows 启动排查见 `docs/windows-startup-slow.md`。
 

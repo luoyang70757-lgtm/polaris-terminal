@@ -378,7 +378,7 @@ input[type="checkbox"] {
 .asset-group-caret { font-size: 9px; width: 10px; flex-shrink: 0; }
 .asset-group-name { font-weight: 600; letter-spacing: 0.3px; }
 .asset-group-count { color: var(--text-dim); }
-.list-head { cursor: pointer; } /* 列表视图分组节标题:不折叠,但可点选/右键管理/拖拽投放 */
+.list-head { cursor: pointer; } /* 列表视图分组头:同样可折叠/点选/右键管理/拖拽投放 */
 
 .asset-item {
   display: flex;

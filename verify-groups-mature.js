@@ -320,18 +320,50 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('展开还原失败', JSON.stringify(after.map((x) => x.name + (x.caret || ''))));
 
     // ---------------------------------------------------------------
-    // ④ 列表模式
+    // ④ 列表模式(现在也能折叠)
     // ---------------------------------------------------------------
-    head('④ 列表:不折叠但仍表达层级');
+    head('④ 列表:可折叠,且与树形共享折叠状态');
     await ev(c, `state.collapsedGroups.clear(); state.collapsedGroups.add(Number(${G.prod})); state.collapsedGroups.add(Number(${G.deep[0]}))`);
     const listCollapsed = await snap('list');
-    if (has(listCollapsed.items, '华东') && has(listCollapsed.items, '数据库') && hasHost(listCollapsed.items, 'east-db-01')
-      && has(listCollapsed.items, '深链 L5') && hasHost(listCollapsed.items, 'deep-leaf-01')) {
-      ok('列表模式不受折叠集合影响,始终全量展开(搜索/浏览场景更符合预期)');
-    } else bad('列表模式仍被折叠集合影响', JSON.stringify(listCollapsed.items.map((x) => x.name)));
+    if (!hasHost(listCollapsed.items, 'east-db-01') && !hasGid(listCollapsed.items, G.db)
+      && !hasGid(listCollapsed.items, G.deep[4]) && !hasHost(listCollapsed.items, 'deep-leaf-01')) {
+      ok('列表模式同样遵守折叠状态:「生产环境 / 深链 L1」的子项全部隐藏');
+    } else bad('列表模式没折叠', JSON.stringify(listCollapsed.items.map((x) => x.name)));
     const lc = listCollapsed.items.filter((x) => x.kind === 'group');
-    if (lc.every((x) => x.listHead && x.caretHidden)) ok('列表模式分组头无折叠三角(占位隐藏,不误点)');
-    else bad('列表模式分组头折叠三角未隐藏', JSON.stringify(lc.filter((x) => !x.caretHidden).map((x) => x.name)));
+    if (lc.every((x) => x.listHead && !x.caretHidden && /[▶▼]/.test(x.caret))) ok('列表模式分组头有可点击的折叠三角(▶/▼)');
+    else bad('列表模式分组头没三角', JSON.stringify(lc.filter((x) => x.caretHidden || !x.caret).map((x) => x.name)));
+    if ((lc.find((x) => x.name === '生产环境') || {}).caret === '▶') ok('折叠的组在列表模式显示 ▶');
+    else bad('列表模式折叠三角状态不对', JSON.stringify(lc.map((x) => x.name + x.caret)));
+    // 两种视图的折叠状态一致:切回树形仍是同一批组折叠
+    const shared = await snap('tree');
+    const foldedBoth = ['生产环境', '深链 L1'].every((n) => (shared.items.find((x) => x.kind === 'group' && x.name === n) || {}).caret === '▶');
+    if (foldedBoth && !hasHost(shared.items, 'east-db-01')) ok('列表/树形共用同一套折叠状态(切视图不丢)');
+    else bad('两视图折叠状态不同步', JSON.stringify(shared.items.filter((x) => x.kind === 'group').map((x) => x.name + x.caret)));
+    // 列表模式点三角真能折叠/展开
+    const listToggle = await ev(c, `(async () => {
+      state.settings.sessionView = 'list'; state.collapsedTopHost = false; state.collapsedGroups.clear(); renderSessionList('');
+      var headOf = function (name) {
+        return [].filter.call(document.querySelectorAll('.top-group-container .asset-group-head.list-head'),
+          function (el) { return (el.querySelector('.asset-group-name') || {}).textContent === name; })[0];
+      };
+      var h = headOf('生产环境');
+      if (!h) return { err: 'no head' };
+      var before = !!document.querySelector('#session-tree [data-session-id="' + (state.sessions.find(function (s) { return s.name === 'prod-gw-01'; }) || {}).id + '"]');
+      h.querySelector('.asset-group-caret').click();           // 折叠
+      var afterCollapse = !!document.querySelector('#session-tree [data-session-id="' + (state.sessions.find(function (s) { return s.name === 'prod-gw-01'; }) || {}).id + '"]');
+      var caret1 = (headOf('生产环境').querySelector('.asset-group-caret') || {}).textContent;
+      headOf('生产环境').querySelector('.asset-group-caret').click(); // 展开
+      var afterExpand = !!document.querySelector('#session-tree [data-session-id="' + (state.sessions.find(function (s) { return s.name === 'prod-gw-01'; }) || {}).id + '"]');
+      var caret2 = (headOf('生产环境').querySelector('.asset-group-caret') || {}).textContent;
+      return { before: before, afterCollapse: afterCollapse, caret1: caret1, afterExpand: afterExpand, caret2: caret2,
+        persisted: (state.settings.collapsedGroupIds || []).map(Number) };
+    })()`);
+    if (listToggle.before && !listToggle.afterCollapse && listToggle.caret1 === '▶') ok('列表模式下点三角 → 子项收起(▶)');
+    else bad('列表模式点三角不能折叠', JSON.stringify(listToggle));
+    if (listToggle.afterExpand && listToggle.caret2 === '▼') ok('列表模式下再点 → 展开还原(▼)');
+    else bad('列表模式不能展开', JSON.stringify(listToggle));
+    await ev(c, `state.collapsedGroups.clear()`);
+    const lc2 = (await snap('list')).items;
     // 列表模式分组头右键菜单(真实派发 contextmenu,检查 6 个管理项)
     const listMenu = await ev(c, `(function(){
       state.settings.sessionView = 'list'; state.collapsedTopHost = false; state.collapsedGroups.clear(); renderSessionList('');
@@ -369,7 +401,7 @@ const head = (t) => console.log(`\n— ${t} —`);
     })()`);
     if (listDrop.moved && listDrop.gid === listDrop.want) ok(`列表模式分组头可直接接收拖拽(drag-over 高亮=${listDrop.over})`);
     else bad('列表模式拖拽投放失败', JSON.stringify(listDrop));
-    const listDupDepth = listCollapsed.items.filter((x) => x.kind === 'group' && /^深链/.test(x.name)).map((x) => x.pad);
+    const listDupDepth = lc2.filter((x) => x.kind === 'group' && /^深链/.test(x.name)).map((x) => x.pad);
     if (new Set(listDupDepth).size === 5) ok(`列表模式 5 层分组缩进各不相同(${listDupDepth.join(' / ')})`);
     else bad('列表模式缩进无法区分层级', JSON.stringify(listDupDepth));
 

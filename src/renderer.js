@@ -1928,7 +1928,7 @@ function groupIndent(depth) {
   return Math.min(d, 3) * 18 + Math.max(0, d - 3) * 10;
 }
 
-// 渲染整棵分组树。opts.flat=true → 列表模式(不折叠,层级用缩进表达;右键菜单/拖拽/选中与树形一致)
+// 渲染整棵分组树。opts.flat=true → 列表模式(与树形共用折叠状态与右键/拖拽/选中,仅保留 list-head 类名做样式区分)
 // 搜索时剪枝:只渲染"自身或后代里有命中主机"的分组(保留命中路径)。
 // 否则搜一个 IP 会把全部分组头连同 (0) 一起渲染出来,十几行全是空文件夹。
 function renderGroupHierarchy(sessions, container, opts = {}) {
@@ -1952,7 +1952,8 @@ function renderGroupHierarchy(sessions, container, opts = {}) {
     const gid = Number(g.id);
     if (prune && !subtreeHasMatch(gid)) return; // 无命中后代 → 整个子树跳过
     // 搜索时忽略折叠状态:命中路径自动展开(否则命中的主机被藏在折叠的分组里,搜了等于没搜)
-    const collapsed = !flat && !prune && state.collapsedGroups.has(gid);
+    // 列表/树形共用同一套折叠状态:两种视图切换时展开/折叠一致
+    const collapsed = !prune && state.collapsedGroups.has(gid);
     container.appendChild(makeGroupHead(g, depth, collapsed, { flat }));
     if (collapsed) return;
     for (const child of childrenOf.get(gid) || []) renderNode(child, depth + 1);
@@ -2086,12 +2087,8 @@ function makeGroupHead(g, depth, collapsed, opts) {
   head.dataset.depth = String(depth); // 键盘导航靠它判断父子关系
   const caret = document.createElement('span');
   caret.className = 'asset-group-caret';
-  if (flat) {
-    caret.textContent = '';
-    caret.style.visibility = 'hidden'; // 占位对齐树形模式,但不提供折叠
-  } else {
-    caret.textContent = collapsed ? '▶' : '▼';
-  }
+  // 两种视图都能折叠(列表模式以前没有三角,只能全展开一个巨大列表)
+  caret.textContent = collapsed ? '▶' : '▼';
   const gname = document.createElement('span');
   gname.className = 'asset-group-name';
   gname.textContent = g.name + (isProd ? ' 🔴' : '');
@@ -2106,9 +2103,9 @@ function makeGroupHead(g, depth, collapsed, opts) {
   const path = groupPathLabel(g);
   head.title = `${path}\n`
     + (totalCount > directCount ? `直属 ${directCount} 台 · 含子分组共 ${totalCount} 台` : `${directCount} 台主机`)
-    + `\n${flat ? '列表模式(自动全展开)' : '点三角折叠/展开'} · 拖动主机到此处可移入 · 右键管理`;
+    + `\n点三角折叠/展开 · 拖动主机到此处可移入 · 右键管理`;
   // 小三角:折叠/展开,同时把该组设为"全选"目标(用户点开分组=想操作这组)
-  if (!flat) caret.addEventListener('click', (e) => {
+  caret.addEventListener('click', (e) => {
     e.stopPropagation();
     if (collapsed) state.collapsedGroups.delete(gid);
     else state.collapsedGroups.add(gid);
@@ -2224,8 +2221,8 @@ function renderSessionsTree(sessions, container, filter) {
   renderGroupHierarchy(sessions, container, { flat: false, prune: !!String(filter || '').trim() });
 }
 
-// 列表视图:与树形模式同一套分组层级(子分组嵌套缩进;分组头可右键管理/拖拽),
-// 区别仅是列表模式不折叠、不显示折叠三角。
+// 列表视图:与树形模式完全同一套分组层级 + 折叠状态(都能点三角收起来);
+// 保留 list-head 类名,便于样式/自动化测试区分视图。
 function renderSessionsList(sessions, container, filter) {
   renderGroupHierarchy(sessions, container, { flat: true, prune: !!String(filter || '').trim() });
 }
