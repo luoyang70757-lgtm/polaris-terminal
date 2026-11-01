@@ -1,9 +1,10 @@
 {
   "name": "polaris-terminal",
-  "version": "1.0.49",
+  "version": "1.0.50",
   "description": "Polaris(北极星)· 科幻风 SSH/SFTP 终端工具",
   "main": "main.js",
   "scripts": {
+    "postinstall": "node scripts/ensure-electron.js",
     "start": "electron .",
     "mock": "node mock/mock-server.js",
     "dev": "electron . --dev",

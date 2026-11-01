@@ -14,9 +14,10 @@ mock/sftp-root/
 .DS_Store
 
 # ---- 内部测试套件(含真实环境凭据,不入库)----
+# 注意:test-helper.js 只是跨平台端口/进程工具(无凭据),verify-*.js 全部依赖它 → 入库
 /test-*.js
+!/test-helper.js
 /test-all.js
-/test-helper.js
 
 # ---- 一次性调试脚本 / 镜像 ----
 /repro-*.js
@@ -60,3 +61,4 @@ polaris-logs-*.zip
 
 # ---- 虚拟机/资产清单导出(含内网 IP/人员信息,不入库)----
 /虚拟机_*.csv
+/verify-shots/

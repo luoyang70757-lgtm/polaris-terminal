@@ -10,7 +10,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 - **项目**：Electron 43 + xterm.js + ssh2 + SQLite 的 SSH/SFTP 终端（参考 Chaterm 功能开发）
 - **架构**：主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~9300 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 - **主进程已拆独立模块**（依赖惰性注入，命脉区块 SFTP/SSH/堡垒机仍在 main.js）：`lib/connect-opts.js`（指纹校验链 makeHostVerifier/resolvePrivateKey/withHostVerify）、`lib/session-groups.js`（分组/命令历史归档/快速命令/导入模板 IPC）、`lib/session-ipc.js`（会话管理/导入导出/系统探测 IPC）
-- **运行 dev**：`POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu`（自动拉起 mock 服务器）
+- **运行 dev**：`POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-sandbox --disable-gpu`（自动拉起 mock 服务器）；**Windows 用 `npm run dev`**（`.bin/electron` 是 Unix 脚本无法直接执行）。环境搭建详见 `docs/dev-setup.md`
 - **编译正式版**：`npm run dist` → `release/mac/Polaris.app`（未签名）。⚠️ **macOS 双击启动会被系统限制局域网访问（未公证 → 内网 EHOSTUNREACH）**，日常请用桌面「启动Polaris.command」或命令行直接跑二进制
 - **依赖注意**：`xlsx` 用 **SheetJS 官方 CDN tarball**（`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`，非 npm registry）——`npm ci`/CI 需能访问 cdn.sheetjs.com；npm 上的 `xlsx` 止于 0.18.5 且有 2 个 high 无法修复，勿改回 registry 版本。评估见 `docs/deps-xlsx-evaluation.md`
 - **数据目录**：`POLARIS_LOCK_DIR` 指定（默认 `~/.jms-terminal`）；开发用 `.polaris-data/`（**已 gitignore，勿提交**）
