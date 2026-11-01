@@ -63,7 +63,7 @@ npm run dist -- --win
    - 缩进 `groupIndent(depth)`：前 3 层 18px/层，第 4 层起 10px/层（深层不把主机名挤没）；行上带 `data-depth`
    - 分组计数 `(直属/合计)`，父组下主机在子组里时显示 `(0/3)` 而非误导性的 `(0)`；分组头 `title` 显示完整路径
    - 搜索时 `prune`：没有命中后代的分组整棵不渲染，且忽略折叠自动展开命中路径（清空搜索后折叠态原样恢复）
-   - 折叠状态持久化：`settings.collapsedGroupIds` / `collapsedTopHost` / `collapsedTopBastion`（`null` = 首次运行全部折叠）
+   - 折叠状态只在本次运行内有效：**每次启动一律全部折叠**（列表/树形都只显示分组头，顶级「主机/堡垒机」也收起），不写 localStorage
    - 分组拖拽排序：`groups.sort_order`（同级间 10，0 = 未排过 → 回退按名称，保证升级后顺序不变）。拖分组头：**中间 = 变成子分组**，上/下边缘 = 插到同级前/后；IPC `groups:move(id, parentId, beforeId)`，数据层做环检测 + 「默认分组」不允许挂到别人下面
    - 键盘导航：roving tabindex（全树一个 Tab 停靠点），↑↓ 移动、← 折叠/回父级、→ 展开/进子项、Enter 连接或折叠、Shift+F10 右键；行键为 `t:<host|bastion>` / `g:<gid>` / `s:<sid>`
    - 回归用例：`verify-groups-mature.js`（84 条：结构一致性、折叠、搜索剪枝、计数、键盘、持久化、拖拽排序、规模压测）+ `verify-groups-order.js`（19 条纯 Node：老库补列迁移、moveGroup 语义、防环）
@@ -82,7 +82,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.51**（2026-11-01）：**列表模式也能折叠了**——之前 `flat=true` 关掉了折叠三角、只能全展开一个长列表；现在两种视图共用同一套折叠状态（`state.collapsedGroups` + 持久化），点三角即收/展，切视图不丢，搜索时仍自动展开命中路径。
+**当前版本 v1.0.52**（2026-11-01）：**打开 App 默认全部折叠**——列表/树形两种视图进来都只显示分组头（顶级「主机/堡垒机」也收起），展开状态只在本次运行内保留（产品要求不跨重启记住）；去掉 `settings.collapsedGroupIds/collapsedTopHost/collapsedTopBastion` 的持久化。
+
+上一版本 v1.0.51：**列表模式也能折叠了**——之前 `flat=true` 关掉了折叠三角、只能全展开一个长列表；两种视图共用同一套折叠状态（`state.collapsedGroups`），点三角即收/展，切视图不丢，搜索时仍自动展开命中路径。
 
 上一版本 v1.0.50（2026-11-01 发版）：会话列表分组体验对齐成熟产品（Xshell / FinalShell）——父分组计数改 `(直属/合计)`（`华东 (0/3)` 不再误报空）、分组头悬停显示完整路径、**搜索时只保留命中路径并自动展开折叠分组**、折叠/展开状态持久化（`collapsedGroupIds` + 顶部分组）、**分组拖拽排序与拖成子分组**（新表字段 `groups.sort_order`，老库自动补列且顺序不变，数据层防环）、**侧边栏全键盘导航**（roving tabindex，↑↓←→ / Enter / Shift+F10）、深层缩进步长收窄（3 层后 18→10px）、「定位到会话列表」自动展开折叠分组并支持树形/列表模式闪烁。回归：`verify-groups-mature.js`（84 条）+ `verify-groups-order.js`（19 条）。
 

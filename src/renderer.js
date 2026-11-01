@@ -649,9 +649,7 @@ const state = {
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
     sessionView: 'tree',        // 会话列表视图: 'tree'树形 | 'list'列表 | 'grid'网格
-    collapsedGroupIds: null,    // 上次折叠的分组 id 列表(null=从未保存过 → 首次启动全部折叠;之后记住用户展开/折叠)
-    collapsedTopHost: null,     // 上次「🖥 主机」顶级分组是否折叠(null=首次启动用默认收起)
-    collapsedTopBastion: null,  // 同上(「🛡 堡垒机」)
+    collapsedGroupIds: null,    // (已废弃)以前用来记住上次展开的分组;现在每次启动一律全部折叠
     debugPanelPos: null,        // 调试日志面板位置 {x, y}(null=默认右下角)
     bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
@@ -1482,20 +1480,13 @@ async function loadSessions() {
   if (res.ok) {
     state.sessions = res.sessions;
     state.groups = gres.ok ? gres.groups : [];
-    // 恢复折叠状态:优先用上次保存的(localStorage),从未保存过才用"首次启动全部折叠"的老默认。
-    // 之前只存内存 → 每次重启所有分组又收起来,深层分组的用户要重新一层层点开。
+    // 默认全部折叠:每次打开 App,「🖥 主机 / 🛡 堡垒机」及其下所有分组都收起,
+    // 只显示分组头(列表 / 树形两种视图一样)。只在本次运行内保留展开状态。
     if (!groupsCollapsedOnBoot) {
-      const saved = Array.isArray(state.settings.collapsedGroupIds) ? state.settings.collapsedGroupIds : null;
       state.collapsedGroups.clear();
-      if (saved) {
-        const live = new Set(state.groups.map((g) => Number(g.id)));
-        for (const id of saved) if (live.has(Number(id))) state.collapsedGroups.add(Number(id));
-      } else {
-        for (const g of state.groups) state.collapsedGroups.add(g.id);
-      }
-      // 顶级分组(主机/堡垒机)的展开状态也记住
-      if (typeof state.settings.collapsedTopHost === 'boolean') state.collapsedTopHost = state.settings.collapsedTopHost;
-      if (typeof state.settings.collapsedTopBastion === 'boolean') state.collapsedTopBastion = state.settings.collapsedTopBastion;
+      for (const g of state.groups) state.collapsedGroups.add(Number(g.id));
+      state.collapsedTopHost = true;
+      state.collapsedTopBastion = true;
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
@@ -1691,7 +1682,6 @@ function renderSessionList(filter) {
     head.addEventListener('click', () => {
       if (which === 'host') state.collapsedTopHost = !state.collapsedTopHost;
       else state.collapsedTopBastion = !state.collapsedTopBastion;
-      persistTopCollapsed();
       renderSessionList(els.inputSessionSearch.value);
     });
     // 顶级分组右键:主机分组 → 创建主机会话;堡垒机分组 → 创建堡垒机连接
@@ -1818,7 +1808,6 @@ function kbHandleKeydown(e) {
   const setTopCollapsed = (v) => {
     if (topWhich === 'host') state.collapsedTopHost = v;
     else state.collapsedTopBastion = v;
-    persistTopCollapsed();
   };
   const collapsed = topWhich ? topCollapsedNow() : (isGroup && state.collapsedGroups.has(gid));
   const rerender = () => { renderSessionList(els.inputSessionSearch.value); kbFocus(key); };
@@ -1832,7 +1821,7 @@ function kbHandleKeydown(e) {
       if (!topWhich && !isGroup) break;
       e.preventDefault();
       if (collapsed) {
-        if (topWhich) setTopCollapsed(false); else { state.collapsedGroups.delete(gid); persistCollapsedGroups(); }
+        if (topWhich) setTopCollapsed(false); else state.collapsedGroups.delete(gid);
         rerender();
       } else {
         // 已展开 → 进入第一个子项(子项深度必然大于本行;顶级分组没有 depth,直接取下一行)
@@ -1848,7 +1837,7 @@ function kbHandleKeydown(e) {
         if (!collapsed) { setTopCollapsed(true); rerender(); }
         break;
       }
-      if (isGroup && !collapsed) { state.collapsedGroups.add(gid); persistCollapsedGroups(); rerender(); break; }
+      if (isGroup && !collapsed) { state.collapsedGroups.add(gid); rerender(); break; }
       const pid = kbParentGroupId(el); // 折叠分组 / 会话行 → 跳到父分组头
       if (pid != null) kbFocus(`g:${pid}`);
       break;
@@ -1861,7 +1850,6 @@ function kbHandleKeydown(e) {
         // 同鼠标点击分组头:选中该组为"全选"目标并展开
         state.activeGroupId = Number(state.activeGroupId) === gid ? null : gid;
         state.collapsedGroups.delete(gid);
-        persistCollapsedGroups();
         scopeSelectionToTarget();
         rerender();
       } else {
@@ -1884,18 +1872,8 @@ function kbHandleKeydown(e) {
 els.sessionTree.addEventListener('keydown', kbHandleKeydown);
 els.sessionTree.addEventListener('focusin', (e) => { const k = kbRowKeyOf(e.target); if (k) kbRowKey = k; });
 
-// 折叠状态持久化:写入 settings(localStorage)→ 重启后保持上次的展开/折叠,
-// 不用每次都把分组全部收起来再逐个点开。
-function persistCollapsedGroups() {
-  state.settings.collapsedGroupIds = [...state.collapsedGroups].map(Number);
-  saveSettings();
-}
-// 顶级分组(🖥 主机 / 🛡 堡垒机)的展开状态也持久化
-function persistTopCollapsed() {
-  state.settings.collapsedTopHost = !!state.collapsedTopHost;
-  state.settings.collapsedTopBastion = !!state.collapsedTopBastion;
-  saveSettings();
-}
+// 折叠状态只在本次运行内有效:启动时一律全部折叠(见 loadSessions),不再写 localStorage。
+// (曾经做过"记住上次展开状态",但产品要求打开 App 默认全收起来 → 已移除)
 
 // ---- 分组层级:树形/列表共用 ----
 // 旧版列表视图按 group_name 平铺,子分组会被拆成互不相干的顶级节标题,
@@ -2110,14 +2088,12 @@ function makeGroupHead(g, depth, collapsed, opts) {
     if (collapsed) state.collapsedGroups.delete(gid);
     else state.collapsedGroups.add(gid);
     state.activeGroupId = gid;
-    persistCollapsedGroups();
     renderSessionList(els.inputSessionSearch.value);
   });
   // 点分组头(除小三角):选中该组作为"全选"目标(并展开它),再点一次取消选中
   head.addEventListener('click', () => {
     state.activeGroupId = (Number(state.activeGroupId) === gid) ? null : gid;
     state.collapsedGroups.delete(gid);
-    persistCollapsedGroups();
     scopeSelectionToTarget(); // 选中分组后:清除其他分组的勾选
     renderSessionList(els.inputSessionSearch.value);
   });
@@ -3160,7 +3136,7 @@ function locateInSessionList(sessionId) {
       gid = g && g.parent_id != null ? Number(g.parent_id) : null;
     }
     if (state.collapsedTopHost) { state.collapsedTopHost = false; needRender = true; }
-    if (needRender) { persistCollapsedGroups(); renderSessionList(els.inputSessionSearch.value); }
+    if (needRender) renderSessionList(els.inputSessionSearch.value);
   }
   // 限定在会话树内查:分屏面板也带 data-session-id,不能闪错地方
   const el = document.querySelector(`#session-tree [data-session-id="${t.session.id}"]`);

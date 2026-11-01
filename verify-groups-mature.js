@@ -538,7 +538,7 @@ const head = (t) => console.log(`\n— ${t} —`);
         draggable: head ? !!head.draggable : null,
         title: head ? head.title : null,
         sortedByName: names.join('\u0001') === names.slice().sort().join('\u0001'),
-        saved: Object.keys(state.settings || {}).filter(function (k) { return /group/i.test(k) && /collapse/i.test(k); }),
+        saved: Object.keys(state.settings || {}).filter(function (k) { return /group/i.test(k) && /collapse/i.test(k) && state.settings[k] != null; }),
       };
     })()`);
     if (gap.tab) ok('分组头已接入 roving tabindex(可以用键盘聚焦/导航)');
@@ -549,45 +549,60 @@ const head = (t) => console.log(`\n— ${t} —`);
     else note('分组头无悬停提示(无 title):深层同名分组(如两个「数据库」)只能靠缩进区分');
     if (gap.title && gap.title.includes('生产环境 / 华东') && gap.title.includes('直属 0 台')) ok('悬停提示含完整路径与直属/合计主机数');
     else bad('悬停提示未含路径或计数', JSON.stringify(gap.title));
-    if (gap.saved.length) ok(`折叠状态已持久化(${gap.saved.join(',')})`);
-    else note('折叠/展开状态只存内存(state.collapsedGroups,不入 settings):重启后所有分组固定为折叠');
+    if (!gap.saved.length) ok('折叠状态只在内存(按产品要求:每次启动都回到"全部折叠")');
+    else bad('折叠状态仍写进 settings,启动会恢复上次展开', JSON.stringify(gap.saved));
     if (gap.sortedByName) ok('分组顺序确定且可预测(按名称升序)');
 
     // ---------------------------------------------------------------
-    // ⑨ 折叠状态持久化(模拟重启)
+    // ⑨ 启动默认全部折叠(两种视图一致)
     // ---------------------------------------------------------------
-    head('⑨ 折叠状态持久化');
-    const pers = await ev(c, `(async () => {
+    head('⑨ 打开 App 默认全部折叠');
+    const boot = await ev(c, `(async () => {
+      // 先制造"上次运行时都展开了"的状态(不重启,只改内存)
       state.settings.sessionView = 'tree';
       state.settings.collapsedGroupIds = null;
       state.collapsedGroups.clear();
-      state.collapsedGroups.add(${G.east});
-      persistCollapsedGroups();
-      const saved = state.settings.collapsedGroupIds.map(Number);
-      const raw = JSON.parse(localStorage.getItem('jms-settings') || '{}');
-      // 模拟重启:内存态清零 → 重新 loadSessions(会从 settings 恢复)
+      state.collapsedTopHost = false; state.collapsedTopBastion = false;
+      renderSessionList('');
+      const expandedRows = document.querySelectorAll('#session-tree .asset-item[data-session-id]').length;
+      // 模拟重启:内存态清零 + 允许重新初始化 → loadSessions 应该把所有分组收起
       groupsCollapsedOnBoot = false;
       state.collapsedGroups.clear();
       await loadSessions();
-      state.collapsedTopHost = false; renderSessionList('');
-      const h = [].filter.call(document.querySelectorAll('.top-group-container .asset-group-head'),
-        function (el) { return (el.querySelector('.asset-group-name') || {}).textContent === '华东'; })[0];
-      const restored = [...state.collapsedGroups].map(Number);
-      // 再把"从未保存过"的场景走一遍:应回到"全部折叠"
-      state.settings.collapsedGroupIds = null;
-      state.collapsedGroups.clear();
-      groupsCollapsedOnBoot = false;
-      await loadSessions();
-      const firstRun = state.collapsedGroups.size;
-      return { saved, rawSaved: raw.collapsedGroupIds, restored, caret: h ? h.querySelector('.asset-group-caret').textContent : null,
-        firstRun, groupCount: state.groups.length };
+      const collapsed = [...state.collapsedGroups].map(Number);
+      const allFolded = state.groups.every((g) => collapsed.includes(Number(g.id)));
+      const treeRows = document.querySelectorAll('#session-tree .asset-item[data-session-id]').length;
+      const treeHeads = document.querySelectorAll('#session-tree .asset-group-head .asset-group-name').length;
+      const treeCarets = [].map.call(document.querySelectorAll('#session-tree .top-group-container .asset-group-caret'), (x) => x.textContent).join('');
+      const topHost = state.collapsedTopHost, topBastion = state.collapsedTopBastion;
+      // 列表模式同样默认折叠
+      state.settings.sessionView = 'list'; renderSessionList('');
+      const listRows = document.querySelectorAll('#session-tree .asset-item[data-session-id]').length;
+      const listCarets = [].map.call(document.querySelectorAll('#session-tree .top-group-container .asset-group-caret'), (x) => x.textContent).join('');
+      // 手动展开一个分组后不应写盘(下次启动仍全折叠)
+      var probe = state.groups.find((g) => g.name === '测试环境');
+      state.collapsedGroups.delete(Number(probe.id));
+      renderSessionList('');
+      const wroteSettings = state.settings.collapsedGroupIds != null;
+      state.settings.sessionView = 'tree'; state.collapsedGroups.clear();
+      renderSessionList('');
+      return { expandedRows, treeRows, treeHeads, treeCarets, listRows, listCarets, topHost, topBastion,
+        groupCount: state.groups.length, collapsedCount: collapsed.length, allFolded, wroteSettings };
     })()`);
-    if (pers.saved.includes(Number(G.east)) && (pers.rawSaved || []).map(Number).includes(Number(G.east))) ok('折叠动作写入 localStorage(collapsedGroupIds)');
-    else bad('折叠状态未落盘', JSON.stringify(pers));
-    if (pers.restored.length === 1 && pers.restored[0] === Number(G.east) && pers.caret === '▶') ok(`模拟重启后只恢复上次折叠的「华东」(▶),其余保持展开`);
-    else bad('重启后折叠状态未正确恢复', JSON.stringify(pers));
-    if (pers.firstRun === pers.groupCount) ok(`首次运行(从未保存过)仍默认全部折叠(${pers.firstRun}/${pers.groupCount})`);
-    else bad('首次运行默认折叠逻辑被破坏', JSON.stringify(pers));
+    if (boot.expandedRows > 0) ok(`前置:重启前确实有 ${boot.expandedRows} 行主机是展开的`);
+    else bad('前置状态异常(没有展开的主机)', JSON.stringify(boot));
+    if (boot.allFolded && boot.collapsedCount === boot.groupCount) ok(`重启后 ${boot.collapsedCount}/${boot.groupCount} 个分组全部折叠`);
+    else bad('重启后仍有分组展开', JSON.stringify(boot));
+    if (boot.treeRows === 0 && boot.treeHeads > 0) ok(`树形模式:只显示分组头(${boot.treeHeads} 行),主机行 0`);
+    else bad('树形模式默认没折叠', JSON.stringify(boot));
+    if (boot.listRows === 0) ok('列表模式:同样只显示分组头,主机行 0');
+    else bad('列表模式默认没折叠', JSON.stringify({ listRows: boot.listRows }));
+    if (/^▶*$/.test(boot.treeCarets) && /^▶*$/.test(boot.listCarets)) ok('两种视图的分组三角全部为 ▶');
+    else bad('三角状态不对', JSON.stringify({ tree: boot.treeCarets, list: boot.listCarets }));
+    if (boot.topHost === true && boot.topBastion === true) ok('顶级「🖥 主机 / 🛡 堡垒机」也默认收起');
+    else bad('顶部分组未默认收起', JSON.stringify({ topHost: boot.topHost, topBastion: boot.topBastion }));
+    if (!boot.wroteSettings) ok('展开/折叠不再写 settings(下次启动仍回到全折叠)');
+    else bad('仍在持久化折叠状态', JSON.stringify(boot));
 
     // ---------------------------------------------------------------
     // ⑩ 键盘导航(↑↓←→ / Enter / Shift+F10)
