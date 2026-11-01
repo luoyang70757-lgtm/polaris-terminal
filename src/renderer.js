@@ -1903,7 +1903,8 @@ function groupSessionsByGroupId(sessions) {
 // 不收紧的话 5 层缩进就要 90px,窄侧边栏里主机名直接被省略号吃掉。
 function groupIndent(depth) {
   const d = Math.max(0, Number(depth) || 0);
-  return Math.min(d, 3) * 18 + Math.max(0, d - 3) * 10;
+  // 默认侧边栏才 240px:每层 14px(前 3 层)+8px(更深)足够看出层级,又不会把主机名挤成省略号
+  return Math.min(d, 3) * 14 + Math.max(0, d - 3) * 8;
 }
 
 // 渲染整棵分组树。opts.flat=true → 列表模式(与树形共用折叠状态与右键/拖拽/选中,仅保留 list-head 类名做样式区分)
@@ -1938,7 +1939,7 @@ function renderGroupHierarchy(sessions, container, opts = {}) {
     for (const s of byGroup.get(gid) || []) {
       const row = makeSessionRow(s);
       row.classList.add('host-item'); // 紧凑小条:左侧竖线分隔+右侧留白+宽度贴合主机名
-      row.style.paddingLeft = `${24 + groupIndent(depth)}px`;
+      row.style.paddingLeft = `${20 + groupIndent(depth)}px`;
       row.dataset.depth = String(depth); // 键盘导航靠它判断父子关系
       container.appendChild(row);
     }
@@ -2061,7 +2062,7 @@ function makeGroupHead(g, depth, collapsed, opts) {
   const totalCount = state.sessions.filter((s) => scopeIds.has(Number(s.group_id))).length;
   const head = document.createElement('div');
   head.className = 'asset-group-head' + (isProd ? ' prod' : '') + (flat ? ' list-head' : '');
-  head.style.paddingLeft = `${8 + groupIndent(depth)}px`;
+  head.style.paddingLeft = `${6 + groupIndent(depth)}px`;
   head.dataset.depth = String(depth); // 键盘导航靠它判断父子关系
   const caret = document.createElement('span');
   caret.className = 'asset-group-caret';

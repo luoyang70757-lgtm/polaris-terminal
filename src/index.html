@@ -46,7 +46,7 @@
       <!-- 左侧:会话列表 -->
       <aside id="session-panel">
         <div class="asset-header">
-          <span>会话列表</span>
+          <span class="asset-title" title="会话列表">会话</span>
           <div class="asset-header-btns">
             <button id="btn-quick-connect" class="btn-mini" title="快捷连接:输入 user@host[:port] 临时直连(不保存会话)">🔗</button>
             <button id="btn-new-group" class="btn-mini" title="新建分组(选中分组时创建为子分组)">🗂</button>
@@ -69,7 +69,7 @@
             <option value="host">主机</option>
             <option value="bastion">堡垒机</option>
           </select>
-          <input id="input-session-search" type="text" placeholder="搜索名称 / IP(空格多词)…" />
+          <input id="input-session-search" type="text" placeholder="搜索名称 / IP…" />
           <button id="btn-select-all-filtered" class="btn-mini" title="全选当前搜索出的主机(再点一次取消全选)">全选</button>
         </div>
         <!-- 批量操作条:勾选会话后出现 -->
@@ -87,7 +87,7 @@
           <span>👋 双击左侧会话连接,或点 <b>➕ 新建</b> 添加服务器</span>
         </div>
         <div id="session-tree" class="asset-tree"></div>
-        <div class="asset-footer dim">双击会话连接 · 右键删除 · 会话数据已加密存储</div>
+        <div class="asset-footer dim" title="双击会话连接 · 右键菜单可编辑/克隆/删除 · 会话数据已加密存储">双击连接 · 右键菜单 · 数据已加密</div>
       </aside>
 
       <!-- 左右分隔条:拖动可调整会话列表宽度 -->

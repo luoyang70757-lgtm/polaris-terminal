@@ -142,13 +142,13 @@ const head = (t) => console.log(`\n— ${t} —`);
             name: (el.querySelector('.asset-group-name') || {}).textContent || el.textContent,
             count: (el.querySelector('.asset-group-count') || {}).textContent || '',
             caret: caretEl ? caretEl.textContent : '', caretHidden: !!(caretEl && caretEl.style.visibility === 'hidden'),
-            pad: pad, depth: (el.dataset.depth != null ? Number(el.dataset.depth) : Math.round((pad - 8) / 18)), gid: el.dataset.groupId ? Number(el.dataset.groupId) : null,
+            pad: pad, depth: (el.dataset.depth != null ? Number(el.dataset.depth) : Math.round((pad - 6) / 14)), gid: el.dataset.groupId ? Number(el.dataset.groupId) : null,
             listHead: el.classList.contains('list-head'), tab: el.hasAttribute('tabindex'), draggable: !!el.draggable, titled: !!el.title });
         } else if (el.classList.contains('asset-item')) {
           var nm = el.querySelector('.name');
           out.push({ kind: 'host', name: nm ? nm.textContent : '',
             nameW: nm ? nm.offsetWidth : 0, pad: pad,
-            depth: (el.dataset.depth != null ? Number(el.dataset.depth) : Math.round((pad - 24) / 18)),
+            depth: (el.dataset.depth != null ? Number(el.dataset.depth) : Math.round((pad - 20) / 14)),
             focused: el === document.activeElement, sid: el.dataset.sessionId ? Number(el.dataset.sessionId) : null });
         }
       }
@@ -215,16 +215,16 @@ const head = (t) => console.log(`\n— ${t} —`);
     head('② 层级缩进(5 层深链)');
     for (const [label, s] of [['树形', tree], ['列表', list]]) {
       const bads = [];
-      // 缩进规则:前 3 层每层 18px,第 4 层起每层 10px(深层不再把主机名挤没)
-      const wantPad = (kind, depth) => (kind === 'group' ? 8 : 24) + Math.min(depth, 3) * 18 + Math.max(0, depth - 3) * 10;
+      // 缩进规则:前 3 层每层 14px,第 4 层起每层 8px(240px 侧边栏里也能看清层级且不挤掉主机名)
+      const wantPad = (kind, depth) => (kind === 'group' ? 6 : 20) + Math.min(depth, 3) * 14 + Math.max(0, depth - 3) * 8;
       for (const it of s.items) if (it.pad !== wantPad(it.kind, it.depth) || it.depth < 0) bads.push(it);
       if (!bads.length) ok(`${label}模式缩进深度与层级严格对应(${s.items.length} 行)`);
       else bad(`${label}模式缩进/深度不匹配`, JSON.stringify(bads.slice(0, 3)));
-      // 深链 5 层:前 3 层 +18,第 4 层起收为 +10
+      // 深链 5 层:前 3 层 +14,第 4 层起收为 +8
       const chain = s.items.filter((x) => x.kind === 'group' && /^深链 L/.test(x.name));
       const pads = chain.map((x) => x.pad);
       const steps = pads.slice(1).map((p, i) => p - pads[i]);
-      if (chain.length === 5 && steps.join() === '18,18,18,10') ok(`${label}模式 5 层深链:前 3 层 +18px、第 4 层起 +10px(${pads.join(' → ')})`);
+      if (chain.length === 5 && steps.join() === '14,14,14,8') ok(`${label}模式 5 层深链:前 3 层 +14px、第 4 层起 +8px(${pads.join(' → ')})`);
       else bad(`${label}模式深链缩进异常`, JSON.stringify({ pads, steps }));
       const leaf = s.items.find((x) => x.kind === 'host' && x.name === 'deep-leaf-01');
       const root = s.items.find((x) => x.kind === 'host' && x.name === 'prod-gw-01');

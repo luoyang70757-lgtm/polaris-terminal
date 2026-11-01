@@ -68,6 +68,8 @@ npm run dist -- --win
    - 键盘导航：roving tabindex（全树一个 Tab 停靠点），↑↓ 移动、← 折叠/回父级、→ 展开/进子项、Enter 连接或折叠、Shift+F10 右键；行键为 `t:<host|bastion>` / `g:<gid>` / `s:<sid>`
    - 回归用例：`verify-groups-mature.js`（84 条：结构一致性、折叠、搜索剪枝、计数、键盘、持久化、拖拽排序、规模压测）+ `verify-groups-order.js`（19 条纯 Node：老库补列迁移、moveGroup 语义、防环）
 
+10. **界面字号与布局约定**：所有 UI 字号都由 `--ui-font`（设置里的「界面字体大小」）派生，档位变量 `--fs-2xs/--fs-xs/--fs-sm/--fs-md/--fs-base/--fs-lg` = ui-font −4/−3/−2/−1/+0/+1（默认 13px 时与旧像素值完全一致）。**新增样式不要写死 `font-size: 11px` 之类**，用 `var(--fs-sm)`；终端字号走 `settings.fontSize`，与 UI 无关。布局红线：会话列表行缩进只用 `padding-left`（行上不要再加 `margin-left`，否则 `width:max-content` 会顶出 6px 横向滚动条）；`.asset-tree` 固定 `overflow-x: hidden`；固定高度面板（如 `#sftp-panel`）里的工具栏必须 `flex-shrink: 0` 且允许 `flex-wrap`，否则大字号换行后按钮会被裁一半。回归：`verify-ui-layout.js`（21 条：默认档位、17px 缩放、横向溢出、标题/提示单行、SFTP 工具栏不裁切）。
+
 ## 安全约定
 
 - 危险命令（rm -rf、dd、mkfs 等）在生产环境标记的主机执行前弹确认框
@@ -82,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.52**（2026-11-01）：**打开 App 默认全部折叠**——列表/树形两种视图进来都只显示分组头（顶级「主机/堡垒机」也收起），展开状态只在本次运行内保留（产品要求不跨重启记住）；去掉 `settings.collapsedGroupIds/collapsedTopHost/collapsedTopBastion` 的持久化。
+**当前版本 v1.0.53**（2026-11-01）：**界面布局 / 字体优化**——全 UI 字号改由 `--ui-font` 派生（`--fs-2xs…--fs-lg`），设置里的「界面字体大小」现在真正全局生效（以前只作用于工具栏/列表，其余写死 11/12px）；会话列表行距收紧、缩进步长 18→14px（深层不再把主机名挤成省略号，240px 面板下长名可读）、去掉行重复 margin 修掉 6px 横向滚动条；底部提示/面板标题改单行省略（不再折成两行）；SFTP 工具栏 `flex-wrap` + `flex-shrink:0`，大字号换行不裁字。回归：`verify-ui-layout.js`（21 条）。
+
+上一版本 v1.0.52（2026-11-01）：**打开 App 默认全部折叠**——列表/树形两种视图进来都只显示分组头（顶级「主机/堡垒机」也收起），展开状态只在本次运行内保留（产品要求不跨重启记住）；去掉 `settings.collapsedGroupIds/collapsedTopHost/collapsedTopBastion` 的持久化。
 
 上一版本 v1.0.51：**列表模式也能折叠了**——之前 `flat=true` 关掉了折叠三角、只能全展开一个长列表；两种视图共用同一套折叠状态（`state.collapsedGroups`），点三角即收/展，切视图不丢，搜索时仍自动展开命中路径。
 
