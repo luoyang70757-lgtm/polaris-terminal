@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-01）
 
-**当前版本 v1.0.56**（2026-11-01）：**精简主题 + 苹果字体 + 全量回归**——主题从 25 套精简到 10 套精选（旧配置自动回落 dark）；新增「界面字体」设置与苹果字体支持（默认字体栈改为 SF Pro / 苹方优先，终端字体补 `ui-monospace`/`SFMono-Regular`）；修「选自定义字体时输入框被 sync 回滚」；跑通全量回归 `test-all.js`（84 个 verify 脚本，76 全绿 / 548 条断言，失败项均为预存用例漂移或环境依赖）。回归：新增 `verify-ui-font.js`（12 条）。
+**当前版本 v1.0.57**（2026-11-01）：**修掉 5 个漂移用例 + 两个真 bug**——① `execOnSession` 改为「exit 只记退出码、close 才 resolve」：ssh2 的 exit 早于 data 到达，导致 stdout 为空 → 打包上传探测误判「不支持打包」而回退逐文件上传（真实产品 bug，已修）；② mock 远端解压改用系统 bsdtar（`execFileSync` + `%SystemRoot%\System32\tar.exe`），Git Bash 的 GNU tar 会把 `C:\` 当远程主机；③ mock 失败注入路径分隔符归一（Windows 反斜杠）；④ verify-kb 的 Windows 路径改用 `JSON.stringify` 注入（原先 `	` 被当转义）；⑤ verify-bastion-hierarchy 的 webview 钩子断言按新架构（主进程原生 `h3c:*` IPC）重写；⑥ verify-sftp-cancel 用 24MB + 120ms 取消并允许重试、verify-sftp-download-fail 断连自动重连一次。全量回归 `test-all.js`：**82/84 脚本全绿 / 579 条断言**（仅 `pack-real` 需真实主机密码）。
+
+上一版本 v1.0.56（2026-11-01）：**精简主题 + 苹果字体 + 全量回归**——主题从 25 套精简到 10 套精选（旧配置自动回落 dark）；新增「界面字体」设置与苹果字体支持（默认字体栈改为 SF Pro / 苹方优先，终端字体补 `ui-monospace`/`SFMono-Regular`）；修「选自定义字体时输入框被 sync 回滚」；跑通全量回归 `test-all.js`（84 个 verify 脚本）。回归：新增 `verify-ui-font.js`（12 条）。
 
 上一版本 v1.0.55（2026-11-01）：**新建/编辑会话弹窗精简**——默认只显示必要字段（名称 / 主机+端口 / 用户名+密码 / 分组 / 测试连接），协议、私钥、私钥口令、跳板机、终端编码、登录宏收进折叠的「高级选项」（编辑带高级设置的会话会自动展开）；弹窗从"要滚动才能看到保存"变成一屏放下。回归：`verify-session-modal.js`（13 条）。
 

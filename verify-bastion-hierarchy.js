@@ -64,12 +64,20 @@ const ASSETS_FLAT = JSON.stringify([
     for (let i = 0; i < 30; i++) { await sleep(400); const t2 = await listTargets(); const m = t2.find((t) => t.type === 'page' && !/解锁/.test(t.title || '')); if (m) { c = await connect(m.webSocketDebuggerUrl); break; } }
     if (!c) throw new Error('主窗口未就绪');
 
-    // ④ guest 侧自动获取函数存在 + 残留 favGroup 清理逻辑(源码级断言,mock 无 H3C webview 不注入)
+    // ④ 收藏分组数据链路(源码级断言,mock 无 H3C webview):
+    //    架构变更后 H3C 资产改由主进程原生拉取(lib/h3c-api.js + h3c:* IPC),
+    //    webview 里不再注入 __bastionFetchFavTree/__bastionFetchFavGroups 钩子。
     const rjs = fs.readFileSync(path.join(__dirname, 'src', 'renderer.js'), 'utf8');
-    if (rjs.includes('window.__bastionFetchFavTree = function()') && rjs.includes('window.__bastionFetchFavGroups = function()')) ok('guest 定义 __bastionFetchFavTree/__bastionFetchFavGroups(收藏分组自动获取入口)');
-    else bad('guest 定义 __bastionFetchFavTree/__bastionFetchFavGroups(收藏分组自动获取入口)');
-    if (rjs.includes('delete x.favGroup')) ok('guest 重映射前清除残留 favGroup(undefinedxxx 不再残留)');
-    else bad('guest 重映射前清除残留 favGroup(undefinedxxx 不再残留)');
+    const pre = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+    const hasNativeIpc = /h3c:tree/.test(pre) && /h3c:devs/.test(pre);
+    const noWebviewHooks = !rjs.includes('window.__bastionFetchFavTree') && !rjs.includes('window.__bastionFetchFavGroups');
+    if (hasNativeIpc) ok('H3C 资产/收藏分组走主进程原生 IPC(h3c:tree / h3c:devs)');
+    else bad('缺少 h3c:* 原生 IPC(preload 未暴露)');
+    if (noWebviewHooks) ok('不再注入 webview 钩子 __bastionFetchFavTree/__bastionFetchFavGroups(已改原生)');
+    else bad('仍残留 webview 注入钩子(与原生拉取重复)');
+    const favGroupClean = rjs.includes("favGroup.indexOf('undefined') !== 0") && /favGroup\s*&&\s*!?\s*d?\.?favGroup|delete\s+x\.favGroup|\.favGroup\s*=\s*''/.test(rjs);
+    if (favGroupClean) ok('favGroup 脏值清洗仍在(undefined 前缀不残留)');
+    else bad('favGroup 清洗逻辑丢失');
     if (rjs.includes("old.favGroup.indexOf('undefined') !== 0")) ok('资产合并不再保留 "undefined" 前缀的脏 favGroup');
     else bad('资产合并不再保留 "undefined" 前缀的脏 favGroup');
 

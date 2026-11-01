@@ -474,7 +474,13 @@ const sshd = new SSHServer({ hostKeys: [fs.readFileSync(path.join(__dirname, 'ho
         const dir = toDisk(xt[1]), archive = toDisk(xt[2]);
         try {
           fs.mkdirSync(dir, { recursive: true });
-          require('child_process').execSync(`tar -xzf ${q(archive)} -C ${q(dir)}`, { stdio: 'ignore' });
+          // 用 execFileSync 直接传参(Windows 的 cmd 不认单引号);并且**优先用系统自带的 bsdtar**:
+          // Git Bash / MSYS 的 GNU tar 会把 C:\\... 当成远程主机规格(host:path)直接失败。
+          const sysTar = process.platform === 'win32'
+            ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+            : null;
+          const tarBin = sysTar && fs.existsSync(sysTar) ? sysTar : 'tar';
+          require('child_process').execFileSync(tarBin, ['-xzf', archive, '-C', dir], { stdio: 'ignore' });
           fs.rmSync(archive, { force: true }); // 解压成功删压缩包(与真实命令一致)
           stream.exit(0);
         } catch { stream.exit(1); } // 解压失败 → app 会清压缩包 + 回退递归上传

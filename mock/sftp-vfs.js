@@ -202,7 +202,9 @@ function createSftpServer(sftpStream) {
     // 测试钩子:模拟"设备读不了某个文件"(真实场景:网关/权限/设备缺陷导致 READ 报 FAILURE)。
     // 用法 MOCK_SFTP_FAIL_READ=<路径子串>,用于验证"下载逐文件失败时的可见性与资源回收"。
     const failPat = process.env.MOCK_SFTP_FAIL_READ;
-    if (failPat && h.node._disk && String(h.node._disk).includes(failPat)) {
+    // 路径分隔符归一:Windows 上 _disk 是 C:\...\faildir\bad.txt,而注入值一般写 faildir/bad.txt
+    const normPath = (x) => String(x || '').replace(/\\/g, '/');
+    if (failPat && h.node._disk && normPath(h.node._disk).includes(normPath(failPat))) {
       return sftpStream.status(reqid, STATUS_CODE.FAILURE);
     }
     const buf = h.node.content;

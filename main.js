@@ -2245,12 +2245,22 @@ function execOnSession(sessionId, command, timeoutMs) {
       s.conn.exec(command, (err, stream) => {
         if (err || !stream) return done({ ok: false, error: (err && err.message) || '远端命令通道失败' });
         let out = '', errOut = '';
+        let exitCode = null;
+        // 注意:ssh2 的 'exit' 事件**先于**尚未读完的 data/close 到达(实测 mock 的
+        // `POLARIS_PACK_OK` 在 exit 里读到的 stdout 是空串 → 打包上传探测误判为不支持)。
+        // 所以 exit 只记退出码,真正 resolve 放到 close(或 exit 后短暂兜底)。
+        const finish = (why) => {
+          const ok = exitCode === 0;
+          done({ ok, code: exitCode == null ? -1 : exitCode, stdout: out, stderr: errOut, error: ok ? undefined : (why || `exit ${exitCode}`) });
+        };
         stream.on('data', (d) => { out += d; });
         stream.stderr.on('data', (d) => { errOut += d; });
-        stream.on('exit', (code) => done({ ok: code === 0, code, stdout: out, stderr: errOut }));
+        stream.on('exit', (code) => {
+          exitCode = code;
+          setTimeout(() => finish(), 300); // 个别实现不发 close:exit 后 300ms 兜底
+        });
+        stream.on('close', () => finish());
         stream.on('error', (e) => done({ ok: false, error: e && e.message }));
-        // 正常流程 exit 先到;个别实现不报退出码,通道关闭兜底(此时不知成败,按失败处理走回退)
-        stream.on('close', () => done({ ok: false, code: -1, stdout: out, stderr: errOut, error: '远端命令通道提前关闭(未收到退出码)' }));
       });
     } catch (e) { done({ ok: false, error: e && e.message }); }
   });

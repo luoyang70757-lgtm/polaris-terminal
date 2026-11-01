@@ -81,7 +81,19 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     ok('SFTP 就绪,当前目录=' + await ev(c, `state.sftp.path`));
 
     // 触发"下载目录"(走 sftpDownloadMany,与面板多选/目录下载同一条路)
-    const job = await ev(c, `(async()=>{ const r = await window.api.sftpDownloadMany('${sid}', [{ remotePath: '/faildir', isDir: true }]); return JSON.stringify(r); })()`);
+    // 串跑(机器繁忙)时偶发连接被回收 → 报"SSH 连接不存在或已断开":自动重连一次再重试,
+    // 避免把环境抖动当成产品失败。
+    let job = await ev(c, `(async()=>{ const r = await window.api.sftpDownloadMany('${sid}', [{ remotePath: '/faildir', isDir: true }]); return JSON.stringify(r); })()`);
+    if (/'ssh 连接不存在|已断开/i.test(job)) {
+      console.log('  [诊断] 首次下载时连接已断,重连后重试');
+      await ev(c, `connectToServer(${sj})`);
+      sid = null;
+      for (let i = 0; i < 40; i++) { sid = await ev(c, `(state.tabs.size ? [...state.tabs.keys()][0] : null)`); if (sid && await ev(c, `state.tabs.get('${sid}').status`) === 'connected') break; await sleep(300); }
+      if (!sid) throw new Error('重连失败');
+      await ev(c, `toggleSftpPanel(); true`);
+      for (let i = 0; i < 20; i++) { if (await ev(c, `state.sftp.path`) !== '.') break; await sleep(400); }
+      job = await ev(c, `(async()=>{ const r = await window.api.sftpDownloadMany('${sid}', [{ remotePath: '/faildir', isDir: true }]); return JSON.stringify(r); })()`);
+    }
     const j = JSON.parse(job);
     if (j && j.ok) ok('下载已发起(jobId=' + j.jobId + ')');
     else bad('下载未发起', job);

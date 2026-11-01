@@ -61,7 +61,8 @@ const check=(c,n,e)=>(c?ok(n):bad(n,e));
     check(await ev(c,`!!window.api.kbImport`), 'kb API 就绪');
 
     // ① IPC:导入 → 列表 → 检索
-    const imp = await ev(c, `(async()=>JSON.stringify(await window.api.kbImport('${DOC_PATH}')))()`);
+    // 注意:Windows 路径含反斜杠,必须用 JSON.stringify 包一层,否则会被当成转义字符(如 \\t 变成制表符)
+    const imp = await ev(c, `(async()=>JSON.stringify(await window.api.kbImport(${JSON.stringify(DOC_PATH)})))()`);
     check(imp.includes('"ok":true') && imp.includes('kb-test-nginx.md'), 'kbImport 导入文档成功(实际: ' + imp.slice(0,100) + ')');
     const list = await ev(c, `(async()=>JSON.stringify(await window.api.kbList()))()`);
     check(list.includes('kb-test-nginx.md'), 'kbList 列出文档');
