@@ -4714,6 +4714,7 @@ async function jmsLoadAssets() {
   const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token, cachedById: jmsCachedById(s) });
   if (!r.ok) { showJmsMsg(`拉取资产失败: ${r.error}`); return; }
   s.assets = r.assets || [];
+  collapseJmsGroupsState(s); // 登录后节点分组默认折叠
   cacheJmsAssets(s, s.assets); // 缓存落 SQLite(整批覆盖,删缓存中已消失的主机)
   els.jmsModal.classList.add('hidden'); // 登录成功 → 资产整合进会话列表
   jmsPersistConfig();
@@ -5037,6 +5038,7 @@ function makeJmsAssetRow(s, a) {
 async function jmsRefreshServer(serverId) {
   const s = jmsFind(serverId);
   if (!s) return;
+  const wasLoggedIn = !!(s.token && s.user); // 未登录时点刷新=走登录流程 → 登录后分组折叠
   setStatus(`刷新「${s.name}」资产…`, 'var(--accent)');
   let r = s.token ? await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }) : { ok: false };
   // token 失效/未登录 → 用保存的密码静默重登后再拉(否则刷新会静默失败,用户以为没生效)
@@ -5048,6 +5050,10 @@ async function jmsRefreshServer(serverId) {
   }
   if (r.ok) {
     s.assets = r.assets || [];
+    if (!wasLoggedIn) { // 本次是登录(而非普通刷新):服务器区块 + 节点分组都回到默认折叠
+      state.collapsedJms.add(s.id);
+      collapseJmsGroupsState(s);
+    }
     renderSessionList(els.inputSessionSearch.value);
     setStatus(`已刷新「${s.name}」资产(${s.assets.length} 台)`, 'var(--green)');
   } else {
@@ -5172,6 +5178,7 @@ async function jmsRestore() {
         state.collapsedJms.add(s.id);
         const ar = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
         if (ar.ok) s.assets = ar.assets || [];
+        collapseJmsGroupsState(s); // 重登成功 → 节点分组默认折叠
       }
       // MFA 账号:静默登录返回 mfa_required,不打扰用户,等手动登录
     } catch { /* 网络/超时,忽略 */ }
@@ -5811,6 +5818,9 @@ function bastionHandleLoginSignal({ needLogin, ok }) {
   if (ok && bastionLoginState !== 'loggedIn') {
     bastionLoginState = 'loggedIn';
     bastionNeedLoginNotified = false; // 登录成功 → 下次过期可再提示
+    // 登录成功:分组默认折叠(含缓存里已有的资产目录),避免登录瞬间一屏铺开几百台
+    collapseBastionGroupsState();
+    try { renderSessionList(els.inputSessionSearch.value); } catch { /* 列表未就绪,忽略 */ }
     // 自动最小化:仅"登录模式"+ 面板当前可见 + 本次登录未收过。首次登录(unknown→loggedIn)
     // 与重新登录(loggedOut→loggedIn)都算;已登录用户主动开面板浏览(登录模式=false)不收起。
     if (bastionLoginMode && !els.bastionSlot.classList.contains('hidden') && !bastionAutoMinimized) {
@@ -6085,9 +6095,9 @@ function pollBastionAssets(force) {
     if (assetsChanged) {
       bastionLastRenderedJson = j2;
       if (!hadAssets && state.bastionAssets.length) {
-        state.collapsedTopBastion = false;
-        state.bastionCollapsed = true;
-        state.bastionDirCollapsed.add('__fav__');
+        state.collapsedTopBastion = false; // 顶级「🛡 堡垒机」展开:区块头(含资产数)可见
+        state.bastionCollapsed = true;     // 区块内部收起,不自动铺开资产列表
+        collapseBastionGroupsState();      // 登录后分组默认全部折叠(原先只折叠收藏组)
       }
       if (state.bastionAssets.length) persistBastionAssets(); // 异步持久化,不阻塞渲染
       console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
@@ -6825,9 +6835,9 @@ function promptJmsMfa(s, { cookie, challengeUrl, choices, username, password }) 
   attempt();
 }
 
-// 「收起全部分组」:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠
-// (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
-function collapseAllBastionGroups() {
+// 「收起全部分组」的纯状态部分:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠。
+// 不渲染(登录成功等场景直接复用,由调用方决定何时 renderSessionList)。
+function collapseBastionGroupsState() {
   const s = state.bastionDirCollapsed;
   s.add('__fav__');
   s.add('__ungrouped__');
@@ -6841,6 +6851,24 @@ function collapseAllBastionGroups() {
       for (const seg of parts) { p = p ? p + '/' + seg : seg; s.add('__fav__' + p); }
     }
   }
+  // 标记"分组已初始化":避免首渲染逻辑再跑一次(结果相同,省一次遍历)
+  state.bastionDirsInit = true;
+}
+
+// JMS 服务器的节点分组默认折叠(登录成功后调用):key 与 renderJmsInSessionList 一致
+function collapseJmsGroupsState(s) {
+  if (!s || !s.id) return;
+  const col = state.bastionDirCollapsed;
+  col.add('jms:' + s.id + ':__ungrouped__');
+  for (const a of (s.assets || [])) {
+    for (const n of (a.nodes || [])) if (n && n.name) col.add('jms:' + s.id + ':' + n.name);
+  }
+}
+
+// 「收起全部分组」:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠
+// (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
+function collapseAllBastionGroups() {
+  collapseBastionGroupsState();
   renderSessionList(els.inputSessionSearch.value);
 }
 
