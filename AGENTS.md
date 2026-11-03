@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-03）
 
-**当前版本 v1.0.58**（2026-11-03）：**修 H3C 自签名证书导致的偶发连接失败**——诊断包 `Polaris-bastion-diag-2026-11-03-03-38-58.json` 实测同一 `accessUrl` 前两次 `net::ERR_CERT_AUTHORITY_INVALID`、第三次才成功；`app.on('certificate-error')` 只覆盖 webContents，`session.fetch()` 不触发，故对 `persist:bastion` 安装 `setCertificateVerifyProc(cb(0))`。同时包含 v1.0.57 之后未发版的「堡垒机登录后分组默认折叠」。回归：`verify-h3c-cert` 1/1、`verify-h3c-native` 15/15、`verify-bastion-login-collapse` 6/6。
+**当前版本 v1.0.59**（2026-11-03）：**修右侧堡垒机下拉不同步**——左侧保存/登录/删除 JMS 服务器后只刷新左侧下拉，右侧堡垒机下拉停留在旧列表（新建时 baseUrl 为空会被过滤）；现在保存/登录/MFA/删除后统一刷新右侧下拉，保存后同时重绘左侧列表。回归 `verify-bastion-server-sync` 4/4。
+
+上一版本 v1.0.58（2026-11-03）：**修 H3C 自签名证书导致的偶发连接失败**——诊断包 `Polaris-bastion-diag-2026-11-03-03-38-58.json` 实测同一 `accessUrl` 前两次 `net::ERR_CERT_AUTHORITY_INVALID`、第三次才成功；`app.on('certificate-error')` 只覆盖 webContents，`session.fetch()` 不触发，故对 `persist:bastion` 安装 `setCertificateVerifyProc(cb(0))`。同时包含 v1.0.57 之后未发版的「堡垒机登录后分组默认折叠」。回归：`verify-h3c-cert` 1/1、`verify-h3c-native` 15/15、`verify-bastion-login-collapse` 6/6。
 
 上一版本 v1.0.57（2026-11-01）：**修掉 5 个漂移用例 + 两个真 bug**——① `execOnSession` 改为「exit 只记退出码、close 才 resolve」：ssh2 的 exit 早于 data 到达，导致 stdout 为空 → 打包上传探测误判「不支持打包」而回退逐文件上传（真实产品 bug，已修）；② mock 远端解压改用系统 bsdtar（`execFileSync` + `%SystemRoot%\System32\tar.exe`），Git Bash 的 GNU tar 会把 `C:\` 当远程主机；③ mock 失败注入路径分隔符归一（Windows 反斜杠）；④ verify-kb 的 Windows 路径改用 `JSON.stringify` 注入（原先 `	` 被当转义）；⑤ verify-bastion-hierarchy 的 webview 钩子断言按新架构（主进程原生 `h3c:*` IPC）重写；⑥ verify-sftp-cancel 用 24MB + 120ms 取消并允许重试、verify-sftp-download-fail 断连自动重连一次。全量回归 `test-all.js`：**82/84 脚本全绿 / 579 条断言**（仅 `pack-real` 需真实主机密码）。
 

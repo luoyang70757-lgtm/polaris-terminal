@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.58**（2026-11-03）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.59**（2026-11-03）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -122,6 +122,8 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 33. **H3C 自签名证书放行**（2026-11-03，lib/h3c-api.js）：诊断包 `Polaris-bastion-diag-2026-11-03-03-38-58.json` 实测同一 `accessUrl` 前两次返回 `net::ERR_CERT_AUTHORITY_INVALID`、第三次才成功。根因：`app.on('certificate-error')` 只对 webContents 生效，`session.fetch()` 走 Chromium 网络栈时不触发该事件。修法：对 `persist:bastion` 会话安装 `setCertificateVerifyProc((_req, cb) => cb(0))`，与内置浏览器放行口径一致；只作用于堡垒机专用 partition。回归：`verify-h3c-cert.js`（自签名 HTTPS + `window.api.h3cTree`）。
 
+
+34. **右侧堡垒机下拉同步**（2026-11-03，renderer.js）：左侧新建 JMS 服务器时 `baseUrl` 为空，右侧下拉会过滤掉；`jmsDoSave` 只刷新左侧 JMS 弹窗下拉，`jmsDoLogin`/`jmsDoMfa`/`jmsDeleteServerCompletely` 同样没有刷新右侧 → “右侧堡垒机获取不到左侧创建的连接信息”。修法：保存/登录/MFA/删除后统一调用 `bastionRenderServerSelect()`，保存后同时 `renderSessionList()`。回归：`verify-bastion-server-sync.js`（4/4）。
 ## 运行与调试
 
 ```bash
