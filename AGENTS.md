@@ -86,7 +86,9 @@ npm run dist -- --win
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.2**（2026-11-03）：**修终端空格被 xterm 组合态吞掉**——日志特征 `KEY '␣'` 有、`SEND` 没有，失焦/聚焦才恢复；新增 250ms 看门狗，自动重建输入法会话（不自动补发空格），KEY 日志补 `ime/keyCode`。回归 `verify-space-composition-flush` 6/6。
+**当前版本 v1.0.3**（2026-11-03）：**识别 nologin 账号**——远端账号 shell=`/usr/sbin/nologin` 时，服务器发 `This account is currently not available.` 后立即断开；现在会标记 `tab.noLogin`、状态栏/终端给出「换有 shell 的账号 / usermod -s /bin/bash」提示，并停止自动重连。回归 `verify-nologin-hint` 5/5。
+
+上一版本 v1.0.2（2026-11-03）：**修终端空格被 xterm 组合态吞掉**——日志特征 `KEY '␣'` 有、`SEND` 没有，失焦/聚焦才恢复；新增 250ms 看门狗，自动重建输入法会话（不自动补发空格），KEY 日志补 `ime/keyCode`。回归 `verify-space-composition-flush` 6/6。
 
 上一版本 v1.0.1（2026-11-03）：**优化右侧堡垒机浏览器面板**——工具栏精简（清除历史收进「⋯」更多菜单）、空态/加载/错误态结构化并带「重试」、更多菜单支持系统浏览器打开/复制地址/重置缩放、双击缩放恢复 100%、拖动面板后自动重新适配。回归 `verify-bastion-browser-ui` 8/8。
 

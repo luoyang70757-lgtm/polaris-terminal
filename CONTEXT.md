@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.2**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.3**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -132,6 +132,9 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 
 37. **空格被 xterm 组合态吞掉的自恢复**（2026-11-03，renderer.js）：调试日志出现 `KEY '␣'` 但无 `SEND`，失焦/聚焦后恢复 → xterm 的 CompositionHelper/输入法会话卡住，xterm 未产生 `onData`。修法：空格 keydown 保留原有 `resetTermComposition`（确认卡住才复位，避免空 SEND）；额外 `armSpaceWatchdog` 250ms 检查本次空格是否产生输入，没有则 `textarea.blur()/focus()` 重建输入法会话（**不自动补发空格**，避免真实组合双空格）；KEY 日志补 `ime=0/1 kc=<keyCode>`。回归：`verify-space-composition-flush.js`（6/6，新增 disableStdin 模拟吞键 → RECOVER）。
+
+
+38. **nologin 账号识别**（2026-11-03，renderer.js + mock/fake-shell.js）：现场 `STATUS connected` → `RECV 45B`（`\r\nThis account is currently not available.`）→ `closed`；认证成功但目标账号 shell=`/usr/sbin/nologin`，服务器立即断开。修法：`onSshData` 检测该消息 → `tab.noLogin=true`、状态栏提示、`dlog('NOLOGIN')`；`closed` 时在终端写明原因与处理方式（换有 shell 的账号 / `usermod -s /bin/bash <账号>`）；`scheduleReconnect` 跳过 nologin（账号问题重试无意义）。mock 支持 `account=nologin` 模拟。回归：`verify-nologin-hint.js`（5/5）。
 
 ## 运行与调试
 
