@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-03）
 
-**当前版本 v1.0.59**（2026-11-03）：**修右侧堡垒机下拉不同步**——左侧保存/登录/删除 JMS 服务器后只刷新左侧下拉，右侧堡垒机下拉停留在旧列表（新建时 baseUrl 为空会被过滤）；现在保存/登录/MFA/删除后统一刷新右侧下拉，保存后同时重绘左侧列表。回归 `verify-bastion-server-sync` 4/4。
+**当前版本 v1.0.60**（2026-11-03）：**新增「检查更新」**——帮助菜单 / 关于弹窗可手动查 GitHub Releases 最新版本，显示新版本与发布说明并可打开下载页；主进程 `net.fetch` + 版本比较，`openRelease` 只允许本项目 Release，不自动下载/安装。回归 `verify-check-update` 4/4。
+
+上一版本 v1.0.59（2026-11-03）：**修右侧堡垒机下拉不同步**——左侧保存/登录/删除 JMS 服务器后只刷新左侧下拉，右侧堡垒机下拉停留在旧列表（新建时 baseUrl 为空会被过滤）；现在保存/登录/MFA/删除后统一刷新右侧下拉，保存后同时重绘左侧列表。回归 `verify-bastion-server-sync` 4/4。
 
 上一版本 v1.0.58（2026-11-03）：**修 H3C 自签名证书导致的偶发连接失败**——诊断包 `Polaris-bastion-diag-2026-11-03-03-38-58.json` 实测同一 `accessUrl` 前两次 `net::ERR_CERT_AUTHORITY_INVALID`、第三次才成功；`app.on('certificate-error')` 只覆盖 webContents，`session.fetch()` 不触发，故对 `persist:bastion` 安装 `setCertificateVerifyProc(cb(0))`。同时包含 v1.0.57 之后未发版的「堡垒机登录后分组默认折叠」。回归：`verify-h3c-cert` 1/1、`verify-h3c-native` 15/15、`verify-bastion-login-collapse` 6/6。
 
