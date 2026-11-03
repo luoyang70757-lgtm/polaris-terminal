@@ -174,6 +174,8 @@ contextBridge.exposeInMainWorld('api', {
   // 检查更新(手动):查 GitHub Releases 最新版本;openRelease 只允许打开本项目 Release
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   openRelease: (url) => ipcRenderer.invoke('app:openRelease', url),
+  // 通用外部链接(仅 http/https;堡垒机「在系统浏览器打开」用)
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   // 自动下载更新(仅 Windows 安装版):下载进度经 update:status 事件推送
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),

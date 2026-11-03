@@ -925,9 +925,10 @@ input[type="checkbox"] {
   max-width: 100%;
 }
 .bastion-bar {
-  display: flex; gap: 5px; align-items: center; padding: 6px 8px;
+  display: flex; gap: 4px; align-items: center; padding: 6px 6px;
   flex-wrap: wrap; border-bottom: 1px solid var(--border);
 }
+.bastion-bar .btn-mini { white-space: nowrap; }
 .bastion-title { font-size: var(--fs-md); white-space: nowrap; }
 .bastion-server-select { max-width: 120px; font-size: var(--fs-md); padding: 4px 6px; background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 /* 导航按钮组:后退/前进/刷新 包在一起,视觉上是一组 */
@@ -938,7 +939,7 @@ input[type="checkbox"] {
 .bastion-nav .btn-mini { padding: 1px 4px; font-size: var(--fs-base); }
 /* 地址栏组:输入框 + 「打开」按钮连成一体 */
 .bastion-addr {
-  flex: 1; min-width: 90px; display: flex; align-items: center;
+  flex: 1 1 190px; min-width: 90px; display: flex; align-items: center;
   background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 5px;
   overflow: hidden;
 }
@@ -956,6 +957,8 @@ input[type="checkbox"] {
 /* ⚙ 配置按钮比同栏 12px 按钮稍大,视觉协调;⚡/🔗 等小图标按钮保持原字号 */
 .bastion-bar #bastion-cfg { font-size: 15px; padding: 2px 6px; }
 .bastion-current-row { padding: 3px 8px 4px; border-bottom: 1px solid var(--border); }
+/* 没有页面标题时整行隐藏，避免空行占高度 */
+.bastion-current-row:has(.bastion-current:empty) { display: none; }
 .bastion-current { font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .bastion-body { flex: 1; display: flex; flex-direction: row; min-height: 0; background: var(--bg-panel-2, #1a1b1e); }
 .bastion-web-wrap { flex: 1; position: relative; min-width: 0; }
@@ -963,11 +966,13 @@ input[type="checkbox"] {
   position: absolute; inset: 8px; border: 1px dashed var(--border); border-radius: 6px;
   background: var(--bg-panel-2); color: var(--text-dim);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  font-size: var(--fs-base); z-index: 10; text-align: center; padding: 16px; line-height: 1.8; gap: 6px;
+  font-size: var(--fs-base); z-index: 10; text-align: center; padding: 16px; line-height: 1.8; gap: 4px;
 }
-.bastion-empty .be-title { font-size: 15px; color: var(--text); }
-.bastion-empty .be-sub { font-size: var(--fs-md); color: var(--text-dim); }
-.bastion-webview { width: 100%; height: 100%; border: 0; } /* 横分隔条已取消,webview 不再需要底部留白 */
+.bastion-empty .be-icon { font-size: 30px; line-height: 1; opacity: 0.75; margin-bottom: 2px; }
+.bastion-empty .be-title { font-size: 15px; color: var(--text); font-weight: 600; }
+.bastion-empty .be-sub { font-size: var(--fs-md); color: var(--text-dim); max-width: 320px; }
+.bastion-empty .be-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
+.bastion-webview { width: 100%; height: 100%; border: 0; background: var(--bg-panel-2); } /* 横分隔条已取消,webview 不再需要底部留白 */
 /* 加载中:居中转圈 + 文字(不遮挡页面空白) */
 .bastion-loading {
   position: absolute; inset: 0; z-index: 9; pointer-events: none;

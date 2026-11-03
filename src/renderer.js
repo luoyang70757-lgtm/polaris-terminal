@@ -246,6 +246,10 @@ const els = {
   bastionClear: $('bastion-clear'),
   bastionCfg: $('bastion-cfg'),
   bastionEmptyCfg: $('bastion-empty-cfg'),
+  bastionEmptyTitle: $('bastion-empty-title'),
+  bastionEmptySub: $('bastion-empty-sub'),
+  bastionEmptyRetry: $('bastion-empty-retry'),
+  bastionMore: $('bastion-more'),
   bastionCfgModal: $('bastion-cfg-modal'),
   bastionCfgType: $('bastion-cfg-type'),
   bastionCfgName: $('bastion-cfg-name'),
@@ -2533,7 +2537,6 @@ function showBatchResult(res, label) {
 // items 每项: { label, action, danger? } 或 { separator: true } 分隔线
 let ctxMenuOpenedAt = 0; // 菜单最近打开时间:用于忽略"右键后紧跟的残留 click"
 function showCtxMenu(x, y, items) {
-  ctxMenuOpenedAt = Date.now(); // 记录打开时刻
   els.ctxMenu.innerHTML = '';
   for (const it of items) {
     if (it.separator) {
@@ -2565,6 +2568,9 @@ function showCtxMenu(x, y, items) {
   }
   els.ctxMenu.style.left = `${x}px`;
   els.ctxMenu.style.top = `${y}px`;
+  // 记录打开时刻放在菜单构建/测量之后：250ms 防抖只用于忽略"右键残留 click"，
+  // 不应当把左键按钮打开菜单的同一 click 也算进去（大列表/慢机器上构建可能耗时）。
+  ctxMenuOpenedAt = Date.now();
   els.ctxMenu.classList.remove('hidden');
   // 菜单不能超出视口:搜索出的主机在屏幕最下方/最右侧时,若 x/y 靠近边缘,
   // 菜单会跑到屏幕外 → 用户看不到功能项。测尺寸后往上/往左翻,保证完整可见。
@@ -5384,7 +5390,12 @@ async function bastionRemoveTab(id) {
   if (bastionActiveTabId === id) {
     bastionActiveTabId = bastionServers().length ? bastionServers()[0].id : null;
     if (bastionActiveTabId) bastionSwitchTab(bastionActiveTabId);
-    else { els.bastionWebview.src = 'about:blank'; els.bastionCurrent.textContent = ''; }
+    else {
+      els.bastionWebview.src = 'about:blank';
+      els.bastionCurrent.textContent = '';
+      els.bastionLoading.classList.add('hidden');
+      setBastionEmptyState('idle', '堡垒机浏览器', '在上方选择/输入堡垒机 Web 地址,点「打开」开始');
+    }
   }
   bastionRenderTabs();
   bastionRenderServerSelect();
@@ -7257,6 +7268,17 @@ function updateBastionSavedBadges() {
   }
 }
 
+// 堡垒机浏览器的空态/加载/错误状态。不要把 textContent 写到容器上(会毁掉按钮和结构)
+function setBastionEmptyState(kind, title, sub) {
+  if (!els.bastionEmpty) return;
+  els.bastionEmpty.classList.remove('hidden');
+  if (els.bastionEmptyTitle) els.bastionEmptyTitle.textContent = title || '';
+  if (els.bastionEmptySub) els.bastionEmptySub.textContent = sub || '';
+  if (els.bastionEmptyRetry) els.bastionEmptyRetry.classList.toggle('hidden', kind !== 'error');
+  if (els.bastionEmptyCfg) els.bastionEmptyCfg.classList.toggle('hidden', kind === 'error');
+}
+function hideBastionEmpty() { if (els.bastionEmpty) els.bastionEmpty.classList.add('hidden'); }
+
 function loadBastion(url) {
   if (!url) { alert('请填堡垒机 Web 地址'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
@@ -7270,8 +7292,7 @@ function loadBastion(url) {
   state.bastionAutoFetchFails = 0;
   bastionFetchOkNotified = false;
   bastionFetchFailNotified = false;
-  els.bastionEmpty.classList.remove('hidden');
-  els.bastionEmpty.textContent = '加载中…';
+  hideBastionEmpty();
   els.bastionLoading.classList.remove('hidden');
   els.bastionCurrent.textContent = url;
   els.bastionWebview.src = url;
@@ -7376,13 +7397,12 @@ function initBastionWebview() {
   wv.addEventListener('did-start-loading', () => {
     bastionPageStableTs = 0; // 开始导航 → 页面不再视为稳定
     els.bastionLoading.classList.remove('hidden');
-    els.bastionEmpty.classList.remove('hidden');
-    els.bastionEmpty.textContent = '加载中…';
+    hideBastionEmpty(); // 只显示转圈,不再在空态里重复写"加载中…"
   });
   wv.addEventListener('did-stop-loading', () => {
     bastionPageStableTs = Date.now(); // 停止加载 → 记稳定起点(2s 内不注入/轮询)
     els.bastionLoading.classList.add('hidden');
-    els.bastionEmpty.classList.add('hidden');
+    hideBastionEmpty();
     try { if (wv.getURL && wv.getURL()) els.bastionCurrent.textContent = wv.getURL(); } catch { /* ignore */ }
     // 页面加载完:注入焦点桥(资产已原生拉取,不再注入资产捕获钩子)+ 自动适配面板宽度。
     // 登录页会连续跳转(每次 did-stop-loading 都触发注入),而导航切换瞬间 executeJavaScript
@@ -7432,10 +7452,10 @@ function initBastionWebview() {
   wv.addEventListener('did-fail-load', (e) => {
     if (e && e.isMainFrame === false) return; // 子资源失败不提示
     els.bastionLoading.classList.add('hidden');
-    els.bastionEmpty.classList.remove('hidden');
     const code = e.errorCode || '未知';
     const desc = (e.errorDescription || '').replace(/^ERR_/, '');
-    els.bastionEmpty.textContent = `⚠️ 加载失败(${code}${desc ? ' ' + desc : ''})\n请检查堡垒机地址或网络,可点右上角 ↻ 重试`;
+    setBastionEmptyState('error', '加载失败',
+      `(${code}${desc ? ' ' + desc : ''}) 请检查堡垒机地址或网络,可点「重试」或工具栏 ↻`);
   });
 }
 
@@ -9797,7 +9817,13 @@ makeResizer(els.dividerBastion, 'x',
   () => els.bastionPanel.offsetWidth,
   (w) => { els.bastionPanel.style.width = `${w}px`; },
   300, bastionMaxWidth, true,
-  () => { wvShowAfterDrag(); state.settings.bastionWidth = els.bastionPanel.offsetWidth; saveSettings(); },
+  () => {
+    wvShowAfterDrag();
+    state.settings.bastionWidth = els.bastionPanel.offsetWidth;
+    saveSettings();
+    // 面板宽度变了 → 未手动缩放时重新适配页面宽度
+    if (!bastionManualZoom) setTimeout(bastionFitToWidth, 80);
+  },
   wvHideWhileDrag);
 
 // 堡垒机面板高度:固定撑满整个区域(不再提供横分隔条上下拖动)
@@ -10133,6 +10159,8 @@ els.bastionClear.addEventListener('click', async () => {
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
     els.bastionUrl.value = '';
+    els.bastionLoading.classList.add('hidden');
+    setBastionEmptyState('idle', '堡垒机浏览器', '在上方选择/输入堡垒机 Web 地址,点「打开」开始');
     // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
     state.settings.bastionUrl = '';
     saveSettings();
@@ -10146,6 +10174,51 @@ els.bastionClear.addEventListener('click', async () => {
   }
 });
 els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
+// 空态「重试」:重新加载地址栏/上次保存的地址
+els.bastionEmptyRetry.addEventListener('click', () => {
+  const url = (els.bastionUrl.value || '').trim() || state.settings.bastionUrl || '';
+  if (url) loadBastion(url);
+});
+// 双击缩放百分比 → 恢复 100% 并重新开启自动适配
+els.bastionZoomLabel.addEventListener('dblclick', () => {
+  bastionManualZoom = false;
+  state.bastionZoom = 1;
+  applyBastionZoom();
+  saveSettings();
+  bastionFitToWidth();
+});
+// 「⋯」更多操作:系统浏览器打开 / 复制地址 / 重置缩放 / 清除历史
+function bastionCurrentUrl() {
+  try {
+    if (els.bastionWebview && els.bastionWebview.getURL && els.bastionWebview.getURL()) return els.bastionWebview.getURL();
+  } catch { /* ignore */ }
+  return (els.bastionUrl.value || '').trim();
+}
+els.bastionMore.addEventListener('click', () => {
+  const r = els.bastionMore.getBoundingClientRect();
+  const url = bastionCurrentUrl();
+  showCtxMenu(Math.round(r.left), Math.round(r.bottom + 4), [
+    { label: '🌐 在系统浏览器打开', action: async () => {
+      if (!url || /^about:/i.test(url)) { setStatus('当前没有可打开的网页地址', 'var(--orange)'); return; }
+      const res = await window.api.openExternal(url);
+      if (!res || !res.ok) setStatus('打开系统浏览器失败: ' + ((res && res.error) || '未知错误'), 'var(--red)');
+    } },
+    { label: '📋 复制当前地址', action: () => {
+      if (!url) return;
+      window.api.copyText(url);
+      setStatus('已复制堡垒机地址', 'var(--green)');
+    } },
+    { separator: true },
+    { label: '↻ 重置缩放(100%)', action: () => {
+      bastionManualZoom = false;
+      state.bastionZoom = 1;
+      applyBastionZoom();
+      saveSettings();
+      bastionFitToWidth();
+    } },
+    { label: '🧹 清除堡垒机历史', action: () => els.bastionClear.click() },
+  ]);
+});
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });

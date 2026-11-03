@@ -2669,6 +2669,18 @@ ipcMain.handle('app:openRelease', async (_e, url) => {
   try { await shell.openExternal(s); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// 通用外部链接(堡垒机「在系统浏览器打开」等):只允许 http/https
+ipcMain.handle('app:openExternal', async (_e, url) => {
+  try {
+    const u = new URL(String(url || ''));
+    if (!/^https?:$/.test(u.protocol)) return { ok: false, error: '仅支持 http/https 地址' };
+    await shell.openExternal(u.href);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
 // ---------- 自动下载更新(仅 Windows 安装版;便携版/开发版回退手动下载) ----------
 // 用 electron-updater + electron-builder 的 app-update.yml(GitHub provider)。
 // 只有 NSIS 安装版走这条链路;portable 每次自解压且数据在 exe 旁,自动替换风险高,直接提示手动下载。
