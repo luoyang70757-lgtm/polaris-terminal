@@ -529,6 +529,8 @@ const els = {
   btnAbout: $('btn-about'),
   aboutModal: $('about-modal'),
   aboutVersion: $('about-version'),
+  aboutCheck: $('about-check'),
+  aboutUpdateMsg: $('about-update-msg'),
   helpCloseX: $('help-close-x'),
   helpClose: $('help-close'),
 };
@@ -9938,6 +9940,7 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:toggle-panel') toggleSessionPanel();
   else if (ch === 'menu:settings') openSettingsModal();
   else if (ch === 'menu:about') openAbout();
+  else if (ch === 'menu:check-update') { openAbout(); checkUpdate(true); }
   else if (ch === 'menu:split-v') splitActivePane('v');
   else if (ch === 'menu:split-h') splitActivePane('h');
   else if (ch === 'menu:sftp') toggleSftpPanel();
@@ -9953,9 +9956,6 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:disconnect') menuDisconnect();
   else if (ch === 'menu:lock') requestLock();
   else if (ch === 'menu:jms') openJmsModal();
-  else if (ch === 'menu:about') {
-    alert('Polaris\n类 Xshell 的 SSH/SFTP 终端\n\nElectron + xterm.js + ssh2 + SQLite\n纯本地,无服务器');
-  }
 });
 
 // =====================================================================
@@ -11608,7 +11608,44 @@ els.paletteInput.addEventListener('keydown', (e) => {
 });
 els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
 
-// ---------- 关于弹窗(只展示版本 + 简介) ----------
+// ---------- 关于弹窗(版本 + 简介 + 手动检查更新) ----------
+let __checkingUpdate = false;
+async function checkUpdate(showInAbout) {
+  if (__checkingUpdate) return;
+  __checkingUpdate = true;
+  const setMsg = (text, cls) => {
+    if (!els.aboutUpdateMsg) return;
+    els.aboutUpdateMsg.textContent = text || '';
+    els.aboutUpdateMsg.className = 'about-update-msg' + (cls ? ' ' + cls : '');
+  };
+  setMsg('正在检查更新…');
+  setStatus('正在检查更新…', 'var(--accent)');
+  try {
+    const r = await window.api.checkUpdate();
+    if (!r || !r.ok) {
+      const msg = (r && r.error) || '网络不可用';
+      setMsg('检查失败: ' + msg, 'bad');
+      setStatus('检查更新失败: ' + msg, 'var(--red)');
+      return;
+    }
+    if (!r.hasUpdate) {
+      setMsg(`已是最新版本 v${r.current}`, 'ok');
+      setStatus(`已是最新版本 v${r.current}`, 'var(--green)');
+      return;
+    }
+    setMsg(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'ok');
+    setStatus(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'var(--green)');
+    const summary = String(r.notes || '').replace(/\r/g, '').split('\n').slice(0, 12).join('\n').trim();
+    if (confirm(`发现新版本 v${r.latest}（当前 v${r.current}）\n\n${summary ? summary + '\n\n' : ''}是否打开下载页面？`)) {
+      const o = await window.api.openRelease(r.url);
+      if (!o || !o.ok) setMsg('打开下载页失败: ' + ((o && o.error) || '未知错误'), 'bad');
+    }
+  } catch (e) {
+    setMsg('检查失败: ' + ((e && e.message) || e), 'bad');
+  } finally {
+    __checkingUpdate = false;
+  }
+}
 function openAbout() {
   els.aboutModal.classList.remove('hidden');
   closeSettingsModal(); // 从设置弹窗进来时,顺手关掉设置,避免叠弹窗
@@ -11619,6 +11656,7 @@ function openAbout() {
 }
 function closeAbout() { els.aboutModal.classList.add('hidden'); }
 els.btnAbout.addEventListener('click', openAbout);
+els.aboutCheck.addEventListener('click', () => checkUpdate(true));
 $('about-close-x').addEventListener('click', closeAbout);
 $('about-close').addEventListener('click', closeAbout);
 els.aboutModal.addEventListener('mousedown', (e) => { if (e.target === els.aboutModal) closeAbout(); });

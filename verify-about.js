@@ -127,12 +127,12 @@ const head = (t) => console.log(`\n— ${t} —`);
     if (dlg.intro && /SSH/.test(dlg.intro) && /SFTP/.test(dlg.intro) && dlg.intro.length > 40) ok(`有简介(${dlg.intro.length} 字)`);
     else bad('简介缺失或过短', dlg.intro);
 
-    head('③ 只保留版本 + 简介');
+    head('③ 版本 + 简介 + 检查更新');
     if (dlg.sections === 0 && dlg.kbdRows === 0) ok('旧说明文档结构(章节 / 快捷键表)已清空');
     else bad('关于弹窗里仍有大量说明段落', JSON.stringify({ sections: dlg.sections, kbdRows: dlg.kbdRows }));
     if (!dlg.hasHelpBody && dlg.oldModalGone) ok('help-body / help-kbd / help-modal 均已从 DOM 删除');
     else bad('旧样式节点残留', JSON.stringify(dlg));
-    if (dlg.btnCount === 2) ok('弹窗只剩「✕」和「关闭」两个按钮(无其他操作)');
+    if (dlg.btnCount === 3) ok('弹窗按钮:✕ / 检查更新 / 关闭');
     else bad('按钮数量异常', dlg.btnCount);
 
     head('④ 菜单「帮助 → 关于 Polaris」');

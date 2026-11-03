@@ -8,7 +8,7 @@
  *   4. --dev 模式下自动拉起本地 mock SSH 服务器(方便没有真实服务器时测试)
  */
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, session, net: electronNet } = require('electron');
 const path = require('path');
 const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
@@ -2623,6 +2623,52 @@ ipcMain.handle('app:about', () => {
   try { return { ok: true, version: app.getVersion() }; } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// ---------- 检查更新(手动,不自动安装) ----------
+// 只查 GitHub Releases 最新版本并展示;下载/安装仍由用户打开 Release 页面完成。
+// 不改发布链路、不引入 electron-updater,内网/离线环境失败时只提示网络错误。
+const UPDATE_REPO = 'luoyang70757-lgtm/polaris-terminal';
+function compareVersions(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '').replace(/^v/i, '').split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+ipcMain.handle('app:checkUpdate', async () => {
+  const current = app.getVersion();
+  // 测试可指向本地 mock;生产默认 GitHub Releases API
+  const api = process.env.POLARIS_UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+  try {
+    const res = await electronNet.fetch(api, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Polaris/${current}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const j = await res.json();
+    const latest = String((j && j.tag_name) || '').replace(/^v/i, '');
+    if (!latest) return { ok: false, error: '发布信息缺少版本号' };
+    return {
+      ok: true, current, latest,
+      hasUpdate: compareVersions(latest, current) > 0,
+      url: String(j.html_url || ''),
+      notes: String(j.body || '').slice(0, 4000),
+      publishedAt: j.published_at || '',
+    };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+// 只允许打开本项目的 Release 页面,防止渲染层被注入任意 URL 后被当作外链打开
+ipcMain.handle('app:openRelease', async (_e, url) => {
+  const s = String(url || '');
+  const allow = new RegExp('^https://github\\.com/' + UPDATE_REPO.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/releases(/|$)');
+  if (!allow.test(s)) return { ok: false, error: '非法下载地址' };
+  try { await shell.openExternal(s); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ---------- 窗口 ----------
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -2764,6 +2810,8 @@ function buildMenu() {
     {
       label: '帮助',
       submenu: [
+        { label: '检查更新…', click: send('menu:check-update') },
+        { type: 'separator' },
         { label: '关于 Polaris', click: send('menu:about') },
       ],
     },

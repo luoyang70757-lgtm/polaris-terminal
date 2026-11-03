@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld('api', {
   // ---- 应用菜单事件(文件/视图/工具/帮助) ----
   onMenu: (cb) => {
     for (const ch of [
-      'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about',
+      'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about', 'menu:check-update',
       'menu:split-v', 'menu:split-h', 'menu:sftp', 'menu:tunnel', 'menu:batch', 'menu:quick',
       'menu:cmd', 'menu:record-toggle', 'menu:record-list', 'menu:log-open', 'menu:ai',
       'menu:connect', 'menu:disconnect', 'menu:lock', 'menu:jms',
@@ -171,6 +171,9 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- 全量日志 ----
   appAbout: () => ipcRenderer.invoke('app:about'),
+  // 检查更新(手动):查 GitHub Releases 最新版本;openRelease 只允许打开本项目 Release
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  openRelease: (url) => ipcRenderer.invoke('app:openRelease', url),
   appLogDump: () => ipcRenderer.invoke('app:log-dump'),
   appLogDlog: (lines) => ipcRenderer.send('app:log-dlog', lines),
 
