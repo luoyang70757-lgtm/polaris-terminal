@@ -73,6 +73,7 @@ npm run dev          # 开发模式(自动拉起 mock SSH 服务器)
 - `Polaris Portable <版本>.exe`(portable 免安装版):**每次启动都会把约 200MB 运行时重新解压到 `%TEMP%`**,叠加 Defender 扫描后常见 5–40 秒。
 - 根因、确认方法与迁移步骤见 [`docs/windows-startup-slow.md`](docs/windows-startup-slow.md)。
 - 启动分段耗时见数据目录 `logs/startup-error.log`;显卡正常时可设 `POLARIS_GPU=1` 开启硬件加速。
+- **检查更新**:安装版「帮助 → 检查更新」可直接下载并重启安装(Windows);便携版/开发版会打开 GitHub 下载页。
 
 ## 代码结构
 

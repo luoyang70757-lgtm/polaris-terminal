@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-03）
 
-**当前版本 v1.0.60**（2026-11-03）：**新增「检查更新」**——帮助菜单 / 关于弹窗可手动查 GitHub Releases 最新版本，显示新版本与发布说明并可打开下载页；主进程 `net.fetch` + 版本比较，`openRelease` 只允许本项目 Release，不自动下载/安装。回归 `verify-check-update` 4/4。
+**当前版本 v1.0.61**（2026-11-03）：**Windows 安装版自动更新**——检查更新后可「下载更新 → 显示进度 → 重启安装」；electron-updater + GitHub provider，CI 随 Release 上传 `latest.yml`/`.blockmap`。便携版、开发版、非 Windows 回退打开下载页；未签名安装包 `verifyUpdateCodeSignature=false`。回归 `verify-check-update` 6/6、`verify-about` 15/15。
+
+上一版本 v1.0.60（2026-11-03）：**新增「检查更新」**——帮助菜单 / 关于弹窗可手动查 GitHub Releases 最新版本，显示新版本与发布说明并可打开下载页；主进程 `net.fetch` + 版本比较，`openRelease` 只允许本项目 Release。
 
 上一版本 v1.0.59（2026-11-03）：**修右侧堡垒机下拉不同步**——左侧保存/登录/删除 JMS 服务器后只刷新左侧下拉，右侧堡垒机下拉停留在旧列表（新建时 baseUrl 为空会被过滤）；现在保存/登录/MFA/删除后统一刷新右侧下拉，保存后同时重绘左侧列表。回归 `verify-bastion-server-sync` 4/4。
 

@@ -30,7 +30,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 当前开发状态
 
-见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.60**。v1.0.60 新增「帮助 → 检查更新」（手动查 GitHub Releases；不自动安装）。v1.0.59 修复左侧保存/登录/删除 JMS 服务器后右侧堡垒机下拉不同步（新建时 baseUrl 为空被过滤）。v1.0.58 修复 H3C 原生 API 偶发 `ERR_CERT_AUTHORITY_INVALID`（`session.fetch` 不触发 `app certificate-error`，对 `persist:bastion` 安装证书放行），并包含 v1.0.57 之后的「堡垒机登录后分组默认折叠」。v1.0.57 修 exec stdout 竞态与 5 个漂移用例；v1.0.50~56 为主题/字体/弹窗/分组等 UI 改进，详见 `AGENTS.md` 当前状态。以下为 v1.0.35→v1.0.40 的历史要点：
+见 `CONTEXT.md`（已 @import）。**当前版本 v1.0.61**。v1.0.61 新增 Windows 安装版自动更新（electron-updater + latest.yml；下载进度/重启安装；便携版回退下载页）。v1.0.60 新增「帮助 → 检查更新」。v1.0.59 修复左侧保存/登录/删除 JMS 服务器后右侧堡垒机下拉不同步（新建时 baseUrl 为空被过滤）。v1.0.58 修复 H3C 原生 API 偶发 `ERR_CERT_AUTHORITY_INVALID`（`session.fetch` 不触发 `app certificate-error`，对 `persist:bastion` 安装证书放行），并包含 v1.0.57 之后的「堡垒机登录后分组默认折叠」。v1.0.57 修 exec stdout 竞态与 5 个漂移用例；v1.0.50~56 为主题/字体/弹窗/分组等 UI 改进，详见 `AGENTS.md` 当前状态。以下为 v1.0.35→v1.0.40 的历史要点：
 
 - **命令补全**（v1.0.38）：输入命令前缀 ≥2 字符弹候选（内置常用 + 该主机历史高频 + 快捷命令，历史带描述），**Tab 补全 / ↑↓ 选择 / 点击补全，不自动执行**；转义/回车/Ctrl/点击面板外自动关闭；行被服务器改写（dirty）时不补全
 - **性能**（v1.0.37）：主终端 xterm **WebGL 渲染**（GPU 不可用自动回退 canvas）、scrollback 5000→3000、启动延迟加载堡垒机资产

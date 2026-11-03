@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.60**（2026-11-03）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.61**（2026-11-03）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -125,7 +125,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 34. **右侧堡垒机下拉同步**（2026-11-03，renderer.js）：左侧新建 JMS 服务器时 `baseUrl` 为空，右侧下拉会过滤掉；`jmsDoSave` 只刷新左侧 JMS 弹窗下拉，`jmsDoLogin`/`jmsDoMfa`/`jmsDeleteServerCompletely` 同样没有刷新右侧 → “右侧堡垒机获取不到左侧创建的连接信息”。修法：保存/登录/MFA/删除后统一调用 `bastionRenderServerSelect()`，保存后同时 `renderSessionList()`。回归：`verify-bastion-server-sync.js`（4/4）。
 
-35. **手动检查更新**（2026-11-03，main.js/preload.js/renderer.js）：帮助 → 检查更新… / 关于弹窗按钮。主进程 `app:checkUpdate` 用 Electron `net.fetch` 查 GitHub Releases latest，`compareVersions` 判断 `hasUpdate`；`app:openRelease` 仅允许 `https://github.com/luoyang70757-lgtm/polaris-terminal/releases...`，防止任意外链。**不做自动下载/安装**（不引入 electron-updater，不改现有 CI 发布链路）。回归：`verify-check-update.js`（4/4）。
+35. **检查更新 + Windows 自动更新**（2026-11-03，main.js/preload.js/renderer.js + electron-updater）：① 检查：`app:checkUpdate` 用 Electron `net.fetch` 查 GitHub Releases latest，`compareVersions` 判断 `hasUpdate`；`app:openRelease` 仅允许本项目 Release 地址。② 自动下载/安装：`electron-updater` + GitHub provider，electron-builder 生成 `app-update.yml`；仅 **Windows 安装版**（`app.isPackaged && win32 && !PORTABLE_EXECUTABLE_DIR`）走「下载 → 进度 → 重启安装」，便携版/开发版/非 Windows 回退打开下载页。③ CI 上传 `latest.yml`/`.blockmap` 并随 Release 发布；安装包 `artifactName` 用无空格点号，确保与 GitHub 资产名一致。④ 未签名发布 → `win.verifyUpdateCodeSignature=false`。回归：`verify-check-update.js`（6/6）、`verify-about.js`（15/15）。
 
 ## 运行与调试
 
