@@ -49,6 +49,9 @@ function createFakeShell(stream, session, audit) {
   // 模拟 sudo 二次密码提示(测试「自动填充密码」用):收到正确密码才授权
   const SUDO_PW = process.env.MOCK_SUDO_PW || 'admin123';
   let sudoWait = false; // true = 正在等 sudo 密码,输入不回显
+  // 模拟 su 二次密码提示(测试「切换 root(su - root)」用):收到正确 root 密码才切换
+  const SU_PW = process.env.MOCK_SU_PW || 'root123';
+  let suWait = false; // true = 正在等 su 密码,输入不回显
 
   const C = {
     reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
@@ -77,7 +80,7 @@ function createFakeShell(stream, session, audit) {
     switch (cmd) {
       case 'help':
         out(`${C.bold}可用命令(mock 演示):${C.reset}\r\n`);
-        ['help', 'whoami', 'pwd', 'ls [-l]', 'date', 'echo <text>', 'uname -a', 'cat <file>', 'history', 'clear', 'exit / logout', 'ssh <ip> (模拟跳转到其他资产)'].forEach((c) => {
+        ['help', 'whoami', 'pwd', 'ls [-l]', 'date', 'echo <text>', 'uname -a', 'cat <file>', 'history', 'clear', 'su [- root]', 'exit / logout', 'ssh <ip> (模拟跳转到其他资产)'].forEach((c) => {
           out(`  ${C.cyan}${c}${C.reset}\r\n`);
         });
         break;
@@ -136,6 +139,10 @@ function createFakeShell(stream, session, audit) {
         sudoWait = true; // 转入密码等待:打印提示,不再打普通提示符
         out(C.yellow + '[sudo] password for ' + user + ': ' + C.reset);
         break;
+      case 'su':
+        suWait = true; // 转入密码等待:真实 su - root 打印 "Password: "
+        out(C.yellow + 'Password: ' + C.reset);
+        break;
       case 'ssh': {
         // 模拟从一个资产跳转到另一个资产(只换 hostname/OS 展示,文件系统不变)
         const target = args[0];
@@ -182,6 +189,31 @@ function createFakeShell(stream, session, audit) {
         }
         continue; // 密码字符不进入普通行缓冲,也不回显
       }
+      if (suWait) {
+        // su 密码模式:与 sudo 一致;支持 Ctrl+C 中止切换
+        if (ch === '\r' || ch === '\n') {
+          const pw = buf; buf = '';
+          if (pw === SU_PW) {
+            suWait = false;
+            out('\r\n' + C.green + '(su) 已切换到 root' + C.reset + '\r\n');
+            console.log(`[SU] 密码正确(长度 ${pw.length},不回显明文)`);
+            out(prompt());
+          } else {
+            out('\r\n' + C.red + 'su: Authentication failure' + C.reset + '\r\n');
+            console.log(`[SU] 密码不匹配(收到=${JSON.stringify(pw)})`);
+            suWait = false;
+            out(prompt());
+          }
+        } else if (ch === '\x03' || ch === '\x04') {
+          buf = '';
+          suWait = false; // Ctrl+C 中止 su
+          out('^C\r\n');
+          out(prompt());
+        } else {
+          buf += ch; // 收进缓冲,不回显
+        }
+        continue; // 密码字符不进入普通行缓冲,也不回显
+      }
       if (ch === '\r' || ch === '\n') {
         if (buf.trim()) {
           history.push(buf.trim());
@@ -189,7 +221,7 @@ function createFakeShell(stream, session, audit) {
           audit.cmd(buf.trim());
         }
         buf = '';
-        if (!sudoWait) out(prompt()); // sudo 已转入密码等待,不再打普通提示符
+        if (!sudoWait && !suWait) out(prompt()); // sudo/su 已转入密码等待,不再打普通提示符
       } else if (ch === '\x7f' || ch === '\b') {
         if (buf.length > 0) { buf = buf.slice(0, -1); out('\b \b'); }
       } else if (ch === '\x03') { // Ctrl+C

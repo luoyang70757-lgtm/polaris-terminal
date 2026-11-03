@@ -157,6 +157,8 @@ const els = {
   fPrivateKeyPick: $('f-private-key-pick'),
   fPassphrase: $('f-passphrase'),
   fPassphraseToggle: $('f-passphrase-toggle'),
+  fSuPassword: $('f-su-password'),
+  fSuPasswordToggle: $('f-su-password-toggle'),
   fJumpHost: $('f-jump-host'),
   fJumpPort: $('f-jump-port'),
   fJumpUsername: $('f-jump-username'),
@@ -193,8 +195,21 @@ const els = {
   importBackupFile: $('import-backup-file'),
   importExternal: $('import-external'),
   importExternalFile: $('import-external-file'),
+  importSshConfig: $('import-sshconfig'),
   importTemplate: $('import-template'),
   importOverwrite: $('import-overwrite'),
+
+  // 新手引导向导
+  onboardingModal: $('onboarding-modal'),
+  obBack: $('ob-back'),
+  obSkip: $('ob-skip'),
+  obNext: $('ob-next'),
+  obFinish: $('ob-finish'),
+  obCloseX: $('ob-close-x'),
+  obImportSsh: $('ob-import-ssh'),
+  obImportBatch: $('ob-import-batch'),
+  obNewSession: $('ob-new-session'),
+  obQuick: $('ob-quick'),
 
   // 自定义输入弹窗 + 右键菜单
   promptModal: $('prompt-modal'),
@@ -203,6 +218,10 @@ const els = {
   promptInput: $('prompt-input'),
   promptOk: $('prompt-ok'),
   promptCancel: $('prompt-cancel'),
+  promptPaste: $('prompt-paste'),
+  promptRememberRow: $('prompt-remember-row'),
+  promptRemember: $('prompt-remember'),
+  promptRememberLabel: $('prompt-remember-label'),
   ctxMenu: $('ctx-menu'),
 
   // 连接/中断二合一 + 锁定
@@ -891,7 +910,19 @@ async function confirmFilePwd() {
   }
 }
 
-// 从 Xshell/iTerm2 导入:选文件 → 主进程解析 → 预览(密码需重新填,Xshell 加密无法还原)
+// 从 ~/.ssh/config 一键导入:读默认路径 → 主进程解析 → 打开导入弹窗预览(密码/私钥口令需重新填)
+async function importSshConfigSelected() {
+  openImportModal(); // 先打开弹窗(从导入窗内按钮或首次使用空态卡片点都能用)
+  const res = await window.api.importSshConfig();
+  if (res && res.ok) {
+    els.importResult.innerHTML = '';
+    setImportPreview(res.rows);
+  } else {
+    els.importResult.innerHTML = `<span class="bad">${(res && res.error) || '解析失败'}</span>`;
+  }
+}
+
+// 从 Xshell/iTerm2/SSH config 导入:选文件 → 主进程解析 → 预览(密码需重新填,Xshell 加密无法还原)
 async function importExternalSelected() {
   const files = els.importExternalFile.files;
   if (!files || !files.length) return;
@@ -1441,11 +1472,13 @@ async function loadSessions() {
     if (!groupsCollapsedOnBoot) {
       state.collapsedGroups.clear();
       for (const g of state.groups) state.collapsedGroups.add(Number(g.id));
-      state.collapsedTopHost = true;
+      // 无会话时展开「🖥 主机」分组(collapsed=false),露出首次使用空态卡片;有会话则按约定全部收起
+      state.collapsedTopHost = state.sessions.length > 0;
       state.collapsedTopBastion = true;
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
+    maybeShowOnboarding(); // 首次使用(无会话且未完成引导)自动弹新手引导
     // 启动延迟加载:堡垒机资产恢复(读库+渲染)不阻塞首屏,等主界面先出来再异步做。
     // 资产含 4 位数+时对首帧无感知需求,晚 300ms 显示不影响使用。
     setTimeout(() => { try { restoreBastionAssets(); } catch { /* ignore */ } }, 300);
@@ -1614,6 +1647,90 @@ function filterSessions(filter) {
 
 // 按视图渲染会话列表:树形(tree)/列表(list)/网格(grid)
 // 顶层分成两个分组:「🖥 主机」(所有普通会话分组)+「🛡 堡垒机」(JMS/H3C 资产)
+// 首次使用者的空态卡片:会话列表为空时给出行动入口(而非光秃秃一句“新建”)
+function buildEmptyHostCard() {
+  const card = document.createElement('div');
+  card.className = 'session-empty-card';
+
+  const title = document.createElement('div');
+  title.className = 'sec-title';
+  title.textContent = '👋 还没有任何会话';
+  const sub = document.createElement('div');
+  sub.className = 'sec-sub';
+  sub.textContent = '从下面的入口开始，数据加密保存在本机，不出网。';
+  const actions = document.createElement('div');
+  actions.className = 'sec-actions';
+
+  const mk = (label, titleAttr, onClick, primary) => {
+    const b = document.createElement('button');
+    b.className = 'btn-mini' + (primary ? ' sec-primary' : '');
+    b.type = 'button';
+    b.textContent = label;
+    if (titleAttr) b.title = titleAttr;
+    b.addEventListener('click', onClick);
+    actions.appendChild(b);
+  };
+  mk('➕ 新建会话', '新建一台主机/堡垒机连接会话', () => openSessionModal(null), true);
+  mk('📄 批量导入', '从 CSV/Excel/备份批量导入主机', () => openImportModal());
+  mk('🔑 导入 ~/.ssh/config', '直接读 ~/.ssh/config 生成会话(密码/口令需重新填)', () => importSshConfigSelected());
+  mk('⚡ 快捷连接', '输入 user@host[:port] 临时直连,不保存会话', () => toggleQuickConnect());
+
+  const guide = document.createElement('button');
+  guide.type = 'button';
+  guide.className = 'ob-guide-link';
+  guide.textContent = '🚀 查看新手引导';
+  guide.addEventListener('click', () => openOnboarding());
+
+  card.appendChild(title);
+  card.appendChild(sub);
+  card.appendChild(actions);
+  card.appendChild(guide);
+  return card;
+}
+
+// ---- 新手引导向导(首次使用自动弹出,三步;空态卡片可重开) ----
+let obStep = 0;
+const OB_STEPS = 3;
+function obStepsEls() { return document.querySelectorAll('.ob-step'); }
+function obDotsEls() { return document.querySelectorAll('.ob-dot'); }
+function obRender() {
+  obStepsEls().forEach((s, i) => s.classList.toggle('hidden', i !== obStep));
+  obDotsEls().forEach((d, i) => d.classList.toggle('active', i === obStep));
+  els.obBack.classList.toggle('hidden', obStep === 0);
+  const last = obStep === OB_STEPS - 1;
+  els.obNext.classList.toggle('hidden', last);
+  els.obNext.textContent = obStep === 0 ? '开始 →' : '下一步 →';
+  els.obFinish.classList.toggle('hidden', !last);
+  els.obSkip.classList.toggle('hidden', last); // 最后一步只剩「开始使用」
+}
+function openOnboarding() {
+  obStep = 0;
+  obRender();
+  els.onboardingModal.classList.remove('hidden');
+}
+function closeOnboarding(markDone = true) {
+  els.onboardingModal.classList.add('hidden');
+  if (markDone && !state.settings.onboardingDone) { state.settings.onboardingDone = true; saveSettings(); }
+}
+function obNext() { if (obStep < OB_STEPS - 1) { obStep++; obRender(); } }
+function obBack() { if (obStep > 0) { obStep--; obRender(); } }
+// 首次使用自动弹出:无会话且未完成过引导时,弹一次(之后从空态卡片重开)。
+function maybeShowOnboarding() {
+  try {
+    if (state.settings.onboardingDone || state.sessions.length > 0) return;
+    const boot = new URLSearchParams(location.search).get('boot') === '1'; // 正式版有开机过场
+    const mode = state.settings.bootIntro || 'short';
+    // 过场动画 z-index 9999 会盖住弹窗,等它播完/被跳过再弹;dev/测试无过场几乎立即弹。
+    const delay = boot ? (mode === 'full' ? 2000 : mode === 'skip' ? 0 : 1400) : 40;
+    setTimeout(() => {
+      try {
+        if (state.settings.onboardingDone || state.sessions.length > 0) return;
+        openOnboarding();
+      } catch { /* ignore */ }
+    }, delay);
+  } catch { /* ignore */ }
+}
+
 function renderSessionList(filter) {
   const kbWasInside = els.sessionTree.contains(document.activeElement); // 重渲染后把键盘焦点还回去
   els.sessionTree.innerHTML = '';
@@ -1671,11 +1788,15 @@ function renderSessionList(filter) {
     els.sessionTree.appendChild(mkTopHead('🖥 主机', 'host'));
     if (!topCollapsed.host) {
       if (sessions.length === 0) {
-        // 无普通会话:主机分组下提示
-        const empty = document.createElement('div');
-        empty.className = 'asset-group';
-        empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
-        hostContainer.appendChild(empty);
+        // 无普通会话:主机分组下提示。无筛选时给首次使用者行动卡片;筛选时只是“没匹配”
+        if (f) {
+          const empty = document.createElement('div');
+          empty.className = 'asset-group';
+          empty.textContent = '没有匹配的会话';
+          hostContainer.appendChild(empty);
+        } else {
+          hostContainer.appendChild(buildEmptyHostCard());
+        }
       } else {
         const view = state.settings.sessionView || 'tree';
         if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
@@ -3369,6 +3490,7 @@ function openSessionModal(session, presetGroupId) {
   els.fPassword.value = session ? (session.password || '') : '';
   els.fPrivateKey.value = session ? (session.private_key || '') : '';
   els.fPassphrase.value = session ? (session.passphrase || '') : '';
+  els.fSuPassword.value = session ? (session.su_password || '') : '';
   const jump = session && session.jump ? session.jump : null;
   els.fJumpHost.value = jump ? (jump.host || '') : '';
   els.fJumpPort.value = jump ? (jump.port || 22) : 22;
@@ -3383,6 +3505,7 @@ function openSessionModal(session, presetGroupId) {
     (session.protocol && session.protocol !== 'ssh')
     || session.private_key
     || session.passphrase
+    || session.su_password
     || (session.encoding && session.encoding !== 'utf8')
     || session.on_connect
     || (session.jump && session.jump.host)
@@ -3488,6 +3611,7 @@ async function doSaveSession(groupId) {
     password: els.fPassword.value,
     privateKey: els.fPrivateKey.value.trim(),
     passphrase: els.fPassphrase.value,
+    suPassword: els.fSuPassword.value,
     jump: els.fJumpHost.value.trim()
       ? {
           host: els.fJumpHost.value.trim(),
@@ -3572,6 +3696,7 @@ async function cloneSession(s) {
     password: s.password || '',       // 已是解密后的明文,主进程会再加密入库
     privateKey: s.private_key || '',
     passphrase: s.passphrase || '',
+    suPassword: s.su_password || '',  // 切换 root 密码(已解密明文,主进程再加密入库)
     encoding: s.encoding || 'utf8',
     protocol: s.protocol || 'ssh',
     groupId: s.group_id != null ? s.group_id : undefined,
@@ -8206,6 +8331,7 @@ async function connectToServer(session, opts) {
         refocusTerminal(sessionId); // 菜单是 <div>,点击会把 textarea 焦点顶掉(落到 body),
         // 用户接着敲的字(含空格)会全被吞掉直到再点终端 —— 粘贴完立刻把焦点还回终端。
       } },
+      { label: '🔐 切换 root（su - root）', action: () => switchToRoot(sessionId) },
       { label: '全选', action: () => { try { term.selectAll(); } catch { /* xterm 某些版本无 selectAll */ } } },
     ]);
   });
@@ -9890,13 +10016,18 @@ function toggleBroadcast() {
 // 自定义输入弹窗(替代 window.prompt,新版 Chromium 已不支持 prompt)
 // =====================================================================
 let promptCallback = null; // 点"确定"后要执行的回调
+let promptCancelCb = null; // 点"取消"后要执行的回调(可选:切换 root 等需要取消时中止远端命令)
 
-function showPrompt({ title, label, value, onOk, password }) {
+function showPrompt({ title, label, value, onOk, onCancel, password, rememberLabel }) {
   els.promptTitle.textContent = title || '输入';
   els.promptLabel.textContent = label || '内容';
   els.promptInput.value = value || '';
   els.promptInput.type = password ? 'password' : 'text'; // 快捷连接问密码时隐藏明文
+  els.promptRemember.checked = false;
+  els.promptRememberLabel.textContent = rememberLabel || '记住到本会话';
+  els.promptRememberRow.classList.toggle('hidden', !rememberLabel);
   promptCallback = onOk;
+  promptCancelCb = onCancel || null;
   els.promptModal.classList.remove('hidden');
   focusModalInput(els.promptModal, els.promptInput);
   try { els.promptInput.select(); } catch { /* ignore */ }
@@ -9904,17 +10035,100 @@ function showPrompt({ title, label, value, onOk, password }) {
 
 function closePrompt() {
   promptCallback = null;
+  promptCancelCb = null;
+  els.promptRememberRow.classList.add('hidden'); // 默认不显示"记住"勾选,除非调用方传了 rememberLabel
   els.promptModal.classList.add('hidden');
 }
 
 els.promptOk.addEventListener('click', () => {
   const v = els.promptInput.value.trim();
+  const remember = els.promptRemember.checked;
   const cb = promptCallback;
   closePrompt();
-  if (cb) cb(v); // 把输入值交给调用方
+  if (cb) cb(v, remember); // 把输入值和"是否记住"交给调用方
 });
-els.promptCancel.addEventListener('click', closePrompt);
+els.promptCancel.addEventListener('click', () => {
+  const cb = promptCancelCb;
+  closePrompt();
+  if (cb) cb();
+});
 els.promptInput.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) els.promptOk.click(); });
+
+// 📋 粘贴按钮:直接把剪贴板内容填进输入框(密码提示时也能安全粘贴,不落日志/不截留)
+els.promptPaste.addEventListener('click', () => {
+  try {
+    const t = window.api.readClipboard();
+    if (t) {
+      els.promptInput.value = t;
+      els.promptInput.focus();
+      try { els.promptInput.select(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+});
+
+// 🔐 切换 root(su - root)+ 密码粘贴/自动切换。
+// - 会话已保存 root 密码(su_password) → 直接发送 su - root,检测到 Password: 后自动发 root 密码,不弹框。
+// - 未保存 → 弹密码框,粘贴/输入;勾选"记住"则回写保存到本会话,下次一键自动切换。
+//  送达期间抑制 autoFillPassword —— 否则它会把"登录密码"错发给 su 的 Password: 提示,导致切换失败。
+function switchToRoot(sessionId) {
+  let tab = sessionId ? state.tabs.get(sessionId) : (state.activeSessionId ? state.tabs.get(state.activeSessionId) : null);
+  if (!tab) tab = [...state.tabs.values()].find((td) => td.status === 'connected');
+  if (!tab) { setStatus('没有已连接的会话,无法切换 root', 'var(--red)'); return; }
+  if (tab.status !== 'connected') { setStatus('当前会话未连接,无法切换 root', 'var(--red)'); return; }
+  if ((tab.session.protocol || 'ssh') === 'telnet') { setStatus('Telnet 会话不支持 su 切换', 'var(--red)'); return; }
+  const targetId = tab.sessionId;
+  const savedPw = tab.session && tab.session.su_password ? tab.session.su_password : '';
+  tab.suPending = true; // 抑制 autoFillPassword:su 要的是 root 密码,不是登录密码
+  sendOneShotCommand(tab, 'su - root'); // 先 Ctrl+U/Ctrl+K 清掉远端当前行,再发命令
+  if (savedPw) {
+    // 已保存 root 密码:交给负责检测 Password: 的回收逻辑自动发送,不再弹框打断
+    tab.suAutoPw = savedPw;
+    tab.suAutoPassSent = false;
+    tab.suAutoBuf = '';
+    setStatus('已发送 su - root(将自动使用已保存的 root 密码)', 'var(--accent)');
+    return;
+  }
+  setStatus('已发送 su - root,请输入 root 密码', 'var(--accent)');
+  showPrompt({
+    title: '切换 root（su - root）',
+    label: 'root 密码（可直接 Ctrl/Cmd+V 粘贴,或点「📋 粘贴」）',
+    password: true,
+    rememberLabel: '记住到本会话（下次一键自动切换）',
+    onOk: (pw, remember) => {
+      tab.suPending = false;
+      if (pw) window.api.sshWrite(targetId, pw + '\r', { noLog: true }); // 密码不进会话日志/录制
+      if (remember && pw) saveSuPassword(tab.session, pw, tab); // 勾选“记住”→ 保存到会话(加密入库)
+    },
+    onCancel: () => {
+      tab.suPending = false;
+      window.api.sshWrite(targetId, '\x03'); // 用户取消 → Ctrl+C 中止 su,不留密码提示卡在终端
+      setStatus('已取消切换 root', 'var(--text-dim)');
+    },
+  });
+}
+
+// 把 root 密码保存到会话(勾选"记住"后调用):用会话现有配置构造完整 payload 走 updateSession,
+// 主进程会像登录密码一样加密(su_password)入库;成功后同步内存,之后 switchToRoot 直接走自动通道。
+async function saveSuPassword(session, pw, tab) {
+  const data = {
+    name: session.name, host: session.host,
+    port: session.port || 22, username: session.username,
+    password: session.password || '',
+    privateKey: session.private_key || '',
+    passphrase: session.passphrase || '',
+    jump: session.jump && session.jump.host ? session.jump : null,
+    encoding: session.encoding || 'utf8',
+    onConnect: session.on_connect || '',
+    protocol: session.protocol || 'ssh',
+    groupId: session.group_id != null ? session.group_id : null,
+    suPassword: pw,
+  };
+  const res = await window.api.updateSession(session.id, data);
+  if (!res.ok) { alert(`保存 root 密码失败: ${res.error}`); return; }
+  session.su_password = pw; // 同步内存,下次切换直接用
+  if (tab) tab.session.su_password = pw;
+  setStatus('已保存 root 密码,下次切换将自动使用', 'var(--green)');
+}
 
 // =====================================================================
 // 右键菜单:菜单项各自绑定 action;点别处 / 失焦 关闭
@@ -10145,6 +10359,17 @@ els.importBackupFile.addEventListener('change', importBackupSelected);
 // 从 Xshell/iTerm2 导入
 els.importExternal.addEventListener('click', () => els.importExternalFile.click());
 els.importExternalFile.addEventListener('change', importExternalSelected);
+els.importSshConfig.addEventListener('click', importSshConfigSelected);
+// 新手引导向导
+els.obNext.addEventListener('click', obNext);
+els.obBack.addEventListener('click', obBack);
+els.obSkip.addEventListener('click', () => closeOnboarding(true));
+els.obFinish.addEventListener('click', () => closeOnboarding(true));
+els.obCloseX.addEventListener('click', () => closeOnboarding(true));
+els.obImportSsh.addEventListener('click', () => { closeOnboarding(true); importSshConfigSelected(); });
+els.obImportBatch.addEventListener('click', () => { closeOnboarding(true); openImportModal(); });
+els.obNewSession.addEventListener('click', () => { closeOnboarding(true); openSessionModal(null); });
+els.obQuick.addEventListener('click', () => { closeOnboarding(true); toggleQuickConnect(); });
 // 备份文件密码弹窗
 els.filePwdOk.addEventListener('click', confirmFilePwd);
 els.filePwdCancel.addEventListener('click', closeFilePwd);
@@ -11126,6 +11351,7 @@ function togglePwdEye(inputId, btnId) {
 els.fPasswordToggle.addEventListener('click', () => togglePwdEye('f-password', 'f-password-toggle'));
 els.fPassphraseToggle.addEventListener('click', () => togglePwdEye('f-passphrase', 'f-passphrase-toggle'));
 els.fJumpPasswordToggle.addEventListener('click', () => togglePwdEye('f-jump-password', 'f-jump-password-toggle'));
+els.fSuPasswordToggle.addEventListener('click', () => togglePwdEye('f-su-password', 'f-su-password-toggle'));
 // 弹窗回车即保存
 for (const f of [els.fName, els.fHost, els.fPassword]) {
   f.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) saveSession(); });
@@ -11238,7 +11464,7 @@ window.api.onSshData((sessionId, data) => {
   // 只对 SSH 会话启用(Telnet 的 login:/password: 自动登录已在主进程处理,避免重复发密码);
   // 密码只发送、绝不写入调试日志/命令记录。
   if ((t.session.protocol || 'ssh') !== 'telnet' && t.session && t.session.password &&
-      state.settings.autoFillPassword !== false) {
+      state.settings.autoFillPassword !== false && !t.suPending) {
     const raw = typeof data === 'string' ? data : (t.autoPwDec || (t.autoPwDec = new TextDecoder())).decode(new Uint8Array(data), { stream: true });
     if (raw) {
       // 剥 ANSI 转义(颜色/光标)+ 回车,避免打断"以 password: 结尾"的匹配
@@ -11251,6 +11477,22 @@ window.api.onSshData((sessionId, data) => {
         window.api.sshWrite(sessionId, t.session.password + '\r', { noLog: true });
       } else if (!promptEnd) {
         t.autoPwSent = false; // 提示后收到其它输出(密码被接受/命令结果)→ 武装好等下一次提示
+      }
+    }
+  }
+  // ---- 切换 root(su):已保存 root 密码时,检测到 Password: 自动发送 root 密码 ----
+  // 与上面 autoFillPassword 独立:savedPw 触发“不弹框”的自动切换,密码是 su_password(不是登录密码)。
+  if (t.suAutoPw && !t.suAutoPassSent) {
+    const raw = typeof data === 'string' ? data : (t.autoPwDec || (t.autoPwDec = new TextDecoder())).decode(new Uint8Array(data), { stream: true });
+    if (raw) {
+      t.suAutoBuf = ((t.suAutoBuf || '') + raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r/g, '')).slice(-120);
+      if (/(?:^|[^\w])(?:[Pp]assword|[Pp]asswd)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.suAutoBuf)) {
+        t.suAutoPassSent = true;
+        t.suPending = false; // 密码已发送,解除抑制(恢复后续正常的 autoFillPassword)
+        const pw = t.suAutoPw;
+        t.suAutoPw = null; // 本次已消费,避免重复发送
+        dlog('SUAUTO', `${sessionId} 检测到 su 的密码提示,自动发送已保存的 root 密码(长度 ${pw.length},不记明文)`);
+        window.api.sshWrite(sessionId, pw + '\r', { noLog: true });
       }
     }
   }
@@ -11509,6 +11751,7 @@ window.api.onSshStatus((sessionId, status) => {
     clearTimeout(t.reconnectClearTimer);
     t.reconnectClearTimer = setTimeout(() => { t.reconnectAttempts = 0; }, 15000);
     t.autoPwBuf = ''; t.autoPwSent = false; // 重置自动填充密码状态,迎接新会话的提示
+    t.suAutoPw = null; t.suAutoPassSent = false; t.suAutoBuf = ''; t.suPending = false; // 重置切换 root 的自动密码状态
     if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
     if (dot) dot.title = '已连接';
     setStatus(`已连接: ${t.title}`, 'var(--green)');
@@ -11636,6 +11879,7 @@ const COMMANDS = [
   { name: '关于 Polaris', hint: 'ℹ️', run: () => openAbout() },
   { name: '新建会话', hint: '⌘N', run: () => openSessionModal(null) },
   { name: '快捷连接', hint: '', run: () => toggleQuickConnect() },
+  { name: '切换 root（su - root）', hint: '', run: () => switchToRoot(state.activeSessionId) },
   { name: '新建分组', hint: '', run: () => newGroup() },
   { name: '连接/断开选中会话', hint: '⌘Enter', run: () => toggleConnectDisconnect() },
   { name: '广播模式', hint: '', run: () => toggleBroadcast() },

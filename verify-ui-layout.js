@@ -76,6 +76,8 @@ const head = (t) => console.log(`\n— ${t} —`);
     }
     if (!c) throw new Error('解锁后主窗口未出现');
     for (let i = 0; i < 50; i++) { if (await ev(c, `typeof state === 'object' && !!state.settings`)) break; await sleep(200); }
+    // 跳过并关闭首次使用自动弹出的新手引导,避免遮挡后续点击/断言
+    await ev(c, `state.settings.onboardingDone = true; saveSettings(); var _om = document.getElementById('onboarding-modal'); if (_om) _om.classList.add('hidden'); true;`);
 
     // 造数据:一个分组 + 几台长名字主机,并连上一台把 SFTP 打开
     const S = JSON.stringify(SSH);

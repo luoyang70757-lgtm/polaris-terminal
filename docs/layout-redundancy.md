@@ -11,7 +11,7 @@
 | 条目 | 状态 |
 |---|---|
 | A1 SFTP 传输历史双份记录 | ✅ 已完成（现仅传输失败/非传输操作写文本日志，成功上传下载不再 addLog） |
-| B1 右侧面板挤死终端 | 🟡 部分完成：命令记录/批量执行**已互斥**（`toggleCmdPanel`/`toggleBatchPanel` 互相收起）；**剩余**：AI 面板仍可与二者之一同开（默认 1000px 窗口下终端约剩 100px）、`.terminal-area` 仍无 `min-width` 保护 |
+| B1 右侧面板挤死终端 | ✅ 已完成：命令记录/批量执行**已互斥**（`toggleCmdPanel`/`toggleBatchPanel` 互相收起）；`.terminal-area` 已有 `min-width: 320px` 保护（终端不再被挤成 0）；AI 面板保持独立开关（与命令记录/批量同开属预期，空间不足时右侧面板被窗口裁剪而不是压扁终端） |
 | B2 面板尺寸记忆不一致 | ✅ 已完成（`sessionPanelWidth`/`sftpPanelHeight` 均已持久化，拖动后 saveSettings） |
 | A2 堡垒机三重选控件 / A3 入口重复 / A4、A5 轻度冗余 / B3、B4、B5 | ⬜ 仍按原文；判断前请重新 `grep` 定位（行号以 2026-08-23 为准，已失效） |
 

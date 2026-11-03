@@ -68,6 +68,10 @@ body {
 .field-check input { width: auto; }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
+/* 自定义输入弹窗(prompt)的输入框 + 粘贴按钮 */
+.prompt-input-row { display: flex; gap: 8px; align-items: stretch; }
+.prompt-input-row input { flex: 1; width: auto; }
+.prompt-input-row .btn-ghost { flex: 0 0 auto; white-space: nowrap; }
 /* 会话弹窗"测试连接":按钮 + 内联结果(放在分组行右侧,不再单独占一整行) */
 .test-conn-row { display: flex; align-items: center; gap: 8px; }
 .test-conn-field { flex: 0 0 auto; }
@@ -675,6 +679,23 @@ input[type="checkbox"] {
 }
 .welcome-hint-session b { color: var(--accent); font-weight: 600; }
 
+/* 首次使用空态卡片(会话列表为空时的行动入口) */
+.session-empty-card {
+  margin: 6px 0;
+  padding: 12px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel-2, rgba(255, 255, 255, 0.04));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session-empty-card .sec-title { font-size: var(--fs-md); color: var(--text); font-weight: 600; }
+.session-empty-card .sec-sub { font-size: var(--fs-sm); color: var(--text-dim); line-height: 1.6; }
+.session-empty-card .sec-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.session-empty-card .sec-actions .btn-mini { padding: 5px 8px; flex-shrink: 0; }
+.session-empty-card .sec-actions .sec-primary { color: var(--accent); border-color: var(--accent); }
+
 /* ---------- 账号选择弹层 ---------- */
 .modal {
   position: fixed;
@@ -784,6 +805,28 @@ input[type="checkbox"] {
 
 .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
 .modal-actions .btn-primary { flex: 1; margin-top: 0; }
+
+/* ---------- 新手引导向导(首次使用自动弹出) ---------- */
+.modal-card.ob-card { width: 400px; }
+.ob-steps { display: flex; gap: 6px; margin: 4px 0 14px; }
+.ob-dot { flex: 1; height: 3px; border-radius: 2px; background: var(--border); }
+.ob-dot.active { background: var(--accent); }
+.ob-head { font-size: var(--fs-lg); font-weight: 700; margin-bottom: 8px; color: var(--text); }
+.ob-desc { font-size: var(--fs-md); color: var(--text-dim); line-height: 1.7; margin-bottom: 12px; }
+.ob-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.ob-badges span { font-size: var(--fs-sm); padding: 5px 10px; border: 1px solid var(--border); border-radius: 20px; color: var(--text-dim); background: var(--bg); }
+.ob-options { display: flex; flex-direction: column; gap: 8px; }
+.ob-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; width: 100%; font-family: inherit; }
+.ob-opt:hover { border-color: var(--accent); background: var(--bg-hover); }
+.ob-opt b { font-size: var(--fs-base); font-weight: 600; }
+.ob-opt span { font-size: var(--fs-sm); color: var(--text-dim); }
+.ob-note { font-size: var(--fs-sm); color: var(--text-dim); margin-top: 10px; }
+.ob-actions { gap: 8px; }
+.ob-actions .btn-ghost { flex-shrink: 0; }
+
+/* 空态卡片里的「查看新手引导」文字链接 */
+.ob-guide-link { border: none; background: none; color: var(--accent); cursor: pointer; font-size: var(--fs-sm); padding: 2px 0; font-family: inherit; }
+.ob-guide-link:hover { text-decoration: underline; }
 
 /* ---------- 端口探测弹窗结果表 ---------- */
 .probe-result { margin-top: 12px; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   exportSessions: (rows, password) => ipcRenderer.invoke('sessions:export', { rows, password }),
   importBackup: (buf, password) => ipcRenderer.invoke('sessions:importBackup', { buf, password }),
   importExternal: (files) => ipcRenderer.invoke('sessions:importExternal', { files }),
+  importSshConfig: () => ipcRenderer.invoke('sessions:importSshConfig'),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveTemplate: () => ipcRenderer.invoke('template:save'),
   pickKeyFile: () => ipcRenderer.invoke('pick:keyFile'),

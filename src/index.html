@@ -468,6 +468,12 @@
                 </label>
               </div>
             </details>
+            <label class="field"><span>root 密码(切换 root 时自动使用,可选)</span>
+              <div class="pwd-row">
+                <input id="f-su-password" type="password" placeholder="如 root 的密码(留空则每次切换时输入)" />
+                <button id="f-su-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏 root 密码">👁</button>
+              </div>
+            </label>
           </div>
           <label class="field"><span>终端编码(中文乱码时改 GBK)</span>
             <select id="f-encoding" class="select">
@@ -520,11 +526,12 @@
       <div class="import-methods">
         <button id="import-excel" class="btn-ghost">📄 从 Excel 文件导入</button>
         <button id="import-backup" class="btn-ghost">🔒 从加密备份导入(.polaris)</button>
-        <button id="import-external" class="btn-ghost">🔄 从 Xshell/iTerm2 导入</button>
+        <button id="import-external" class="btn-ghost">🔄 从 Xshell/iTerm2/SSH config 导入</button>
+        <button id="import-sshconfig" class="btn-ghost">🔑 从 ~/.ssh/config 导入</button>
         <button id="import-template" class="btn-ghost">⬇ 下载导入模板</button>
         <input type="file" id="import-file" accept=".xlsx,.xls" class="hidden" />
         <input type="file" id="import-backup-file" accept=".polaris" class="hidden" />
-        <input type="file" id="import-external-file" accept=".xsh,.json" multiple class="hidden" />
+        <input type="file" id="import-external-file" accept=".xsh,.json,.conf,.config" multiple class="hidden" />
       </div>
       <p class="import-hint dim">Excel 列顺序: <code>名称,主机,端口,用户名,密码,分组</code>(首行表头会自动识别跳过);加密备份是"导出"生成的 .polaris 文件,导入时需输入当时设置的密码。</p>
       <p class="import-or dim">———————— 或者手动粘贴文本 ————————</p>
@@ -545,7 +552,14 @@
     <div class="modal-card">
       <h3 id="prompt-title">输入</h3>
       <label class="field"><span id="prompt-label">内容</span>
-        <input id="prompt-input" type="text" />
+        <div class="prompt-input-row">
+          <input id="prompt-input" type="text" />
+          <button id="prompt-paste" type="button" class="btn-ghost" title="从剪贴板粘贴到输入框（支持密码粘贴）">📋 粘贴</button>
+        </div>
+      </label>
+      <label id="prompt-remember-row" class="field field-check hidden">
+        <input type="checkbox" id="prompt-remember" />
+        <span id="prompt-remember-label">记住到本会话</span>
       </label>
       <div class="modal-actions">
         <button id="prompt-ok" class="btn-primary">确定</button>
@@ -681,6 +695,55 @@
       </div>
       <div class="modal-actions">
         <button id="about-close" class="btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 新手引导向导(首次使用自动弹出;空态卡片可随时重开) ============ -->
+  <div id="onboarding-modal" class="modal hidden">
+    <div class="modal-card ob-card">
+      <h3>✦ Polaris 北极星<button id="ob-close-x" class="modal-x" title="关闭">✕</button></h3>
+      <div class="ob-steps">
+        <span class="ob-dot active" data-step="0"></span>
+        <span class="ob-dot" data-step="1"></span>
+        <span class="ob-dot" data-step="2"></span>
+      </div>
+
+      <!-- 步骤 0:欢迎 -->
+      <div class="ob-step" data-step="0">
+        <div class="ob-head">👋 欢迎使用 Polaris</div>
+        <p class="ob-desc">科幻风的 SSH / SFTP 终端：多标签与分屏、SFTP 断点续传、JumpServer / H3C 堡垒机、批量执行与命令推荐。</p>
+        <div class="ob-badges">
+          <span>🔐 本机 AES-256-GCM 加密</span>
+          <span>🛡 主机指纹校验</span>
+          <span>🌐 数据不出网</span>
+        </div>
+      </div>
+
+      <!-- 步骤 1:建立第一台主机 -->
+      <div class="ob-step hidden" data-step="1">
+        <div class="ob-head">🚀 建立你的第一台主机</div>
+        <p class="ob-desc">从下面任选一个入口，几秒钟连上你的服务器。</p>
+        <div class="ob-options">
+          <button id="ob-import-ssh" class="ob-opt" type="button"><b>🔑 导入 SSH 配置</b><span>直接读取 ~/.ssh/config</span></button>
+          <button id="ob-import-batch" class="ob-opt" type="button"><b>📥 批量导入</b><span>Excel / Xshell / iTerm2 / 加密备份</span></button>
+          <button id="ob-new-session" class="ob-opt" type="button"><b>➕ 新建会话</b><span>手动填主机 / 账号 / 密码</span></button>
+          <button id="ob-quick" class="ob-opt" type="button"><b>⚡ 快捷连接</b><span>user@host 临时直连，不保存</span></button>
+        </div>
+        <p class="ob-note">导入的密码 / 私钥口令不会还原，导入后需补填。</p>
+      </div>
+
+      <!-- 步骤 2:完成 -->
+      <div class="ob-step hidden" data-step="2">
+        <div class="ob-head">✅ 一切就绪</div>
+        <p class="ob-desc">左侧双击会话即可连接；「🛡 堡垒机」分组右键可创建 JumpServer / H3C 连接。空列表里的「🚀 查看新手引导」可随时重开本向导。</p>
+      </div>
+
+      <div class="modal-actions ob-actions">
+        <button id="ob-back" class="btn-ghost hidden" type="button">← 上一步</button>
+        <button id="ob-skip" class="btn-ghost" type="button">跳过</button>
+        <button id="ob-next" class="btn-primary" type="button">开始 →</button>
+        <button id="ob-finish" class="btn-primary hidden" type="button">开始使用</button>
       </div>
     </div>
   </div>

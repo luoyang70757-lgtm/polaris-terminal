@@ -86,7 +86,9 @@ npm run dist -- --win
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.5**（2026-11-03）：**修 H3C `ERR_CERT_AUTHORITY_INVALID`**——证书放行改为 `app.whenReady` 启动时、任何 webview/请求之前安装（避免 webview 先登录把失败结果缓存）；h3c-api 捕获证书错误后自动重装放行并重试一次。回归 `verify-h3c-cert` 1/1、`verify-h3c-native` 15/15。
+**当前版本 v1.0.6**（2026-11-03）：**新手可用性四件套**——① 终端右键菜单 / ⌘K 命令面板新增「🔐 切换 root（su - root）」：一键发 `su - root`，密码框支持 Ctrl/Cmd+V 与「📋 粘贴」按钮；`tab.suPending` 抑制 `autoFillPassword`（避免把登录密码误发给 su），root 密码走 `noLog` 不进日志/录制，取消即 Ctrl+C 中止；会话可保存 `su_password`（加密入库，`sessions:create/update` 加解密，老库自动补列），有保存值时检测到 `Password:` 自动发送、不再弹框。② 新手引导向导（三步，首次无会话解锁后自动弹，关闭/跳过持久化 `onboardingDone`，空态卡片可重开）。③ 「从 ~/.ssh/config 导入」（`lib/ssh-config.js` 纯函数解析 `Host`/`HostName`/`User`/`Port`/`IdentityFile`、`Host *` 全局默认、`~` 展开；IPC `sessions:importSshConfig`，`.conf`/`config` 也走 `importExternal`）。④ 会话列表空态卡片（新建/批量导入/SSH 导入/快捷连接）并修正首次启动主机分组默认折叠导致卡片不可见。回归：`verify-su-root` 13/13、`verify-onboarding` 24/24、`verify-ssh-config` 16/16、`verify-ssh-config-import` 20/20、`verify-ui-layout` 21/21。
+
+上一版本 v1.0.5（2026-11-03）：**修 H3C `ERR_CERT_AUTHORITY_INVALID`**——证书放行改为 `app.whenReady` 启动时、任何 webview/请求之前安装（避免 webview 先登录把失败结果缓存）；h3c-api 捕获证书错误后自动重装放行并重试一次。回归 `verify-h3c-cert` 1/1、`verify-h3c-native` 15/15。
 
 上一版本 v1.0.4（2026-11-03）：**修堡垒机配置弹窗显示**——「添加堡垒机站点」补右上角 ✕；打开弹窗时临时隐藏 `bastion-webview`，避免 Electron guest view 盖住宿主弹窗/按钮。回归 `verify-bastion-browser-ui` 9/9。
 
