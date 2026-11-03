@@ -84,7 +84,9 @@ npm run dist -- --win
 
 ## 当前状态（截至 2026-11-03）
 
-**当前版本 v1.0.61**（2026-11-03）：**Windows 安装版自动更新**——检查更新后可「下载更新 → 显示进度 → 重启安装」；electron-updater + GitHub provider，CI 随 Release 上传 `latest.yml`/`.blockmap`。便携版、开发版、非 Windows 回退打开下载页；未签名安装包 `verifyUpdateCodeSignature=false`。回归 `verify-check-update` 6/6、`verify-about` 15/15。
+> **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
+
+**当前版本 v1.0.0**（2026-11-03）：版本号重置后的首个正式版，包含 **Windows 安装版自动更新**——检查更新后可「下载更新 → 显示进度 → 重启安装」；electron-updater + GitHub provider，CI 随 Release 上传 `latest.yml`/`.blockmap`。便携版、开发版、非 Windows 回退打开下载页；未签名安装包 `verifyUpdateCodeSignature=false`。回归 `verify-check-update` 6/6、`verify-about` 15/15。
 
 上一版本 v1.0.60（2026-11-03）：**新增「检查更新」**——帮助菜单 / 关于弹窗可手动查 GitHub Releases 最新版本，显示新版本与发布说明并可打开下载页；主进程 `net.fetch` + 版本比较，`openRelease` 只允许本项目 Release。
 
