@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.0**（2026-11-03，版本号重置；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.1**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -126,6 +126,9 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 34. **右侧堡垒机下拉同步**（2026-11-03，renderer.js）：左侧新建 JMS 服务器时 `baseUrl` 为空，右侧下拉会过滤掉；`jmsDoSave` 只刷新左侧 JMS 弹窗下拉，`jmsDoLogin`/`jmsDoMfa`/`jmsDeleteServerCompletely` 同样没有刷新右侧 → “右侧堡垒机获取不到左侧创建的连接信息”。修法：保存/登录/MFA/删除后统一调用 `bastionRenderServerSelect()`，保存后同时 `renderSessionList()`。回归：`verify-bastion-server-sync.js`（4/4）。
 
 35. **检查更新 + Windows 自动更新**（2026-11-03，main.js/preload.js/renderer.js + electron-updater）：① 检查：`app:checkUpdate` 用 Electron `net.fetch` 查 GitHub Releases latest，`compareVersions` 判断 `hasUpdate`；`app:openRelease` 仅允许本项目 Release 地址。② 自动下载/安装：`electron-updater` + GitHub provider，electron-builder 生成 `app-update.yml`；仅 **Windows 安装版**（`app.isPackaged && win32 && !PORTABLE_EXECUTABLE_DIR`）走「下载 → 进度 → 重启安装」，便携版/开发版/非 Windows 回退打开下载页。③ CI 上传 `latest.yml`/`.blockmap` 并随 Release 发布；安装包 `artifactName` 用无空格点号，确保与 GitHub 资产名一致。④ 未签名发布 → `win.verifyUpdateCodeSignature=false`。回归：`verify-check-update.js`（6/6）、`verify-about.js`（15/15）。
+
+
+36. **堡垒机浏览器显示优化**（2026-11-03，src/index.html/styles.css/renderer.js + main/preload）：① 工具栏去掉重复标题，清除历史收进「⋯」更多菜单（隐藏 DOM/ID 保留，兼容 verify-bastion-clear）；② 空态/加载/错误态改为结构化（图标/标题/说明/配置/重试），不再用 `textContent` 覆盖 `#bastion-empty` 导致按钮消失；③ 错误态显示重试、隐藏配置；④ 更多菜单：系统浏览器打开、复制地址、重置缩放、清除历史；新增 `app:openExternal` 仅允许 http/https；⑤ 双击缩放百分比恢复 100%，拖动面板宽度后自动 `bastionFitToWidth`；⑥ 当前页信息行为空时 CSS `:has` 自动隐藏。回归：`verify-bastion-browser-ui.js`（8/8）。
 
 ## 运行与调试
 
