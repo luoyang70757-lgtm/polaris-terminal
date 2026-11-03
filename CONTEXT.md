@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.3**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.4**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -135,6 +135,9 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 
 38. **nologin 账号识别**（2026-11-03，renderer.js + mock/fake-shell.js）：现场 `STATUS connected` → `RECV 45B`（`\r\nThis account is currently not available.`）→ `closed`；认证成功但目标账号 shell=`/usr/sbin/nologin`，服务器立即断开。修法：`onSshData` 检测该消息 → `tab.noLogin=true`、状态栏提示、`dlog('NOLOGIN')`；`closed` 时在终端写明原因与处理方式（换有 shell 的账号 / `usermod -s /bin/bash <账号>`）；`scheduleReconnect` 跳过 nologin（账号问题重试无意义）。mock 支持 `account=nologin` 模拟。回归：`verify-nologin-hint.js`（5/5）。
+
+
+39. **堡垒机配置弹窗遮挡修复**（2026-11-03，index.html/renderer.js）：`bastion-cfg-modal` 缺少右上角 ✕（只有底部「关闭」）；且打开时 bastion-webview（Electron guest view）可能盖住宿主弹窗。修法：补 `#bastion-cfg-x` 并绑定 `closeBastionCfg`；`openBastionCfg` 时 `webview.style.visibility='hidden'`，关闭时若无其它可见弹窗再恢复（`setBastionWebviewForModal`）。回归：`verify-bastion-browser-ui.js`（9/9）。
 
 ## 运行与调试
 
