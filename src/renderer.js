@@ -257,6 +257,7 @@ const els = {
   bastionCfgAccount: $('bastion-cfg-account'),
   bastionCfgPass: $('bastion-cfg-pass'),
   bastionCfgAdd: $('bastion-cfg-add'),
+  bastionCfgX: $('bastion-cfg-x'),
   bastionCfgClose: $('bastion-cfg-close'),
   bastionCfgMsg: $('bastion-cfg-msg'),
   bastionUrl: $('bastion-url'),
@@ -5557,6 +5558,16 @@ function startBastionAutoFill(s) {
   attempt();
 }
 
+// webview 是 Electron guest view，会覆盖宿主 DOM（弹窗/下拉等）。打开配置弹窗时先隐藏，
+// 关闭时若没有其它可见弹窗再恢复，避免弹窗被 webview 盖住（尤其是右上角 ✕ 和底部按钮）。
+function setBastionWebviewForModal(hide) {
+  try {
+    if (!els.bastionWebview) return;
+    if (hide) { els.bastionWebview.style.visibility = 'hidden'; return; }
+    if (document.querySelector('.modal:not(.hidden)')) return; // 还有别的弹窗开着
+    els.bastionWebview.style.visibility = '';
+  } catch { /* ignore */ }
+}
 function openBastionCfg() {
   els.bastionCfgName.value = '';
   els.bastionCfgUrl.value = '';
@@ -5569,8 +5580,12 @@ function openBastionCfg() {
   delete els.bastionCfgAdd.dataset.editingId;
   els.bastionCfgAdd.textContent = '＋ 保存堡垒机';
   els.bastionCfgModal.classList.remove('hidden');
+  setBastionWebviewForModal(true);
 }
-function closeBastionCfg() { els.bastionCfgModal.classList.add('hidden'); }
+function closeBastionCfg() {
+  els.bastionCfgModal.classList.add('hidden');
+  setBastionWebviewForModal(false);
+}
 
 // 配置弹窗里的服务器列表已移除(已保存堡垒机连接现在展示在左侧堡垒机分组根目录下)
 
@@ -10247,6 +10262,7 @@ els.bastionMore.addEventListener('click', () => {
   ]);
 });
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
+els.bastionCfgX.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 els.bastionGo.addEventListener('click', bastionLoadSelected); // 打开:优先用下拉选中的堡垒机(带账号密码自动填充),否则加载地址栏输入的地址

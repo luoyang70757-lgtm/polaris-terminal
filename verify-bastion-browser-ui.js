@@ -122,6 +122,19 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     if (zoom.z === 1 && zoom.label === '100%') ok('双击缩放百分比恢复 100%');
     else bad('缩放重置异常', JSON.stringify(zoom));
 
+    // 配置弹窗:右上角 ✕ 必须存在；打开时隐藏 webview（避免 guest view 盖住宿主弹窗）
+    const cfg = await ev(c, `(function(){
+      openBastionCfg();
+      const m = document.getElementById('bastion-cfg-modal');
+      const x = document.getElementById('bastion-cfg-x');
+      const wv = document.getElementById('bastion-webview');
+      const before = { visible: !m.classList.contains('hidden'), hasX: !!x, wvHidden: wv.style.visibility === 'hidden' };
+      if (x) x.click();
+      return Object.assign(before, { closed: m.classList.contains('hidden'), restored: wv.style.visibility !== 'hidden' });
+    })()`);
+    if (cfg.visible && cfg.hasX && cfg.wvHidden && cfg.closed && cfg.restored) ok('配置弹窗有 ✕，打开时隐藏 webview、关闭后恢复');
+    else bad('配置弹窗关闭/层级异常', JSON.stringify(cfg));
+
     const ext = await ev(c, `window.api.openExternal('file:///etc/passwd')`);
     if (ext && ext.ok === false) ok('openExternal 拒绝非 http/https');
     else bad('openExternal 未拒绝 file://', JSON.stringify(ext));
