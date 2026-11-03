@@ -34,6 +34,14 @@ function listRoot() {
 }
 
 function createFakeShell(stream, session, audit) {
+  // 模拟 Linux 账号 shell=/usr/sbin/nologin:认证成功后只回这句并立即断开。
+  // 用于 verify-nologin-hint.js(账号名 nologin,通常经 KoKo 复合用户名传入)。
+  const accountName = String((session && session.account) || '').toLowerCase();
+  if (accountName === 'nologin') {
+    stream.write('\r\nThis account is currently not available.\r\n');
+    setTimeout(() => { try { stream.exit(1); } catch { /* ignore */ } try { stream.end(); } catch { /* ignore */ } }, 30);
+    return;
+  }
   const hint = OS_HINTS[session.asset.name] || DEFAULT_HINT;
   const user = session.account;
   let cwd = '/'; // 与 SFTP 根目录一致

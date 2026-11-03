@@ -8386,6 +8386,7 @@ async function connectToServer(session, opts) {
     titleSpan,               // 标签上的标题元素(重命名标签时改它)
     customTitle: null,       // 用户改的标签名(null=用会话名)
     status: 'connecting',
+    noLogin: false,          // 远端账号 nologin(检测到后停止自动重连并给提示)
     sftpOpen: false,         // 该标签自己的 SFTP 开关(各标签独立,切换标签时恢复各自状态)
     sftpPath: '.',           // 该标签 SFTP 浏览到的目录
     shellCwd: null,          // 该标签交互 shell 的当前目录(跟踪 cd 命令;null=未知,SFTP 用默认)
@@ -8561,6 +8562,7 @@ function connectInto(tab, session, isReconnect) {
 const MAX_RECONNECT = 5;
 function scheduleReconnect(t) {
   if (state.settings.autoReconnect === false) return; // 设置里关闭了自动重连
+  if (t.noLogin) return; // 账号 nologin:重试无意义,已给出提示
   if (t.userClosed || !state.tabs.has(t.sessionId)) return;
   clearTimeout(t.reconnectClearTimer); // 连接没能稳定(瞬连瞬断),挂起的"清零重连计数"作废
   if (t.reconnectTimer) return; // 已有定时器,不重复安排
@@ -11248,6 +11250,13 @@ window.api.onSshData((sessionId, data) => {
       .replace(/\r/g, '');
     t.outTail = ((t.outTail || '') + plain).slice(-200);
     t.atPasswordPrompt = /(?:^|[^\w])(?:[Pp]assword|[Pp]asswd|[Pp]assphrase)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.outTail);
+    // 远端账号 nologin:Linux 会回 "This account is currently not available." 并立刻关闭连接。
+    // 认证本身成功 → 不是网络/堡垒机问题;标记后停止自动重连,给出可操作提示。
+    if (!t.noLogin && /This account is currently not available|account is currently not available/i.test(t.outTail)) {
+      t.noLogin = true;
+      dlog('NOLOGIN', `${sessionId} 远端账号没有登录 shell (nologin)`);
+      setStatus('远端账号没有登录 shell(nologin),请换有 shell 的账号', 'var(--red)');
+    }
   } catch { /* ignore */ }
   // 高亮(关键词着色);主进程已把 GBK/GB2312 转成 UTF-8 字符串
   if (state.settings.highlight) out = highlightString(out);
@@ -11514,13 +11523,21 @@ window.api.onSshStatus((sessionId, status) => {
     setTabStatus(sessionId, 'closed');
     t.initMask = false; t.initBuf = ''; t.encProbe = null; // 断开 → 复位初始化掩码(重连会重新设置)
     if (t.encSettleTimer) { clearTimeout(t.encSettleTimer); t.encSettleTimer = null; }
-    t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
-    setStatus('连接已断开', 'var(--red)');
+    if (t.noLogin) {
+      // 账号没有登录 shell:服务器发完 nologin 提示就关闭,重连多少次都一样。
+      // 在终端里给出明确原因和处理方式,并停止自动重连(用户换账号后手动重连即可)。
+      t.term.write('\r\n\x1b[33m[Polaris] 远端账号没有可用的登录 shell(nologin),连接已被服务器关闭。\r\n'
+        + '请换有 shell 的账号(资产右键可切换账号),或让管理员执行 usermod -s /bin/bash <账号>。\x1b[0m\r\n');
+      setStatus('账号没有登录 shell(nologin),已停止自动重连', 'var(--red)');
+    } else {
+      t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
+      setStatus('连接已断开', 'var(--red)');
+    }
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
     updateRecordBtn();
     clearSftpTransfers(sessionId); // 连接断开 → 只清本会话的传输记录(其他会话可能还在传)
-    // 非用户主动关闭、非手动断开 → 自动重连
-    if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
+    // 非用户主动关闭、非手动断开 → 自动重连(nologin 不重连:账号问题重试无意义)
+    if (!t.userClosed && !t.manualDisconnect && t.session && !t.noLogin) scheduleReconnect(t);
   } else if (status.status === 'error') {
     setTabStatus(sessionId, 'closed');
     t.term.write(`\r\n\x1b[31m[连接错误] ${status.error}\x1b[0m\r\n`);
