@@ -4565,6 +4565,10 @@ function jmsDoSave() {
   state.jmsActiveId = server.id;
   jmsPersistConfig();
   jmsRenderServerSelect();
+  // 左侧保存后:右侧堡垒机下拉 + 左侧会话列表都要同步(新建时 baseUrl 还是空,会被右侧下拉过滤;
+  // 旧版只刷新左侧 JMS 弹窗下拉,导致右侧一直拿不到左侧刚创建的连接)
+  try { bastionRenderServerSelect(); } catch { /* ignore */ }
+  renderSessionList(els.inputSessionSearch.value);
   showJmsMsg(`✅ 已保存「${name}」(尚未连接,点"连接 JumpServer"登录)`);
 }
 
@@ -4597,6 +4601,7 @@ async function jmsDoLogin() {
       server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
       jmsPersistConfig();
       jmsRenderServerSelect(); // 先刷新下拉(会重置表单),再显示 OTP
+      try { bastionRenderServerSelect(); } catch { /* ignore */ }
       els.jmsOtpWrap.style.display = '';
       els.jmsOtp.value = '';
       els.jmsOtp.focus();
@@ -4617,6 +4622,7 @@ async function jmsDoLogin() {
     state.collapsedJms.add(server.id);
     jmsPersistConfig();
     jmsRenderServerSelect();
+    try { bastionRenderServerSelect(); } catch { /* ignore */ }
     await jmsLoadAssets();
   } catch (e) {
     showJmsMsg('登录异常: ' + ((e && e.message) || '未知错误'));
@@ -4655,6 +4661,7 @@ async function jmsDoMfa() {
     state.collapsedTopBastion = false; // 登录成功 → 展开顶级分组,资产区块头可见
     jmsPersistConfig();
     jmsRenderServerSelect();
+    try { bastionRenderServerSelect(); } catch { /* ignore */ }
     await jmsLoadAssets();
   } catch (e) {
     showJmsMsg('验证异常: ' + ((e && e.message) || '未知错误'));
@@ -5101,6 +5108,8 @@ function jmsDeleteServerCompletely(serverId) {
   state.jmsServers = state.jmsServers.filter((x) => x.id !== serverId);
   if (state.jmsActiveId === serverId) state.jmsActiveId = state.jmsServers.length ? state.jmsServers[0].id : null;
   jmsPersistConfig(); // localStorage + jms-servers.json 同步删除
+  jmsRenderServerSelect();
+  try { bastionRenderServerSelect(); } catch { /* ignore */ }
   renderSessionList(els.inputSessionSearch.value);
   // 3. 清除浏览器登录态 + 持久化资产(该站点 origin)
   const origin = (() => { try { return base ? new URL(base).origin : ''; } catch { return ''; } })();
