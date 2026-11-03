@@ -98,6 +98,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     if (!c) throw new Error('解锁后主窗口未出现');
     for (let i = 0; i < 50; i++) { if (await ev(c, `typeof state === 'object' && !!state.settings`)) break; await sleep(200); }
 
+    // 先让 webview 走一次同源自签名 HTTPS（模拟真实 H3C 登录页先行），
+    // 再调用原生 API —— 验证启动时安装的证书放行不会被 webview 的校验结果缓存破坏。
+    await ev(c, `(function(){ const wv=document.getElementById('bastion-webview'); if(wv) wv.src='https://127.0.0.1:${HTTPS_PORT}/shterm/'; return true; })()`);
+    await sleep(1500);
     const r = await ev(c, `window.api.h3cTree('https://127.0.0.1:${HTTPS_PORT}')`);
     if (r && r.ok === true && r.data && Array.isArray(r.data.children)) ok('自签名 HTTPS 堡垒机请求成功(无 ERR_CERT_AUTHORITY_INVALID)');
     else bad('自签名证书仍被拒', JSON.stringify(r));

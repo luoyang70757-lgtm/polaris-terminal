@@ -3108,6 +3108,17 @@ async function unlockApp(password) {
 }
 
 app.whenReady().then(() => {
+  // 堡垒机自签名证书放行：必须在**任何 webview/HTTP 请求之前**安装。
+  // Electron 的 setCertificateVerifyProc 结果会被网络服务缓存；如果 H3C webview 先登录
+  // 并把“校验失败”缓存下来，h3c-api 里再懒安装也救不回来（表现为 accessUrl 偶发
+  // net::ERR_CERT_AUTHORITY_INVALID）。这里启动即安装，和内置浏览器/Webview 的放行口径一致。
+  try {
+    const bs = session.fromPartition('persist:bastion');
+    if (bs && typeof bs.setCertificateVerifyProc === 'function') {
+      bs.setCertificateVerifyProc((_request, callback) => callback(0));
+      console.log('[MAIN] 已放行 persist:bastion 堡垒机自签名证书');
+    }
+  } catch (e) { console.warn('[MAIN] 堡垒机证书放行安装失败(不影响启动):', e && e.message); }
   // 内置浏览器中文乱码修复:部分堡垒机页面(控制台/模拟页)响应头不带 charset,
   // 浏览器按 HTML 规范默认以 Windows-1252 解码 → UTF-8 中文变乱码(æ¨¡æ‹Ÿ...)。
   // 给"text/html 且未声明 charset"的响应补上 charset=utf-8;
