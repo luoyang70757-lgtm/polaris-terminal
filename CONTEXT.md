@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.4**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.5**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -138,6 +138,9 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 
 39. **堡垒机配置弹窗遮挡修复**（2026-11-03，index.html/renderer.js）：`bastion-cfg-modal` 缺少右上角 ✕（只有底部「关闭」）；且打开时 bastion-webview（Electron guest view）可能盖住宿主弹窗。修法：补 `#bastion-cfg-x` 并绑定 `closeBastionCfg`；`openBastionCfg` 时 `webview.style.visibility='hidden'`，关闭时若无其它可见弹窗再恢复（`setBastionWebviewForModal`）。回归：`verify-bastion-browser-ui.js`（9/9）。
+
+
+40. **H3C 证书放行时机**（2026-11-03，main.js + lib/h3c-api.js）：Electron `setCertificateVerifyProc` 的结果会被网络服务缓存；H3C webview 先登录时可能把 `ERR_CERT_AUTHORITY_INVALID` 缓存下来，h3c-api 首次请求才懒安装放行已来不及。修法：`app.whenReady` 一开始（任何 webview/请求之前）对 `persist:bastion` 安装 `callback(0)`；h3c-api 保留懒安装兜底，并在捕获 `ERR_CERT_*` 时重新安装 + 重试一次（诊断包实测手动重试第三次才成功）。回归：`verify-h3c-cert.js`（含 webview 先走自签名 HTTPS 再调原生 API）。
 
 ## 运行与调试
 

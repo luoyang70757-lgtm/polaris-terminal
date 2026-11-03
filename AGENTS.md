@@ -86,7 +86,9 @@ npm run dist -- --win
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.4**（2026-11-03）：**修堡垒机配置弹窗显示**——「添加堡垒机站点」补右上角 ✕；打开弹窗时临时隐藏 `bastion-webview`，避免 Electron guest view 盖住宿主弹窗/按钮。回归 `verify-bastion-browser-ui` 9/9。
+**当前版本 v1.0.5**（2026-11-03）：**修 H3C `ERR_CERT_AUTHORITY_INVALID`**——证书放行改为 `app.whenReady` 启动时、任何 webview/请求之前安装（避免 webview 先登录把失败结果缓存）；h3c-api 捕获证书错误后自动重装放行并重试一次。回归 `verify-h3c-cert` 1/1、`verify-h3c-native` 15/15。
+
+上一版本 v1.0.4（2026-11-03）：**修堡垒机配置弹窗显示**——「添加堡垒机站点」补右上角 ✕；打开弹窗时临时隐藏 `bastion-webview`，避免 Electron guest view 盖住宿主弹窗/按钮。回归 `verify-bastion-browser-ui` 9/9。
 
 上一版本 v1.0.3（2026-11-03）：**识别 nologin 账号**——远端账号 shell=`/usr/sbin/nologin` 时，服务器发 `This account is currently not available.` 后立即断开；现在会标记 `tab.noLogin`、状态栏/终端给出「换有 shell 的账号 / usermod -s /bin/bash」提示，并停止自动重连。回归 `verify-nologin-hint` 5/5。
 
