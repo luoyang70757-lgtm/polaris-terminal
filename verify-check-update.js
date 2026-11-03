@@ -101,16 +101,27 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     if (r3 && r3.ok === false) ok('非本项目 Release 地址被拒绝');
     else bad('非法外链未被拒绝', JSON.stringify(r3));
 
-    // ④ 关于弹窗状态(覆盖 confirm=false，避免测试卡在原生对话框)
+    // ④ 关于弹窗状态 + 下载/下载页按钮
     mode = 'newer';
     const r5 = await ev(c, `(async()=>{
       openAbout();
-      const old = window.confirm; window.confirm = () => false;
-      try { await checkUpdate(true); } finally { window.confirm = old; }
-      return { msg: els.aboutUpdateMsg.textContent, cls: els.aboutUpdateMsg.className };
+      await checkUpdate();
+      return {
+        msg: els.aboutUpdateMsg.textContent, cls: els.aboutUpdateMsg.className,
+        downloadHidden: els.aboutDownload.classList.contains('hidden'),
+        releaseHidden: els.aboutRelease.classList.contains('hidden'),
+      };
     })()`);
-    if (r5 && /99\.0\.0/.test(r5.msg) && /ok/.test(r5.cls)) ok('关于弹窗显示发现新版本');
+    if (r5 && /99\.0\.0/.test(r5.msg) && /ok/.test(r5.cls) && !r5.downloadHidden && !r5.releaseHidden) ok('关于弹窗显示新版本 + 下载/下载页按钮');
     else bad('关于弹窗状态未更新', JSON.stringify(r5));
+
+    // ⑤ 开发/未打包环境:自动下载/安装必须给出可读拒绝,而不是抛异常
+    const r6 = await ev(c, `window.api.downloadUpdate()`);
+    if (r6 && r6.ok === false && /开发|未打包|Windows|便携版/.test(r6.error || '')) ok('开发环境下载更新被友好拒绝');
+    else bad('开发环境下载更新未友好拒绝', JSON.stringify(r6));
+    const r7 = await ev(c, `window.api.installUpdate()`);
+    if (r7 && r7.ok === false && /尚未下载/.test(r7.error || '')) ok('未下载完成时安装被拒绝');
+    else bad('安装拒绝语义异常', JSON.stringify(r7));
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) {

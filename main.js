@@ -2625,7 +2625,7 @@ ipcMain.handle('app:about', () => {
 
 // ---------- 检查更新(手动,不自动安装) ----------
 // 只查 GitHub Releases 最新版本并展示;下载/安装仍由用户打开 Release 页面完成。
-// 不改发布链路、不引入 electron-updater,内网/离线环境失败时只提示网络错误。
+// 下载/安装由下面的 electron-updater 链路负责;检查本身仍走 API,内网/离线失败只提示错误。
 const UPDATE_REPO = 'luoyang70757-lgtm/polaris-terminal';
 function compareVersions(a, b) {
   const pa = String(a || '').replace(/^v/i, '').split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
@@ -2667,6 +2667,80 @@ ipcMain.handle('app:openRelease', async (_e, url) => {
   const allow = new RegExp('^https://github\\.com/' + UPDATE_REPO.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/releases(/|$)');
   if (!allow.test(s)) return { ok: false, error: '非法下载地址' };
   try { await shell.openExternal(s); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ---------- 自动下载更新(仅 Windows 安装版;便携版/开发版回退手动下载) ----------
+// 用 electron-updater + electron-builder 的 app-update.yml(GitHub provider)。
+// 只有 NSIS 安装版走这条链路;portable 每次自解压且数据在 exe 旁,自动替换风险高,直接提示手动下载。
+let autoUpdaterRef = null;
+let autoUpdateBusy = false;
+let autoUpdateDownloaded = false;
+function getAutoUpdater() {
+  if (autoUpdaterRef) return autoUpdaterRef;
+  const { autoUpdater } = require('electron-updater');
+  autoUpdater.autoDownload = false;       // 用户点“下载更新”才下载
+  autoUpdater.autoInstallOnAppQuit = true; // 下载后若用户直接退出,下次启动前装
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.logger = {
+    info: (...a) => console.log('[更新]', ...a),
+    warn: (...a) => console.warn('[更新]', ...a),
+    error: (...a) => console.error('[更新]', ...a),
+    debug: () => {},
+  };
+  autoUpdater.on('download-progress', (p) => {
+    broadcast('update:status', {
+      state: 'downloading',
+      percent: Math.round(p && p.percent || 0),
+      transferred: (p && p.transferred) || 0,
+      total: (p && p.total) || 0,
+      bytesPerSecond: (p && p.bytesPerSecond) || 0,
+    });
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    autoUpdateDownloaded = true;
+    broadcast('update:status', { state: 'downloaded', version: (info && info.version) || '' });
+  });
+  autoUpdater.on('error', (err) => {
+    broadcast('update:status', { state: 'error', error: (err && err.message) || String(err) });
+  });
+  autoUpdaterRef = autoUpdater;
+  return autoUpdater;
+}
+function autoUpdateUnsupportedReason() {
+  if (!app.isPackaged) return '当前为开发/未打包版本,请手动下载新版';
+  if (process.platform !== 'win32') return '自动更新仅支持 Windows 安装版,请手动下载';
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return '便携版请手动下载新版(替换 exe 即可保留数据)';
+  return '';
+}
+ipcMain.handle('app:downloadUpdate', async () => {
+  const unsupported = autoUpdateUnsupportedReason();
+  if (unsupported) return { ok: false, error: unsupported };
+  if (autoUpdateBusy) return { ok: false, error: '更新正在下载中' };
+  autoUpdateBusy = true;
+  autoUpdateDownloaded = false;
+  try {
+    const up = getAutoUpdater();
+    const r = await up.checkForUpdates();
+    const v = (r && r.updateInfo && r.updateInfo.version) || '';
+    if (!v) return { ok: false, error: '未找到可用更新' };
+    if (compareVersions(v, app.getVersion()) <= 0) return { ok: false, error: '已是最新版本' };
+    broadcast('update:status', { state: 'downloading', percent: 0 });
+    await up.downloadUpdate();
+    return { ok: true, version: v };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    autoUpdateBusy = false;
+  }
+});
+ipcMain.handle('app:installUpdate', () => {
+  if (!autoUpdateDownloaded) return { ok: false, error: '更新尚未下载完成' };
+  try {
+    getAutoUpdater().quitAndInstall(true, true); // 静默安装并重启
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
 });
 
 // ---------- 窗口 ----------

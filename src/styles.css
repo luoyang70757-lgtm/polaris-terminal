@@ -746,7 +746,7 @@ input[type="checkbox"] {
 }
 .about-ver b { color: var(--text); font-weight: 600; }
 .about-update-row {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
   margin: -4px 0 12px; font-size: var(--fs-sm); min-height: 22px;
 }
 .about-update-msg { color: var(--text-dim); }

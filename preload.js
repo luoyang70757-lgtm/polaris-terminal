@@ -174,6 +174,10 @@ contextBridge.exposeInMainWorld('api', {
   // 检查更新(手动):查 GitHub Releases 最新版本;openRelease 只允许打开本项目 Release
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   openRelease: (url) => ipcRenderer.invoke('app:openRelease', url),
+  // 自动下载更新(仅 Windows 安装版):下载进度经 update:status 事件推送
+  downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_e, d) => cb(d)),
   appLogDump: () => ipcRenderer.invoke('app:log-dump'),
   appLogDlog: (lines) => ipcRenderer.send('app:log-dlog', lines),
 

@@ -18,6 +18,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "iconv-lite": "^0.7.3",
     "ssh2": "^1.17.0",
     "tar": "^7.5.22",
@@ -73,7 +74,8 @@
       "electronLanguages": [
         "zh-CN",
         "en-US"
-      ]
+      ],
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
@@ -82,12 +84,19 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Polaris",
-      "artifactName": "Polaris Setup ${version}.${ext}"
+      "artifactName": "Polaris.Setup.${version}.${ext}"
     },
     "portable": {
-      "artifactName": "Polaris Portable ${version}.${ext}",
+      "artifactName": "Polaris.Portable.${version}.${ext}",
       "splashImage": "build/splash.bmp"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "luoyang70757-lgtm",
+        "repo": "polaris-terminal"
+      }
+    ]
   },
   "allowScripts": {
     "ssh2@1.17.0": true,

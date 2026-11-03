@@ -530,6 +530,8 @@ const els = {
   aboutModal: $('about-modal'),
   aboutVersion: $('about-version'),
   aboutCheck: $('about-check'),
+  aboutDownload: $('about-download'),
+  aboutRelease: $('about-release'),
   aboutUpdateMsg: $('about-update-msg'),
   helpCloseX: $('help-close-x'),
   helpClose: $('help-close'),
@@ -9940,7 +9942,7 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:toggle-panel') toggleSessionPanel();
   else if (ch === 'menu:settings') openSettingsModal();
   else if (ch === 'menu:about') openAbout();
-  else if (ch === 'menu:check-update') { openAbout(); checkUpdate(true); }
+  else if (ch === 'menu:check-update') { openAbout(); checkUpdate(); }
   else if (ch === 'menu:split-v') splitActivePane('v');
   else if (ch === 'menu:split-h') splitActivePane('h');
   else if (ch === 'menu:sftp') toggleSftpPanel();
@@ -11608,42 +11610,76 @@ els.paletteInput.addEventListener('keydown', (e) => {
 });
 els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
 
-// ---------- 关于弹窗(版本 + 简介 + 手动检查更新) ----------
+// ---------- 关于弹窗(版本 + 简介 + 检查/下载更新) ----------
 let __checkingUpdate = false;
-async function checkUpdate(showInAbout) {
+let __updateInfo = null;
+let __updateDownloaded = false;
+function setAboutUpdateMsg(text, cls) {
+  if (!els.aboutUpdateMsg) return;
+  els.aboutUpdateMsg.textContent = text || '';
+  els.aboutUpdateMsg.className = 'about-update-msg' + (cls ? ' ' + cls : '');
+}
+function setUpdateButtons(showDownload, showRelease) {
+  if (els.aboutDownload) {
+    els.aboutDownload.classList.toggle('hidden', !showDownload);
+    els.aboutDownload.disabled = false;
+    els.aboutDownload.textContent = '⬇ 下载更新';
+  }
+  if (els.aboutRelease) els.aboutRelease.classList.toggle('hidden', !showRelease);
+}
+async function checkUpdate() {
   if (__checkingUpdate) return;
   __checkingUpdate = true;
-  const setMsg = (text, cls) => {
-    if (!els.aboutUpdateMsg) return;
-    els.aboutUpdateMsg.textContent = text || '';
-    els.aboutUpdateMsg.className = 'about-update-msg' + (cls ? ' ' + cls : '');
-  };
-  setMsg('正在检查更新…');
+  setAboutUpdateMsg('正在检查更新…');
   setStatus('正在检查更新…', 'var(--accent)');
   try {
     const r = await window.api.checkUpdate();
     if (!r || !r.ok) {
       const msg = (r && r.error) || '网络不可用';
-      setMsg('检查失败: ' + msg, 'bad');
+      setAboutUpdateMsg('检查失败: ' + msg, 'bad');
       setStatus('检查更新失败: ' + msg, 'var(--red)');
+      setUpdateButtons(false, false);
       return;
     }
     if (!r.hasUpdate) {
-      setMsg(`已是最新版本 v${r.current}`, 'ok');
+      __updateInfo = null; __updateDownloaded = false;
+      setAboutUpdateMsg(`已是最新版本 v${r.current}`, 'ok');
       setStatus(`已是最新版本 v${r.current}`, 'var(--green)');
+      setUpdateButtons(false, false);
       return;
     }
-    setMsg(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'ok');
+    __updateInfo = r; __updateDownloaded = false;
+    setAboutUpdateMsg(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'ok');
     setStatus(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'var(--green)');
-    const summary = String(r.notes || '').replace(/\r/g, '').split('\n').slice(0, 12).join('\n').trim();
-    if (confirm(`发现新版本 v${r.latest}（当前 v${r.current}）\n\n${summary ? summary + '\n\n' : ''}是否打开下载页面？`)) {
-      const o = await window.api.openRelease(r.url);
-      if (!o || !o.ok) setMsg('打开下载页失败: ' + ((o && o.error) || '未知错误'), 'bad');
-    }
+    setUpdateButtons(true, true);
   } catch (e) {
-    setMsg('检查失败: ' + ((e && e.message) || e), 'bad');
+    setAboutUpdateMsg('检查失败: ' + ((e && e.message) || e), 'bad');
+    setUpdateButtons(false, false);
   } finally {
     __checkingUpdate = false;
+  }
+}
+async function downloadOrInstallUpdate() {
+  if (!__updateInfo) return;
+  if (__updateDownloaded) {
+    const r = await window.api.installUpdate();
+    if (!r || !r.ok) setAboutUpdateMsg('重启安装失败: ' + ((r && r.error) || '未知错误'), 'bad');
+    return;
+  }
+  els.aboutDownload.disabled = true;
+  setAboutUpdateMsg('正在准备下载更新…', 'ok');
+  const r = await window.api.downloadUpdate();
+  if (!r || !r.ok) {
+    els.aboutDownload.disabled = false;
+    setAboutUpdateMsg('下载更新失败: ' + ((r && r.error) || '未知错误') + '（可点「打开下载页」手动下载）', 'bad');
+    return;
+  }
+  // 正常情况下 update:status(downloaded) 会先到;这里兜底
+  if (!__updateDownloaded) {
+    __updateDownloaded = true;
+    els.aboutDownload.disabled = false;
+    els.aboutDownload.textContent = '⟳ 重启安装';
+    setAboutUpdateMsg('更新已下载，点「重启安装」完成', 'ok');
   }
 }
 function openAbout() {
@@ -11656,7 +11692,29 @@ function openAbout() {
 }
 function closeAbout() { els.aboutModal.classList.add('hidden'); }
 els.btnAbout.addEventListener('click', openAbout);
-els.aboutCheck.addEventListener('click', () => checkUpdate(true));
+els.aboutCheck.addEventListener('click', () => checkUpdate());
+els.aboutDownload.addEventListener('click', downloadOrInstallUpdate);
+els.aboutRelease.addEventListener('click', async () => {
+  if (!__updateInfo || !__updateInfo.url) return;
+  const r = await window.api.openRelease(__updateInfo.url);
+  if (!r || !r.ok) setAboutUpdateMsg('打开下载页失败: ' + ((r && r.error) || '未知错误'), 'bad');
+});
+// 主进程下载进度/完成/错误 → 弹窗状态与按钮
+window.api.onUpdateStatus((d) => {
+  if (!d) return;
+  if (d.state === 'downloading') {
+    if (els.aboutDownload) { els.aboutDownload.classList.remove('hidden'); els.aboutDownload.disabled = true; }
+    setAboutUpdateMsg(`正在下载更新 ${Math.max(0, Math.min(100, Number(d.percent) || 0))}%`, 'ok');
+  } else if (d.state === 'downloaded') {
+    __updateDownloaded = true;
+    if (els.aboutDownload) { els.aboutDownload.classList.remove('hidden'); els.aboutDownload.disabled = false; els.aboutDownload.textContent = '⟳ 重启安装'; }
+    setAboutUpdateMsg('更新已下载，点「重启安装」完成', 'ok');
+    setStatus('更新已下载,重启后安装', 'var(--green)');
+  } else if (d.state === 'error') {
+    if (els.aboutDownload) els.aboutDownload.disabled = false;
+    setAboutUpdateMsg('更新下载失败: ' + (d.error || '未知错误') + '（可点「打开下载页」手动下载）', 'bad');
+  }
+});
 $('about-close-x').addEventListener('click', closeAbout);
 $('about-close').addEventListener('click', closeAbout);
 els.aboutModal.addEventListener('mousedown', (e) => { if (e.target === els.aboutModal) closeAbout(); });

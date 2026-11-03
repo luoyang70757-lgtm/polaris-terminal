@@ -132,7 +132,7 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('关于弹窗里仍有大量说明段落', JSON.stringify({ sections: dlg.sections, kbdRows: dlg.kbdRows }));
     if (!dlg.hasHelpBody && dlg.oldModalGone) ok('help-body / help-kbd / help-modal 均已从 DOM 删除');
     else bad('旧样式节点残留', JSON.stringify(dlg));
-    if (dlg.btnCount === 3) ok('弹窗按钮:✕ / 检查更新 / 关闭');
+    if (dlg.btnCount === 5) ok('弹窗按钮:✕ / 检查更新 / 下载更新 / 打开下载页 / 关闭');
     else bad('按钮数量异常', dlg.btnCount);
 
     head('④ 菜单「帮助 → 关于 Polaris」');

@@ -39,7 +39,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: win-packages
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/latest*.yml
+            release/*.blockmap
           if-no-files-found: error
 
   # Windows 编译完 → 汇总发布(避免并发建 Release 冲突)
@@ -72,6 +75,8 @@ jobs:
         with:
           files: |
             artifacts/**/*.exe
+            artifacts/**/latest*.yml
+            artifacts/**/*.blockmap
           tag_name: ${{ steps.rel.outputs.tag }}
           name: Polaris ${{ steps.rel.outputs.name }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
