@@ -138,6 +138,22 @@ async function tap(c, name) {
     if (spaceSent) ok('空格本身正常发出');
     else bad('空格被吞(没发出去)', JSON.stringify(sendsB));
 
+    // ---------- C. xterm 被卡住(键盘不产生 onData):看门狗应自动重建输入法会话 ----------
+    await ev(c, `(function(){ const t=state.tabs.get('${sid}'); t.term.options.disableStdin = true; t.term.focus(); return true; })()`);
+    m0 = await mark();
+    await tap(c, ' ');
+    await sleep(450); // 看门狗 250ms
+    const rec = await ev(c, `termDebug.lines.slice(${m0}).filter(l => l.indexOf('RECOVER') >= 0)`);
+    if (rec.length) ok('空格被吞 → 看门狗自动重建输入法会话');
+    else bad('看门狗未触发', JSON.stringify(await ev(c, `termDebug.lines.slice(${m0})`)));
+    await ev(c, `state.tabs.get('${sid}').term.options.disableStdin = false; true`);
+    m0 = await mark();
+    await tap(c, ' ');
+    await sleep(200);
+    const sendsC = await readSends(m0);
+    if (sendsC.some((l) => l.indexOf('" "') >= 0)) ok('恢复后空格正常发出');
+    else bad('恢复后空格仍被吞', JSON.stringify(sendsC));
+
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) { console.error('\n测试异常:', e && e.message); failed++; console.log(`\n结果: ${passed} 通过, ${failed} 失败`); }
   try { killTree(appProc); } catch { /* ignore */ }

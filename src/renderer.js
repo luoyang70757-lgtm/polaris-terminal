@@ -2775,7 +2775,7 @@ window.addEventListener('keydown', (e) => {
     dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ⚠️BODY 按键被吞`);
     return;
   }
-  dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
+  dlog('KEY', `'${key}' ${mod || '-'} ime=${e.isComposing ? 1 : 0} kc=${e.keyCode || 0} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
   // 空格键组合卡死防御:vim 等 TUI 退出(备用屏切回)后 xterm 内部 _isComposing 可能残留卡死,
   // 之后的空格被当输入法组合吞掉(现象:打不出空格,其他字符键正常;日志特征:KEY '␣' 出现但无 SEND)。
   // 在 xterm 处理本 keydown 之前(本 handler 是 window 捕获层,先于 textarea)复位组合态,让空格正常输出。
@@ -2784,7 +2784,13 @@ window.addEventListener('keydown', (e) => {
   // 真实中文输入(e.isComposing=true)一律不干预。
   if (inTerm && k === ' ' && !e.isComposing && e.keyCode !== 229) {
     for (const t of state.tabs.values()) {
-      if (t.term && t.term.textarea === e.target) { resetTermComposition(t.term); break; }
+      if (t.term && t.term.textarea === e.target) {
+        // 先按原有逻辑复位“确认卡住”的组合态；若状态检测不到但空格仍被吞，
+        // 由 250ms 看门狗兜底（重建输入法会话），避免每次空格额外发一条空 SEND。
+        resetTermComposition(t.term);
+        armSpaceWatchdog(t);
+        break;
+      }
     }
   }
 }, true);
@@ -2821,13 +2827,30 @@ function termCompositionStuck(term) {
   } catch { /* ignore */ }
   return true; // 两个信号都取不到 → 保守复位(此时 textarea 已清空,不会发脏数据)
 }
-function resetTermComposition(term) {
+function resetTermComposition(term, force) {
   const ta = term && term.textarea;
   if (!ta) return false;
-  if (!termCompositionStuck(term)) return false;
+  if (!force && !termCompositionStuck(term)) return false;
   try { ta.value = ''; } catch { /* ignore */ }
   try { ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); return true; } catch { return false; }
 }
+// 空格看门狗：空格 keydown 已到达窗口，但 250ms 内 xterm 一个 onData 都没产生
+// （日志特征：KEY '␣' 有、SEND 没有；失焦再聚焦才恢复）。
+// 说明 xterm/输入法组合态卡住 → 主动重建输入法会话；**不自动补发空格**，避免真组合时双空格。
+function armSpaceWatchdog(tab) {
+  if (!tab || !tab.term) return;
+  const seq = (tab.__spaceSeq = (tab.__spaceSeq || 0) + 1);
+  tab.__spacePending = seq;
+  setTimeout(() => {
+    if (!state.tabs.has(tab.sessionId)) return;
+    if (tab.__spacePending !== seq) return; // 又按了新的空格，交给新的看门狗
+    if ((tab.__spaceHandledSeq || 0) >= seq) return; // 本次空格已产生输入数据
+    try { tab.term.textarea.blur(); tab.term.textarea.focus(); } catch { /* ignore */ }
+    try { resetTermComposition(tab.term, true); } catch { /* ignore */ }
+    dlog('RECOVER', '空格未送达 → 已重建输入法会话');
+  }, 250);
+}
+
 // ---- 中文输入法不定时失效修复 ----
 // 症状:拼音候选窗偶尔弹不出来,按键直接以纯字母形式上屏/发到服务器。
 // 根因:fcitx5/ibus 等输入法在「切标签 / 终端失焦 / 窗口失焦」时不会触发 xterm 隐藏
@@ -8201,6 +8224,8 @@ async function connectToServer(session, opts) {
 
   // 键盘输入 → SSH(term.onData 会在每个按键/粘贴时触发)
   term.onData((data) => {
+    // 空格看门狗：xterm 产生了输入数据（含空格）→ 本次空格已送达，取消自动恢复
+    if (tab.__spacePending && String(data).includes(' ')) tab.__spaceHandledSeq = tab.__spacePending;
     // 在下面可能重置 atPasswordPrompt 之前快照:本次输入若是密码(服务器刚提示 password:),
     // 必须整段按敏感输入处理 —— 手敲密码是逐键发送的,主进程 isSecretInput 用单字符
     // 匹配完整密码永远不会命中,旧版会把密码逐字符落进会话日志/录制。
