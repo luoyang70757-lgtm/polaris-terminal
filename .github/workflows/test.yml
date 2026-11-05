@@ -1,0 +1,27 @@
+name: Tests
+
+# 纯 Node 断言回归(run-verify.js --pure):不启动 Electron、不需要显示环境,秒级完成。
+# 为什么单独一个 workflow:build-windows.yml 只管出包,以前「CI 只构建不测」——
+# 纯逻辑回归(危险命令解析、分组迁移、SSH config 解析、SFTP 续传决策表等)完全可以在
+# 每次 push 时跑一遍,失败不阻塞发版(发版仍由 tag 触发 build-windows.yml)。
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pure-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies (skip Electron binary)
+        env:
+          POLARIS_SKIP_ELECTRON: '1'
+        run: npm ci
+      - name: Run pure-node assertions
+        run: node run-verify.js --pure

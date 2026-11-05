@@ -232,7 +232,13 @@ if (!__gotSingleLock) {
 
 const DEV_MODE = process.argv.includes('--dev') || process.env.POLARIS_DEV === '1';
 let mainWindow = null;
-connectOpts.init({ getMainWindow: () => mainWindow }); // 指纹校验弹窗以主窗口为父;mainWindow 延迟可用,闭包惰性读取
+connectOpts.init({
+  getMainWindow: () => mainWindow, // 指纹校验弹窗以主窗口为父;mainWindow 延迟可用,闭包惰性读取
+  // "信任并记住所有主机" → 让渲染层把设置里的 autoTrustHostKey 置 true 并落盘(之后再也不会弹)
+  onTrustAll: () => broadcast('settings:trustAll'),
+  // 指纹写不进数据目录 → 告诉用户"下次还会问"以及该去检查哪个文件(否则这个问题无迹可查)
+  onPersistFail: (id, where) => broadcast('settings:trustPersistFail', id, where || ''),
+});
 
 // macOS 双击启动检测:未公证 app 经 LaunchServices(双击/Dock)启动时,系统会限制其局域网访问
 // (连接内网主机报 EHOSTUNREACH);命令行/启动器直接跑二进制则正常。检测启动方式,

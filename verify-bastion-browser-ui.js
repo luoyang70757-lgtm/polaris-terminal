@@ -65,6 +65,9 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     }
     if (!c) throw new Error('主窗口未就绪');
     for (let i = 0; i < 50; i++) { if (await ev(c, `typeof state === 'object' && !!state.settings`)) break; await sleep(200); }
+    // 关掉首次使用自动弹出的新手引导:它也是 .modal,开着时 setBastionWebviewForModal(false)
+    // 会因为「还有别的弹窗开着」而拒绝恢复 webview → 本用例的 restored 断言会被误伤。
+    await ev(c, `state.settings.onboardingDone = true; saveSettings(); var _om = document.getElementById('onboarding-modal'); if (_om) _om.classList.add('hidden'); true;`);
 
     const idle = await ev(c, `(function(){
       openBastionPanel();

@@ -59,6 +59,10 @@ contextBridge.exposeInMainWorld('api', {
   // keyboard-interactive 认证:主进程推提示 → 弹窗 → 应答
   onSshKbd: (cb) => ipcRenderer.on('ssh:kbd-interactive', (_e, sessionId, data) => cb(sessionId, data)),
   sshKbdRespond: (id, answers, cancelled) => ipcRenderer.send('ssh:kbd-respond', id, answers, cancelled),
+  // 主机指纹信任:用户在信任框选「信任并记住所有主机」→ 渲染层打开 autoTrustHostKey;
+  // 指纹写不进数据目录 → 渲染层提示「下次仍会询问」+ 具体文件路径
+  onTrustAll: (cb) => ipcRenderer.on('settings:trustAll', () => cb()),
+  onTrustPersistFail: (cb) => ipcRenderer.on('settings:trustPersistFail', (_e, id, where) => cb(id, where)),
 
   // ---- 应用菜单事件(文件/视图/工具/帮助) ----
   onMenu: (cb) => {

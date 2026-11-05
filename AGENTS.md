@@ -80,13 +80,17 @@ npm run dist -- --win
 
 - 工具栏「🧾 调试」：终端调试日志（按键/焦点/收发数据），「⬇ 下载日志」导出完整 app 日志
 - e2e 验证：`node verify-<功能>.js`（自动 spawn electron + 调试端口 + 临时数据目录，用后 pkill）
+- **全量回归入口**：`node run-verify.js`（串行跑全部 `verify-*.js` 并汇总；`--pure` 只跑纯 Node 断言、`--e2e` 只跑 CDP、`--only=bastion` 按名字过滤、`--list` 看计划、`--fail-fast`/`--timeout=N`）。旧入口 `test-all.js` 含真实凭据、已被 .gitignore 排除且新克隆没有 → 以此脚本代替（入库，可直接在 CI 跑）
+- CI 两道：`.github/workflows/build-windows.yml`（tag `v*` 触发打包发 Release）+ `.github/workflows/test.yml`（push/PR 跑 `run-verify.js --pure`，不启 Electron、不需要显示环境）
 - 测试会杀掉正在运行的 app（pkill electron），测完需重启
 
 ## 当前状态（截至 2026-11-03）
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.6**（2026-11-03）：**新手可用性四件套**——① 终端右键菜单 / ⌘K 命令面板新增「🔐 切换 root（su - root）」：一键发 `su - root`，密码框支持 Ctrl/Cmd+V 与「📋 粘贴」按钮；`tab.suPending` 抑制 `autoFillPassword`（避免把登录密码误发给 su），root 密码走 `noLog` 不进日志/录制，取消即 Ctrl+C 中止；会话可保存 `su_password`（加密入库，`sessions:create/update` 加解密，老库自动补列），有保存值时检测到 `Password:` 自动发送、不再弹框。② 新手引导向导（三步，首次无会话解锁后自动弹，关闭/跳过持久化 `onboardingDone`，空态卡片可重开）。③ 「从 ~/.ssh/config 导入」（`lib/ssh-config.js` 纯函数解析 `Host`/`HostName`/`User`/`Port`/`IdentityFile`、`Host *` 全局默认、`~` 展开；IPC `sessions:importSshConfig`，`.conf`/`config` 也走 `importExternal`）。④ 会话列表空态卡片（新建/批量导入/SSH 导入/快捷连接）并修正首次启动主机分组默认折叠导致卡片不可见。回归：`verify-su-root` 13/13、`verify-onboarding` 24/24、`verify-ssh-config` 16/16、`verify-ssh-config-import` 20/20、`verify-ui-layout` 21/21。
+**当前版本 v1.0.7**（2026-11-03）：**收尾打磨 + 测试基建**——① **修「总是弹『信任并连接』」**：信任框新增第三选项「信任并记住所有主机」（`onTrustAll` → 渲染层开 `settings.autoTrustHostKey` 并落盘）；`known-hosts.set()` 改成写入后回读校验并返回 boolean，失败时 `onPersistFail` → 状态栏红字告知“指纹没能保存到 <路径>，下次仍会询问”（治过去的静默失败）；排查文档 `docs/host-trust.md`，回归 `verify-host-trust` 23/23。② 堡垒机面板去掉重复选择控件（A2）：已保存连接只由顶部标签栏出，地址栏下拉只留标签栏覆盖不到的站点（左侧 JumpServer 服务器 / 已有资产的堡垒机 URL，`optgroup` 按来源分组，无额外站点时整体 `.hidden`）；`bastionSelectableServers()` 内部清单不变（`B:id` 双击资产链路保留），`bastionSelectServer` 对 cfg 同步 `bastionActiveTabId` + 重绘 tabs，末尾复位下拉。② 全量回归入口入库 `run-verify.js`（串行 + 汇总断言 + `--retry` 标记 flaky；`--pure` 供 CI）。③ 新增 `.github/workflows/test.yml`（push/PR 跑 `--pure`）；`npm ci` 支持 `POLARIS_SKIP_ELECTRON=1`。④ 新手引导不再叠在其他弹窗上（检测到 `.modal:not(.hidden)` 就等，最多 5 次×1.5s）。回归：全量 89/92（3 个历史红灯见 `docs/verify-known-red.md`，已 stash 复核与本轮无关）、`--pure` 11/11 脚本 80 断言全绿、`verify-bastion-ui` 11/11、`verify-bastion-server-sync` 4/4、`verify-bastion-merge` 9/9、`verify-bastion-browser-ui` 9/9。
+
+上一版本 v1.0.6（2026-11-03）：**新手可用性四件套**——① 终端右键菜单 / ⌘K 命令面板新增「🔐 切换 root（su - root）」：一键发 `su - root`，密码框支持 Ctrl/Cmd+V 与「📋 粘贴」按钮；`tab.suPending` 抑制 `autoFillPassword`（避免把登录密码误发给 su），root 密码走 `noLog` 不进日志/录制，取消即 Ctrl+C 中止；会话可保存 `su_password`（加密入库，`sessions:create/update` 加解密，老库自动补列），有保存值时检测到 `Password:` 自动发送、不再弹框。② 新手引导向导（三步，首次无会话解锁后自动弹，关闭/跳过持久化 `onboardingDone`，空态卡片可重开）。③ 「从 ~/.ssh/config 导入」（`lib/ssh-config.js` 纯函数解析 `Host`/`HostName`/`User`/`Port`/`IdentityFile`、`Host *` 全局默认、`~` 展开；IPC `sessions:importSshConfig`，`.conf`/`config` 也走 `importExternal`）。④ 会话列表空态卡片（新建/批量导入/SSH 导入/快捷连接）并修正首次启动主机分组默认折叠导致卡片不可见。回归：`verify-su-root` 13/13、`verify-onboarding` 24/24、`verify-ssh-config` 16/16、`verify-ssh-config-import` 20/20、`verify-ui-layout` 21/21。
 
 上一版本 v1.0.5（2026-11-03）：**修 H3C `ERR_CERT_AUTHORITY_INVALID`**——证书放行改为 `app.whenReady` 启动时、任何 webview/请求之前安装（避免 webview 先登录把失败结果缓存）；h3c-api 捕获证书错误后自动重装放行并重试一次。回归 `verify-h3c-cert` 1/1、`verify-h3c-native` 15/15。
 

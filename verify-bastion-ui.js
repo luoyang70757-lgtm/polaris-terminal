@@ -71,15 +71,38 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? '  → ' + e
         { id: 'jms-e', name: '空地址服务器', baseUrl: '' },
         { id: 'jms-ok', name: '有地址服务器', baseUrl: 'https://jms.b.com' },
       ];
+      state.bastionUrls = [];
+      bastionRenderTabs();
       bastionRenderServerSelect();
       return true;
     })()`);
-    const opts = await ev(c, `(function(){ const sel=document.getElementById('bastion-server-select'); return [...sel.options].map(o=>o.textContent).join('|'); })()`);
-    ok('下拉内容', opts);
-    if (opts.includes('左侧H3C')) ok('下拉含左侧 H3C 连接'); else bad('下拉缺左侧 H3C 连接', opts);
-    if (opts.includes('左侧JMS')) ok('下拉含左侧 JMS 连接'); else bad('下拉缺左侧 JMS 连接', opts);
-    if (opts.includes('有地址服务器')) ok('下拉含有地址的 JMS 服务器'); else bad('下拉缺有地址 JMS 服务器', opts);
-    if (!opts.includes('空地址服务器')) ok('空地址 JMS 服务器正确排除(无地址无法加载)'); else bad('空地址 JMS 服务器不应出现', opts);
+    const ui = await ev(c, `(function(){
+      const sel=document.getElementById('bastion-server-select');
+      const tabs=document.getElementById('bastion-tabs-list');
+      return {
+        opts:[...sel.options].map(o=>o.textContent).join('|'),
+        groups:[...sel.querySelectorAll('optgroup')].map(g=>g.label).join('|'),
+        selectHidden: sel.classList.contains('hidden'),
+        tabs: tabs.textContent,
+        internal: bastionSelectableServers().map(s=>s.src).join(','),
+      };
+    })()`);
+    ok('下拉内容', ui.opts);
+    if (ui.tabs.includes('左侧H3C') && ui.tabs.includes('左侧JMS')) ok('标签栏含左侧两个连接(已保存配置的唯一入口)'); else bad('标签栏缺左侧连接', ui.tabs);
+    if (!ui.opts.includes('左侧H3C') && !ui.opts.includes('左侧JMS')) ok('下拉不再重复列出已保存配置(A2 三重选控件冗余已消除)'); else bad('下拉仍重复列出已保存配置', ui.opts);
+    if (ui.opts.includes('有地址服务器')) ok('下拉含有地址的 JMS 服务器'); else bad('下拉缺有地址 JMS 服务器', ui.opts);
+    if (!ui.opts.includes('空地址服务器')) ok('空地址 JMS 服务器正确排除(无地址无法加载)'); else bad('空地址 JMS 服务器不应出现', ui.opts);
+    if (ui.groups.includes('JumpServer')) ok('下拉按来源分组(JumpServer / 已有资产的堡垒机)'); else bad('下拉缺来源分组', ui.groups);
+    if (!ui.selectHidden) ok('有额外站点时下拉可见'); else bad('有额外站点时下拉不应隐藏');
+    if (ui.internal.includes('cfg') && ui.internal.includes('jms')) ok('内部清单仍含 cfg(双击资产 bastionSelectServer("B:id") 路径不受影响)'); else bad('内部清单缺 cfg', String(ui.internal));
+
+    // 只有已保存配置、无额外站点时 → 下拉整个收起(不再摆一个只有占位项的空下拉)
+    const hidden = await ev(c, `(function(){
+      state.jmsServers = []; state.bastionUrls = [];
+      bastionRenderServerSelect();
+      return document.getElementById('bastion-server-select').classList.contains('hidden');
+    })()`);
+    if (hidden) ok('没有额外站点时下拉自动收起'); else bad('没有额外站点时下拉应隐藏');
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   } catch (e) { console.error('\n测试异常:', e && e.message); failed++; console.log(`\n结果: ${passed} 通过, ${failed} 失败`); }

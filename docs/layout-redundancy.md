@@ -13,7 +13,8 @@
 | A1 SFTP 传输历史双份记录 | ✅ 已完成（现仅传输失败/非传输操作写文本日志，成功上传下载不再 addLog） |
 | B1 右侧面板挤死终端 | ✅ 已完成：命令记录/批量执行**已互斥**（`toggleCmdPanel`/`toggleBatchPanel` 互相收起）；`.terminal-area` 已有 `min-width: 320px` 保护（终端不再被挤成 0）；AI 面板保持独立开关（与命令记录/批量同开属预期，空间不足时右侧面板被窗口裁剪而不是压扁终端） |
 | B2 面板尺寸记忆不一致 | ✅ 已完成（`sessionPanelWidth`/`sftpPanelHeight` 均已持久化，拖动后 saveSettings） |
-| A2 堡垒机三重选控件 / A3 入口重复 / A4、A5 轻度冗余 / B3、B4、B5 | ⬜ 仍按原文；判断前请重新 `grep` 定位（行号以 2026-08-23 为准，已失效） |
+| A2 堡垒机三重选控件 | ✅ 已完成（2026-11-03）：标签栏 tabs 仍是已保存堡垒机的**唯一入口**；下拉只留 tabs 覆盖不到的站点（左侧 JumpServer 服务器 / 已有资产的堡垒机 URL），按来源分组、无额外站点时整个下拉收起；地址栏保留手输任意 URL。`bastionSelectableServers()` 内部清单不变（`B:id` 双击资产链路照旧），`bastionSelectServer` 额外同步标签高亮、并把下拉复位到占位项（同站点可重复选） |
+| A3 入口重复 / A4、A5 轻度冗余 / B3、B4、B5 | ⬜ 仍按原文；判断前请重新 `grep` 定位（行号以 2026-08-23 为准，已失效） |
 
 > 主题/字体那份清单（`docs/theme-font-optimization.md`）T1–T4 **已全部实现**，见该文件头部的核对记录。
 
@@ -78,6 +79,8 @@ tabs 和下拉枚举的是**同一份 `bastionServers()`**，动作都是「填�
 
 **修复建议**：tabs 保留（功能全）；下拉**瘦身或去掉**，只保留 tabs 覆盖不到的 JMS 服务器，或并入 tabs。可一并考虑去掉「加载」按钮（其功能已被 change + 「打开」覆盖）。
 **注意**：双击堡垒机资产走 `bastionSelectServer('B:'+id)`（`renderer.js:5632`），是下拉的 id 链路 —— 改下拉时要保这条路径，否则双击资产失效。
+
+**落地（2026-11-03）**：按下拉瘦身方案实现——`bastionRenderServerSelect()` 只渲染 `src==='jms'` / `src==='url'` 两组（`optgroup`），`cfg` 类交给 tabs；两组都空时给 select 加 `.hidden`。`bastionSelectableServers()` 保持原样（cfg 仍在内部清单里，`B:id` 链路不受影响），`bastionSelectServer()` 对 cfg 同步 `bastionActiveTabId` + 重绘 tabs（双击资产时标签与内容一致），并在末尾把 select 复位为占位项。回归：`verify-bastion-ui.js`（11/11，新增「下拉不再重复列出已保存配置」「无额外站点时自动收起」「内部清单仍含 cfg」）、`verify-bastion-server-sync.js` 4/4、`verify-bastion-merge.js` 9/9。
 
 **回归**：`node verify-bastion-ui.js`、`node verify-bastion-merge.js`、`node verify-h3c.js`（登录态/切换是高风险区）。
 

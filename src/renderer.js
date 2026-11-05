@@ -1722,12 +1722,19 @@ function maybeShowOnboarding() {
     const mode = state.settings.bootIntro || 'short';
     // 过场动画 z-index 9999 会盖住弹窗,等它播完/被跳过再弹;dev/测试无过场几乎立即弹。
     const delay = boot ? (mode === 'full' ? 2000 : mode === 'skip' ? 0 : 1400) : 40;
-    setTimeout(() => {
+    let waits = 0;
+    const fire = () => {
       try {
         if (state.settings.onboardingDone || state.sessions.length > 0) return;
+        // 已经有别的弹窗开着(新建会话/导入/配置…):不要叠上来抢焦点,等它关掉再弹
+        if (document.querySelector('.modal:not(.hidden)')) {
+          if (waits++ < 5) setTimeout(fire, 1500);
+          return;
+        }
         openOnboarding();
       } catch { /* ignore */ }
-    }, delay);
+    };
+    setTimeout(fire, delay);
   } catch { /* ignore */ }
 }
 
@@ -5553,7 +5560,9 @@ async function bastionRemoveTab(id) {
 }
 
 // 渲染地址栏的服务器下拉
-// 右侧堡垒机下拉可选的站点:已保存的堡垒机配置 + 左侧创建的 JumpServer 服务器(需求:下拉选左侧信息)
+// 可以“选一个站点并加载”的来源(内部统一清单,双击资产/代码路径都用它):
+//   ① 已保存的堡垒机配置(cfg)② 左侧建的 JumpServer 服务器(jms)③ 库里已有资产的堡垒机 URL(url)
+// 下拉里**只展示 ②③**:① 已由上方标签栏覆盖,不再重复列一遍(同一批站点在三处各摆一份 → A2 冗余)。
 function bastionSelectableServers() {
   const list = [];
   for (const s of bastionServers()) {
@@ -5579,17 +5588,33 @@ function bastionSelectableServers() {
 function bastionRenderServerSelect() {
   const sel = els.bastionServerSelect;
   sel.innerHTML = '';
-  // 手动输入地址放最前(默认选中):避免"打开"误用第一个已保存堡垒机,而忽略用户手输的地址
-  const empty = document.createElement('option');
-  empty.value = '';
-  empty.textContent = '(手动输入地址)';
-  sel.appendChild(empty);
-  for (const s of bastionSelectableServers()) {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.name;
-    sel.appendChild(opt);
-  }
+  // 已保存的堡垒机配置由上方标签栏(tabs)直接覆盖 → 下拉只放标签栏覆盖不到的站点:
+  //   ① 左侧建的 JumpServer 服务器 ② 库里已有资产、但没建“保存连接”的堡垒机 URL。
+  // 占位选项放最前(默认选中):避免“打开”误用第一个站点而忽略用户手输的地址。
+  const all = bastionSelectableServers();
+  const jms = all.filter((s) => s.src === 'jms');
+  const urls = all.filter((s) => s.src === 'url');
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '其他站点…';
+  sel.appendChild(placeholder);
+  const addGroup = (label, items) => {
+    if (!items.length) return;
+    const og = document.createElement('optgroup');
+    og.label = label;
+    for (const s of items) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  };
+  addGroup('JumpServer（左侧服务器）', jms);
+  addGroup('已有资产的堡垒机', urls);
+  // 两个分组都空 → 整个下拉收起(标签栏 + 地址栏已够用,不再摆一个只有占位项的空下拉)
+  sel.classList.toggle('hidden', !(jms.length + urls.length));
+  sel.value = '';
 }
 
 // 选择保存的服务器 → 填地址并加载(页面加载完自动填充账号密码)
@@ -5602,6 +5627,13 @@ function bastionSelectServer(id) {
   // JMS 服务器用其保存的账号密码自动登录;堡垒机配置同前
   startBastionAutoFill((s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null);
   closeBastionCfg();
+  // 选的是已保存的堡垒机配置 → 同步标签栏高亮(双击资产/下拉进入时标签与内容保持一致)
+  if (s.src === 'cfg') {
+    const cfgId = String(id).slice(2); // 'B:' + id
+    if (bastionActiveTabId !== cfgId) { bastionActiveTabId = cfgId; bastionRenderTabs(); }
+  }
+  // 下拉复位到占位项:下次还能重复选同一个站点(否则 value 未变不触发 change)
+  try { els.bastionServerSelect.value = ''; } catch { /* ignore */ }
 }
 
 // 工具栏「加载」:加载当前选中的已保存堡垒机并自动填充账号密码;无选中则加载地址栏输入的地址
@@ -11380,6 +11412,18 @@ async function detectOsForTab(t) {
 
 // 主进程日志 → 调试面板(MAIN/MAIN·错误 前缀;主进程启动、SSH 连接、异常等)
 window.api.onMainLog((level, msg) => dlog(level === 'error' ? 'MAIN·错误' : 'MAIN', msg));
+
+// 主机指纹:用户在信任框选「信任并记住所有主机」→ 打开设置里的 autoTrustHostKey 并落盘
+window.api.onTrustAll(() => {
+  state.settings.autoTrustHostKey = true;
+  saveSettings();
+  try { els.setAutoTrust.checked = true; } catch { /* ignore */ }
+  setStatus('已开启「自动信任新主机指纹」:之后连新主机不再弹「信任并连接」', 'var(--accent)');
+});
+// 指纹写不进数据目录(目录只读/被清理)→ 明确告知,否则只表现为“每次连接都弹信任框”
+window.api.onTrustPersistFail((id, where) => {
+  setStatus(`${id || '主机'} 的指纹没能保存到 ${where || '数据目录'} → 下次连接仍会询问(检查目录是否可写)`, 'var(--red)');
+});
 
 // ---- 字符集自动探测:连接后发 OSC-0(标题)探针取服务器 $LANG,自动切编码 ----
 // 只在会话是默认 utf8(用户没手动指定编码)时探测;SSH 会话才探(Telnet 网络设备多无 $LANG)。

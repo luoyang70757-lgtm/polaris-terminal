@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.6**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.7**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -169,8 +169,9 @@ node verify-<功能>.js
 **已解决（2026-08-23）**：SFTP 断点续传磁盘化（跨重启续传，lib/sftp-partials.js + hostId 键）；SFTP 大批量压测（verify-sftp-stress.js + verify-sftp-partials.js）；工作目录调试产物清理（long_text_*.txt / polaris-logs-*.zip 已删并 gitignore）
 
 **已解决（2026-08-25，历史会话复盘）**：**历史最高频问题——左侧堡垒机（尤其 H3C）获取不到资产列表 /「未捕获到资产」**，跨 4 个会话出现 15+ 次。它是一串根因而非单个 bug，已在 v1.0.2→v1.0.12 逐个铲除，关键节点：v1.0.2 `4ac370d`（API 写死 getAccessViewTree → 改读浏览器真实请求体 paths）、v1.0.3 `c7a28de`（钩子注入死锁）、v1.0.8/9 `8b331c2` + `5c63ff2`（**根因**：注入脚本正则被宿主模板解码破坏 → 钩子永远进不去）、v1.0.12 `f5b5401`（H3C 会话保活放宽到面板隐藏也运行）、08-25 未打 tag（JMS/H3C 共性问题：折叠层级把资产藏起来 → 登录后默认展开）。**判断依据**：v1.0.13 起用户抱怨转移到显示层（分组重复 `df6f473`、收藏分组 `66d4184`/`2a8fffc`/`471aab2`，均已修），资产捕获链路本身是通的（确认 870/879 台设备 dirs 含根），当前 v1.0.18「获取不到资产列表」本体不再出现。**遗留**：SFTP 偶发目录读取超时/大文件传输失败——根因是 v1.0.11 加的 stat 探测挂住 H3C 串行 SFTP 通道，v1.0.17 `5dbb8ef` 移除修复，v1.0.18 `0076967` 加 [SFTP] 调试日志，等真实设备复现后按日志收尾
-- **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析，待执行）：A 类冗余——SFTP 传输历史双份记录、堡垒机面板三重选控件、堡垒机入口重复；B 类健壮性——右侧固定宽面板可同时全开把终端挤没（`min-width:0`）、面板尺寸记忆不一致
-- **主题/字体优化**（`docs/theme-font-optimization.md`，2026-08-23 分析，待执行）：ANSI 16 色全局一份换主题不变（Termius 每主题自带调色板，核心差距）、前 8 套预设硬编码 css 与派生值漂移、字体列表缺 Nerd Font/自定义入口
+- **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析）：**A1/B1/B2 已完成**（2026-09-11 核对），**A2 已完成**（2026-11-03：堡垒机下拉只留 tabs 覆盖不到的站点——左侧 JumpServer 服务器 + 已有资产的堡垒机 URL，按来源分组，无额外站点时整个下拉收起；`bastionSelectServer` 仍支持 `B:id` 双击资产链路并同步标签高亮）。剩 A3（工具栏 🌐 与分组右键入口轻度重复）、A4/A5、B3/B4/B5 为可选体验项
+- **主题/字体优化**（`docs/theme-font-optimization.md`）：T1–T4 已实现（主题已由 25 套精简为 10 套精选，每套带 ANSI 16 色）
+- **回归与 CI**：全量入口 `node run-verify.js`（入库；`--pure` 纯 Node / `--e2e` / `--only=` / `--retry=N`，默认对失败脚本重跑 1 次以吸收 CDP/mock 抖动）；CI 两道——`build-windows.yml`（tag `v*` 出包发 Release）+ `test.yml`（push/PR 跑 `run-verify.js --pure`）。已知红灯 3 例（debug-log / space-composition-flush / vim-real，与本轮改动无关）见 `docs/verify-known-red.md`
 
 **已解决（2026-09-01，v1.0.35→v1.0.40）**：
 - **SFTP 大文件上传加固**（v1.0.35）：进度节流（lib/sftp-progress-throttle.js，高频进度不再打满渲染层）、120s 传输假死看门狗（连接假死主动终止）、stat 30s 超时（H3C 串行通道挂住不阻塞）；断开/关标签清空传输记录、彻底移除启动自动连接（v1.0.35）
@@ -179,7 +180,7 @@ node verify-<功能>.js
 - **堡垒机连接编辑入口**（v1.0.39/40）：新建连接自动展开子区 + H3C 资产区块头「编辑连接」——用户"左侧连接没编辑功能"根因是已保存连接子区默认折叠 + 资产区块头无编辑入口，非功能缺失
 - 完整回归：14 项 verify 脚本全过（含 verify-pack-upload 抓到节流文件切换回归并修复）
 
-**遗留**：macOS 双击启动网络限制**根治需公证**（无 Apple 证书，短期保留启动器方案）；「UI 布局优化」「主题/字体优化」两份 docs 清单仍待执行；H3C 网页收藏若要彻底 SQLite 化（跨设备/清 localStorage 也不丢）需读取 H3C 网页 localStorage 结构设计捕获，当前靠"保留 localStorage"兜底。
+**遗留**：macOS 双击启动网络限制**根治需公证**（无 Apple 证书，短期保留启动器方案）；`docs/layout-redundancy.md` 仅剩 A3/A4/A5、B3/B4/B5 可选体验项（A1/A2/B1/B2 已完成）；H3C 网页收藏若要彻底 SQLite 化（跨设备/清 localStorage 也不丢）需读取 H3C 网页 localStorage 结构设计捕获，当前靠"保留 localStorage"兜底。
 
 **已解决（2026-09-10，v1.0.41）**：
 - **输入法残留被当输入发到服务器**（renderer.js）：用户报「敲 `df -Th` 回车，服务端收到 `df -Th T` 报 `df: T: 没有那个文件或目录`」。日志取证：空格键每次出现两条 SEND（一条多余的空串/`" T"`，一条正常空格），多出的内容来自 xterm 组合冲刷（见技术决策 24）。修法：统一入口 `resetTermComposition`（只在真卡组合态复位 + 复位前清空 textarea）。复现/回归 `verify-space-composition-flush.js`（改前逐字复现 `SEND " T"`，改后 4/4 通过）；`verify-vim-space.js`（原"vim 退出后空格失效"修复）无回退

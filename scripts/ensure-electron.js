@@ -19,6 +19,12 @@ const root = path.resolve(__dirname, '..');
 const electronDir = path.join(root, 'node_modules', 'electron');
 const installJs = path.join(electronDir, 'install.js');
 
+// CI 只跑纯 Node 断言 / 只做打包时不需要 Electron 二进制 → 显式跳过,省 144MB 下载。
+if (process.env.POLARIS_SKIP_ELECTRON === '1') {
+  console.log('[ensure-electron] POLARIS_SKIP_ELECTRON=1,跳过(仅纯 Node 场景可用)');
+  process.exit(0);
+}
+
 // 还没安装依赖(单独跑本脚本):静默通过
 if (!fs.existsSync(installJs)) process.exit(0);
 
