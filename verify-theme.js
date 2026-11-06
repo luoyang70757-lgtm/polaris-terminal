@@ -1,11 +1,12 @@
 'use strict';
 const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 /**
- * verify-theme.js — 验证主题系统升级:
- *  ① 下拉含「跟随系统(auto)」+ 深/浅 optgroup 分组,共 21 项(auto + 20 预设)
- *  ② 新预设纯派生:catppuccinMocha → --bg=#1e1e2e;浅色派生方向(--border 比 bg 深)
- *  ③ 旧预设 css 覆盖优先:dark → --bg=#070c18(手写值,零回归)
- *  ④ auto 跟随系统:Emulation 切 dark/light → 即时切到 dark/浅色预设
+ * verify-theme.js — 验证主题系统(v1.0.8:10 套 Tabby/iTerm2 精选配色 + 旧键迁移 + 对比度保底):
+ *  ① 下拉 = auto + 10 套预设(深色 8 / 浅色 2),旧键已不在下拉里
+ *  ② 旧主题键自动迁移:dark→tokyonight、catppuccinMocha→iceberg、已删主题→默认
+ *  ③ 派生正确:iceberg → --bg/--text/--border;浅色方向 --border 比 bg 深
+ *  ④ 对比度保底:10 套逐个 apply,正文 ≥4.5、次要文字 ≥3.0(换任意配色都不糊)
+ *  ⑤ auto 跟随系统:深色 → Tokyo Night,浅色 → GitHub 浅
  * 运行: node verify-theme.js(需 9370 空闲;--dev 临时数据目录)
  */
 const { spawn } = require('child_process');
@@ -31,7 +32,7 @@ const applyTheme = (v) => `(function(){var s=document.getElementById('set-theme'
 const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: scheme }] });
 
 (async () => {
-  console.log('\n=== 主题系统升级(auto 跟随系统 + 20 预设 + deriveUiTokens) ===\n');
+  console.log('\n=== 主题系统(10 套 Tabby 精选 + 旧键迁移 + 对比度保底 + auto) ===\n');
   try {
     const ts0 = await listTargets();
     const lockT = ts0.find((t) => /解锁/.test(t.title || '')) || ts0.find((t) => t.type === 'page');
@@ -53,36 +54,62 @@ const emulatedMedia = async (c, scheme) => c.call('Emulation.setEmulatedMedia', 
     // ① 下拉结构
     await check(c, '下拉含「跟随系统(auto)」选项', `(function(){var s=document.getElementById('set-theme');return !!s.querySelector('option[value="auto"]');})()`);
     await check(c, '下拉分 深色/浅色 两个 optgroup', `document.getElementById('set-theme').querySelectorAll('optgroup').length===2`);
-    await check(c, '选项总数 = auto + 10 套精选预设(25 → 10 精简)', `document.getElementById('set-theme').options.length===11`);
-    await check(c, '精选预设齐全(深/浅/石墨/雾白/Solarized/Nord/Dracula/Catppuccin/Gruvbox/松雾)',
-      `['dark','light','termiusDark','termiusLight','solarizedDark','nord','dracula','catppuccinMocha','gruvboxDark','rosePine'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
-    await check(c, '已精简掉的主题不再出现在下拉里(经典绿/Nord外的 15 套)',
-      `!['green','solarizedLight','onedark','flexokiDark','flexokiLight','kanagawaWave','kanagawaDragon','kanagawaLotus','hackerBlue','hackerGreen','catppuccinLatte','nightOwl','everforestDark','everforestLight','aura'].some(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
-    await check(c, '旧用户存的已删主题自动回落到深空(dark)', `(function(){state.settings.theme='kanagawaWave';applyTheme();var ok=getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#070c18';state.settings.theme='dark';applyTheme();return ok;})()`);
+    await check(c, '选项总数 = auto + 10 套精选预设', `document.getElementById('set-theme').options.length===11`);
+    await check(c, '10 套预设齐全(8 深 + 2 浅)',
+      `['tokyonight','dracula','nord','solarizedDark','gruvboxDark','oneHalfDark','iceberg','rosePine','github','oneHalfLight'].every(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
+    await check(c, '深色 8 套 / 浅色 2 套',
+      `(function(){var g=document.getElementById('set-theme').querySelectorAll('optgroup');return g[0].children.length===8 && g[1].children.length===2;})()`);
+    await check(c, '旧主题键不再出现在下拉里(自研 10 套已换掉)',
+      `!['dark','light','termiusDark','termiusLight','catppuccinMocha','kanagawaWave','nightOwl','everforestDark','aura','onedark'].some(function(k){return !!document.getElementById('set-theme').querySelector('option[value="'+k+'"]');})`);
 
-    // ② 新预设纯派生
-    await ev(c, applyTheme('catppuccinMocha')); await sleep(120);
-    await check(c, 'catppuccinMocha → --bg 派生 = #1e1e2e', `${cssVar('--bg')}==='#1e1e2e'`);
-    await check(c, 'catppuccinMocha → --text 派生 = #cdd6f4', `${cssVar('--text')}==='#cdd6f4'`);
-    await check(c, 'catppuccinMocha → --border 派生 = #42424f(提亮方向)', `${cssVar('--border')}==='#42424f'`);
+    // ② 旧键迁移:老用户存的 dark/light/termius*/catppuccinMocha 都要落到对应新配色
+    await check(c, '旧键 dark → Tokyo Night(--bg=#1a1b26)',
+      `(function(){state.settings.theme='dark';applyTheme();var ok=getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#1a1b26';state.settings.theme='tokyonight';applyTheme();return ok;})()`);
+    await check(c, '旧键 catppuccinMocha → Iceberg(--bg=#161821)',
+      `(function(){state.settings.theme='catppuccinMocha';applyTheme();return getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#161821';})()`);
+    await check(c, '已删主题(kanagawaWave)→ 回落默认 Tokyo Night',
+      `(function(){state.settings.theme='kanagawaWave';applyTheme();return getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#1a1b26';})()`);
+    await check(c, '旧键 light → GitHub 浅(--bg=#f4f4f4)',
+      `(function(){state.settings.theme='light';applyTheme();return getComputedStyle(document.body).getPropertyValue('--bg').trim()==='#f4f4f4';})()`);
 
-    // ③ 浅色派生方向(--border 比 bg 深)
-    await ev(c, applyTheme('termiusLight')); await sleep(120);
-    await check(c, 'termiusLight(Mist 浅)→ --bg = #f5f5f5', `${cssVar('--bg')}==='#f5f5f5'`);
+    // ③ 派生正确(iceberg:bg #161821 / fg #c6c8d1,对比度足够 → 原样保留)
+    await ev(c, applyTheme('iceberg')); await sleep(120);
+    await check(c, 'iceberg → --bg = #161821', `${cssVar('--bg')}==='#161821'`);
+    await check(c, 'iceberg → --text = #c6c8d1', `${cssVar('--text')}==='#c6c8d1'`);
+    await check(c, 'iceberg → --border = #3b3d45(提亮方向)', `${cssVar('--border')}==='#3b3d45'`);
+    await check(c, 'iceberg → --bg-panel = #22242c', `${cssVar('--bg-panel')}==='#22242c'`);
+
+    // 浅色方向:--border 比 bg 深
+    await ev(c, applyTheme('oneHalfLight')); await sleep(120);
+    await check(c, 'oneHalfLight → --bg = #fafafa', `${cssVar('--bg')}==='#fafafa'`);
     const borderDir = await ev(c, `(function(){var d=function(x){x=x.replace('#','');return [0,2,4].map(function(i){return parseInt(x.slice(i,i+2),16)});};var bg=d(document.documentElement.style.getPropertyValue('--bg')),bd=d(document.documentElement.style.getPropertyValue('--border'));return bd[0]+bd[1]+bd[2] < bg[0]+bg[1]+bg[2];})()`);
-    if (borderDir) ok('termiusLight → --border 比 bg 深(浅色方向)'); else bad('termiusLight → --border 比 bg 深(浅色方向)');
+    if (borderDir) ok('oneHalfLight → --border 比 bg 深(浅色方向)'); else bad('oneHalfLight → --border 比 bg 深(浅色方向)');
 
-    // ④ 旧预设统一走派生(删手写 css)→ --bg 取 term.bg,零回归
-    await ev(c, applyTheme('dark')); await sleep(120);
-    await check(c, 'dark → --bg = #070c18(派生)', `${cssVar('--bg')}==='#070c18'`);
-    await check(c, 'light → --bg = #ffffff(派生,原手写 #f5f6f8 已删)', `(function(){var s=document.getElementById('set-theme');s.value='light';s.dispatchEvent(new Event('change'));return document.documentElement.style.getPropertyValue('--bg').trim()==='#ffffff';})()`);
+    // ④ 全部 10 套:正文 ≥4.5、次要文字 ≥3.0(派生层做了对比度保底)
+    const worst = await ev(c, `(function(){
+      var lum=function(h){h=h.replace('#','');var c=[0,2,4].map(function(i){var v=parseInt(h.slice(i,i+2),16)/255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4)});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2]};
+      var cr=function(a,b){var A=lum(a),B=lum(b);return (Math.max(A,B)+0.05)/(Math.min(A,B)+0.05)};
+      var out={fg:99,dim:99,names:[]};var old=state.settings.theme;
+      Object.keys(THEMES).forEach(function(k){
+        state.settings.theme=k;applyTheme();
+        var bg=document.documentElement.style.getPropertyValue('--bg').trim();
+        var fg=document.documentElement.style.getPropertyValue('--text').trim();
+        var dim=document.documentElement.style.getPropertyValue('--text-dim').trim();
+        out.fg=Math.min(out.fg,cr(fg,bg));out.dim=Math.min(out.dim,cr(dim,bg));out.names.push(k);
+      });
+      state.settings.theme=old;applyTheme();return out;})()`);
+    if (worst && worst.fg >= 4.5) ok(`10 套正文对比度最低 ${worst.fg.toFixed(2)} ≥ 4.5`);
+    else bad('有主题正文对比度 < 4.5', JSON.stringify(worst));
+    if (worst && worst.dim >= 3.0) ok(`10 套次要文字对比度最低 ${worst.dim.toFixed(2)} ≥ 3.0`);
+    else bad('有主题次要文字对比度 < 3.0', JSON.stringify(worst));
+    if (worst && worst.names.length === 10) ok('遍历覆盖全部 10 套预设'); else bad('主题数量不对', JSON.stringify(worst && worst.names));
 
-    // ⑤ auto 跟随系统(Emulation 模拟明暗切换)
+    // ⑤ auto 跟随系统
     await ev(c, applyTheme('auto')); await sleep(120);
     await emulatedMedia(c, 'dark'); await sleep(500);
-    await check(c, 'auto + 系统深色 → 深空(dark) --bg=#070c18', `${cssVar('--bg')}==='#070c18'`);
+    await check(c, 'auto + 系统深色 → Tokyo Night(--bg=#1a1b26)', `${cssVar('--bg')}==='#1a1b26'`);
     await emulatedMedia(c, 'light'); await sleep(500);
-    await check(c, 'auto + 系统浅色 → 浅色 --bg=#ffffff(派生)', `${cssVar('--bg')}==='#ffffff'`);
+    await check(c, 'auto + 系统浅色 → GitHub 浅(--bg=#f4f4f4)', `${cssVar('--bg')}==='#f4f4f4'`);
     await emulatedMedia(c, 'dark'); await sleep(300); // 复原
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);

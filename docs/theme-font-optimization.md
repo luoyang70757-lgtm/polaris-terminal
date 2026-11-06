@@ -4,10 +4,13 @@
 > 用途：供后续 Claude Code 会话**直接按此执行**的主题/字体优化清单。改前先读 `CONTEXT.md`「关键技术决策」第 16 条（主题系统）。
 > 行号以 2026-08-23 为准；代码改动后重新 `grep` 定位。
 
-> **状态（2026-11-03 复核）：T1–T4 均已实现，但主题已精简为 10 套精选。**
-> T1 每主题 ANSI 16 色 → `THEMES` 现 **10 套**预设（2026-11-01 从 25 套精简为 dark/light/termiusDark/termiusLight/solarizedDark/nord/dracula/catppuccinMocha/gruvboxDark/rosePine，旧配置自动回落 dark），每套均带 `ansi: [...]`；T2 删硬编码 css → 全库 0 处 `css: {`，统一走 `deriveUiTokens`；
+> **状态（v1.0.8 更新）：T1–T4 均已实现；10 套主题已整体替换为 Tabby/iTerm2 精选配色。**
+> 详细：`THEMES` 现为 tokyonight / dracula / nord / solarizedDark / gruvboxDark / oneHalfDark /
+> iceberg / rosePine + 浅色 github / oneHalfLight（配色来源与许可见 `NOTICE`）；旧键经 `THEME_ALIASES` 迁移；
+> `deriveUiTokens` 增加对比度保底（正文 ≥4.5、次要文字 ≥3.0）。回归 `node verify-theme.js`（21 条）。
+> T1 每主题 ANSI 16 色 → `THEMES` 的 10 套预设每套都带 `ansi: [...]`；T2 删硬编码 css → 全库 0 处 `css: {`，统一走 `deriveUiTokens`；
 > T3 字体扩充 + 自定义 → 下拉 10 个预设（含 3 个 Nerd Font）+「自定义…」输入框，存同一 `settings.fontFamily`；
-> T4 补 Termius 热门主题 → Rosé Pine / Night Owl / Everforest(深·浅) / Aura 均在。
+> T4 补热门主题 → 现以 Tabby/iTerm2 精选 10 套落地（含 Rosé Pine、Solarized、Nord、Dracula、Gruvbox、One Half 等经典家族）。
 > 本文件保留为历史分析与验收依据；回归 `node verify-theme.js`。
 
 ## 结论速览

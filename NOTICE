@@ -1,0 +1,24 @@
+# NOTICE — 第三方素材与许可
+
+本仓库包含的第三方配色数据，按各自许可使用，特此声明。
+
+## 终端配色方案（10 套内置主题）
+
+`src/renderer.js` 中 `THEMES` 的 10 套配色（Tokyo Night / Dracula / Nord / Solarized Dark /
+Gruvbox Dark / One Half Dark / Iceberg / Rosé Pine / GitHub / One Half Light）取自：
+
+- **Tabby** — Eugeny/tabby（MIT License, Copyright © 2017 Tabby Developers）
+  具体数据来自插件包 `tabby-community-color-schemes` 的 `schemes/*`（Xresources 格式），
+  本项目只提取终端色板（前景/背景/光标/16 色 ANSI），UI 外壳颜色仍由本项目从 bg/fg 派生。
+  https://github.com/Eugeny/tabby/tree/master/tabby-community-color-schemes
+
+- Tabby 的上述配色移植自 **iTerm2-Color-Schemes**（MIT License）
+  https://github.com/mbadolato/iTerm2-Color-Schemes
+
+转换方式：正则解析 `*.foreground` / `*.background` / `*.cursorColor` / `*.color0..15`，
+`selectionBackground` 由 `mix(bg, fg, 0.35)` 合成（Tabby 的 Xresources 未提供选择色）。
+
+## 运行时依赖
+
+第三方 npm 依赖的许可见 `node_modules/<pkg>/LICENSE`（Electron、xterm.js、ssh2、xlsx、tar 等），
+打包产物中随依赖一同分发。

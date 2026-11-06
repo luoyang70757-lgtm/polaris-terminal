@@ -31,61 +31,91 @@ const WebglAddonClass = (window.WebglAddon && window.WebglAddon.WebglAddon) || w
 // 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
 const __bootT0 = performance.now();
 
-// ---- 主题预设(参考 Netcatty / Chaterm / Termius 的个性化)----
+// ---- 主题预设(10 套精选;参考 Tabby / iTerm2 的配色库)----
 // term = 终端配色;ansi = 该主题的 ANSI 16 色板(官方色板优先,未设置兜底 DEFAULT_ANSI)
 // UI 变量统一由 deriveUiTokens 从 term 配色按 appearance 派生(单一事实来源),不再手写 css
+// 配色来源:Tabby 社区配色方案(tabby-community-color-schemes,MIT License,Copyright © 2017 Tabby
+// Developers;配色本身移植自 iTerm2-Color-Schemes,MIT)。只取终端色板(fg/bg/cursor/16 色 ANSI),
+// UI 外壳(面板/边框/悬停/次要文字)仍由 deriveUiTokens 从 bg/fg 派生,风格与原来一致。
+// 换配色只改这里;THEME_ALIASES 负责把老用户存的旧键迁移到新键(见下方)。
 const THEMES = {
-  dark: {
-    name: '深空(默认)', appearance: 'dark',
-    term: { background: '#070c18', foreground: '#c7dcff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
-    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  light: {
-    name: '浅色', appearance: 'light',
-    term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
-    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  solarizedDark: {
-    name: 'Solarized 深', appearance: 'dark',
-    term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
-    ansi: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5', '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
-  },
-  nord: {
-    name: 'Nord', appearance: 'dark',
-    term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#5e81ac', selectionForeground: '#ffffff' },
-    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#4c566a', '#d08770', '#8fbcbb', '#eceff4', '#5e81ac', '#d8dee9', '#434c5e', '#eceff4'],
+  tokyonight: {
+    name: "夜色 Tokyo Night(默认)", appearance: 'dark',
+    term: { background: '#1a1b26', foreground: '#c0caf5', cursor: '#c0caf5', selectionBackground: '#54586e', selectionForeground: '#c0caf5' },
+    ansi: ['#15161e', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#a9b1d6', '#414868', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#c0caf5'],
   },
   dracula: {
-    name: 'Dracula', appearance: 'dark',
-    term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
-    ansi: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff'],
+    name: "德古拉 Dracula", appearance: 'dark',
+    term: { background: '#1e1f29', foreground: '#f8f8f2', cursor: '#bbbbbb', selectionBackground: '#6a6b6f', selectionForeground: '#f8f8f2' },
+    ansi: ['#000000', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#bbbbbb', '#555555', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#ffffff'],
   },
-  termiusDark: {
-    name: 'Graphite 深', appearance: 'dark',
-    term: { background: '#222426', foreground: '#c9c9c9', cursor: '#c9c9c9', selectionBackground: '#3e4142', selectionForeground: '#ffffff' },
-    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
+  nord: {
+    name: "极地 Nord", appearance: 'dark',
+    term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#6a707b', selectionForeground: '#d8dee9' },
+    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#373e4d', '#94545d', '#809575', '#b29e75', '#68809a', '#8c738c', '#6d96a5', '#aeb3bb'],
   },
-  termiusLight: {
-    name: 'Mist 浅', appearance: 'light',
-    term: { background: '#f5f5f5', foreground: '#222426', cursor: '#222426', selectionBackground: '#d9dcdE', selectionForeground: '#222426' },
-    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  catppuccinMocha: {
-    name: 'Truffle 摩卡', appearance: 'dark',
-    term: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#45475a', selectionForeground: '#ffffff' },
-    ansi: ['#45475a', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#bac2de', '#585b70', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#a6adc8'],
+  solarizedDark: {
+    name: "日晒 Solarized Dark", appearance: 'dark',
+    term: { background: '#001e27', foreground: '#9cc2c3', cursor: '#f34b00', selectionBackground: '#37575e', selectionForeground: '#9cc2c3' },
+    ansi: ['#002831', '#d11c24', '#6cbe6c', '#a57706', '#2176c7', '#c61c6f', '#259286', '#eae3cb', '#006488', '#f5163b', '#51ef84', '#b27e28', '#178ec8', '#e24d8e', '#00b39e', '#fcf4dc'],
   },
   gruvboxDark: {
-    name: 'Grove 苔', appearance: 'dark',
-    term: { background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2', selectionBackground: '#3c3836', selectionForeground: '#ffffff' },
-    ansi: ['#282828', '#cc241d', '#98971a', '#d79921', '#458588', '#b16286', '#689d6a', '#a89984', '#928374', '#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#ebdbb2'],
+    name: "格鲁夫 Gruvbox", appearance: 'dark',
+    term: { background: '#1e1e1e', foreground: '#e6d4a3', cursor: '#bbbbbb', selectionBackground: '#645e4d', selectionForeground: '#e6d4a3' },
+    ansi: ['#161819', '#f73028', '#aab01e', '#f7b125', '#719586', '#c77089', '#7db669', '#faefbb', '#7f7061', '#be0f17', '#868715', '#cc881a', '#377375', '#a04b73', '#578e57', '#e6d4a3'],
+  },
+  oneHalfDark: {
+    name: "半深 One Half", appearance: 'dark',
+    term: { background: '#282c34', foreground: '#dcdfe4', cursor: '#a3b3cc', selectionBackground: '#676b72', selectionForeground: '#dcdfe4' },
+    ansi: ['#282c34', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#dcdfe4', '#282c34', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#dcdfe4'],
+  },
+  iceberg: {
+    name: "冰山 Iceberg", appearance: 'dark',
+    term: { background: '#161821', foreground: '#c6c8d1', cursor: '#c6c8d1', selectionBackground: '#54565f', selectionForeground: '#c6c8d1' },
+    ansi: ['#1e2132', '#e27878', '#b4be82', '#e2a478', '#84a0c6', '#a093c7', '#89b8c2', '#c6c8d1', '#6b7089', '#e98989', '#c0ca8e', '#e9b189', '#91acd1', '#ada0d3', '#95c4ce', '#d2d4de'],
   },
   rosePine: {
-    name: '松雾 Rosé Pine', appearance: 'dark',
-    term: { background: '#191724', foreground: '#e0def4', cursor: '#f6c177', selectionBackground: '#2a2837', selectionForeground: '#ffffff' },
+    name: "松雾 Rosé Pine", appearance: 'dark',
+    term: { background: '#191724', foreground: '#e0def4', cursor: '#555169', selectionBackground: '#5f5d6d', selectionForeground: '#e0def4' },
     ansi: ['#26233a', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4', '#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4'],
   },
+  github: {
+    name: "GitHub 浅", appearance: 'light',
+    term: { background: '#f4f4f4', foreground: '#3e3e3e', cursor: '#3f3f3f', selectionBackground: '#b4b4b4', selectionForeground: '#3e3e3e' },
+    ansi: ['#3e3e3e', '#970b16', '#07962a', '#f8eec7', '#003e8a', '#e94691', '#89d1ec', '#ffffff', '#666666', '#de0000', '#87d5a2', '#f1d007', '#2e6cba', '#ffa29f', '#1cfafe', '#ffffff'],
+  },
+  oneHalfLight: {
+    name: "半浅 One Half", appearance: 'light',
+    term: { background: '#fafafa', foreground: '#383a42', cursor: '#bfceff', selectionBackground: '#b6b7ba', selectionForeground: '#383a42' },
+    ansi: ['#383a42', '#e45649', '#50a14f', '#c18401', '#0184bc', '#a626a4', '#0997b3', '#fafafa', '#4f525e', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
+  },
 };
+
+// 旧主题键 → 新主题键(v1.0.8 把 10 套自研配色换成 Tabby/iTerm2 精选配色):
+// 老用户 localStorage 里存的是旧键,这里做一次性映射,避免升级后主题被重置成默认。
+const THEME_ALIASES = {
+  dark: 'tokyonight',        // 原「深空」→ 夜色 Tokyo Night(同为深色默认)
+  light: 'github',           // 原「极简白」→ GitHub 浅
+  termiusDark: 'oneHalfDark',   // 原「Graphite 深」→ 半深 One Half
+  termiusLight: 'oneHalfLight', // 原「Mist 浅」→ 半浅 One Half
+  catppuccinMocha: 'iceberg',   // 原「Truffle 摩卡」→ 冰山 Iceberg
+  // solarizedDark / nord / dracula / gruvboxDark / rosePine:同名保留,无需映射
+};
+const DEFAULT_THEME = 'tokyonight';
+
+// 主题键归一化:旧键 → 新键;未知/已删主题 → 默认主题(不抛错,渲染不被坏配置拖死)
+function normalizeThemeId(id) {
+  if (!id || id === 'auto') return id;
+  if (THEMES[id]) return id;
+  const mapped = THEME_ALIASES[id];
+  if (mapped && THEMES[mapped]) return mapped;
+  return DEFAULT_THEME;
+}
+
+// 当前生效主题对象(所有取配色的地方都走这里,避免漏掉别名迁移)
+function currentTheme() {
+  return THEMES[resolveEffectiveThemeId()] || THEMES[DEFAULT_THEME];
+}
 
 // ---- 颜色工具:hex→rgb→线性插值(Chaterm 参考的 colorUtils) ----
 function hexToRgb(hex) {
@@ -100,17 +130,51 @@ function mix(a, b, t) {
 const darken = (hex, t) => mix(hex, '#000000', t);
 const lighten = (hex, t) => mix(hex, '#ffffff', t);
 
+// WCAG 相对亮度 / 对比度:配色库里有不少"正文偏暗"的配色(Royal、Shaman、C64…),
+// 固定混合比例会让次要文字糊成一片(实测 189 套里 95 套 --text-dim 对比度 < 3)。
+// 所以派生时做一层"保底":正文 ≥ 4.5,次要文字 ≥ 3.0(只调整到刚够,尽量保留原配色观感)。
+function relLum(hex) {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(a, b) {
+  const A = relLum(a), B = relLum(b);
+  return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
+}
+// 把 color 往"远离 bg"的方向推,直到对比度 ≥ target(每步 8%,最多 12 步 —— 近似最小改动)
+function ensureContrast(color, bg, target) {
+  if (contrastRatio(color, bg) >= target) return color;
+  const away = relLum(bg) > 0.35 ? '#000000' : '#ffffff';
+  let c = color;
+  for (let i = 0; i < 12; i++) {
+    c = mix(c, away, 0.08);
+    if (contrastRatio(c, bg) >= target) return c;
+  }
+  return c;
+}
+// 次要文字:从"偏向 bg"的混合色出发,逐步靠回 fg 直到达标(比固定比例更稳)
+function dimTowards(fg, bg, start, target) {
+  let c = mix(fg, bg, start);
+  for (let i = 0; i < 20 && contrastRatio(c, bg) < target; i++) c = mix(c, fg, 0.1);
+  return c;
+}
+
 // 从终端配色派生 9 个 UI 变量(对齐现有 CSS 变量名,变量名不变 → styles.css 零改动)
-// 方向对齐现有预设:dark 面板/边框比 bg 提亮(--border #1d3a66 > bg #070c18),light 则加深
+// 方向:dark 面板/边框比 bg 提亮,light 则加深
 function deriveUiTokens(term, appearance) {
-  const { background: bg, foreground: fg } = term;
+  const bg = term.background;
+  const fg = ensureContrast(term.foreground, bg, 4.5); // 正文保底 WCAG AA
+  const dim = dimTowards(fg, bg, appearance === 'light' ? 0.45 : 0.55, 3.0); // 次要文字保底
   if (appearance === 'light') {
     return {
       '--bg': bg, '--term-bg': bg,
       '--bg-panel': lighten(bg, 0.02), '--bg-panel-2': darken(bg, 0.05),
       '--bg-hover': darken(bg, 0.06), '--border': darken(bg, 0.12),
       '--input-bg': lighten(bg, 0.015),
-      '--text': fg, '--text-dim': mix(fg, bg, 0.45),
+      '--text': fg, '--text-dim': dim,
     };
   }
   return {
@@ -118,7 +182,7 @@ function deriveUiTokens(term, appearance) {
     '--bg-panel': lighten(bg, 0.05), '--bg-panel-2': lighten(bg, 0.09),
     '--bg-hover': lighten(bg, 0.12), '--border': lighten(bg, 0.16),
     '--input-bg': lighten(bg, 0.03),
-    '--text': fg, '--text-dim': mix(fg, bg, 0.55),
+    '--text': fg, '--text-dim': dim,
   };
 }
 
@@ -580,7 +644,7 @@ const state = {
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
   selectedForBatch: new Set(), // 多选用于批量操作的会话 id 集合
   settings: {            // 应用设置(存 localStorage)
-    theme: 'dark',       // 主题名(对应 THEMES 的键)
+    theme: 'tokyonight', // 主题名(对应 THEMES 的键;旧键经 THEME_ALIASES 迁移)
     highlight: true,     // 终端关键字高亮开关
     highlightKeywords: ['error', 'warning', 'fail', 'failed', 'fatal'],
     outputFilters: [],           // 终端输出过滤条件列表: [{ id, kw, on }],可多选启用
@@ -692,13 +756,14 @@ function saveSettings() {
 // 解析最终生效主题:auto 跟随系统明暗
 function resolveEffectiveThemeId() {
   const t = state.settings.theme;
-  if (t !== 'auto') return THEMES[t] ? t : 'dark';
-  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (t !== 'auto') return normalizeThemeId(t);
+  // 跟随系统:深色走默认深色主题,浅色走 GitHub 浅(键 = 主题表里的真实键,不经别名)
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'tokyonight' : 'github';
 }
 
 // 应用主题:改终端配色 + 应用外壳的 CSS 变量(派生 + 预设 css 覆盖)
 function applyTheme() {
-  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
+  const th = currentTheme();
   const root = document.documentElement.style;
   const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
   for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
@@ -739,7 +804,7 @@ function openSettingsModal() {
     if (g.children.length) els.setTheme.appendChild(g);
   }
   const cur = state.settings.theme;
-  els.setTheme.value = cur === 'auto' ? 'auto' : (THEMES[cur] ? cur : 'dark');
+  els.setTheme.value = cur === 'auto' ? 'auto' : normalizeThemeId(cur);
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
@@ -773,7 +838,7 @@ function renderAnsiEditor() {
   const box = els.ansiEditor;
   box.innerHTML = '';
   // 显示当前生效色板(用户自定义优先,否则当前主题自带色板,兜底默认);改动即写入 customAnsi 覆盖主题色
-  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
+  const th = currentTheme();
   const colors = state.settings.customAnsi || th.ansi || DEFAULT_ANSI;
   colors.forEach((hex, i) => {
     const row = document.createElement('label');
@@ -8156,7 +8221,7 @@ async function openReplay(recordId) {
   // 回放终端:尺寸按录制时的来,画面跟直播一致;不进 state.tabs,只在弹窗里
   const termEl = els.replayTerm;
   termEl.innerHTML = ''; // 清掉上一次回放留下的终端
-  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const curTheme = currentTheme();
   const term = new XTermClass({
     fontFamily: state.settings.fontFamily,
     fontSize: state.settings.fontSize,
@@ -8370,7 +8435,7 @@ async function connectToServer(session, opts) {
 
   // ---- xterm 终端 ----
   // 直接用当前主题配色创建(否则新终端永远用写死的深色)
-  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const curTheme = currentTheme();
   const term = new XTermClass({
     fontFamily: state.settings.fontFamily || '"SF Mono", Menlo, Consolas, "Courier New", monospace',
     fontSize: state.settings.fontSize || 13,

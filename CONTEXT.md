@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.7**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.8**（2026-11-03；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -98,7 +98,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 13. **堡垒机分组计数**：设备可在多个业务目录同时显示（与网页一致），计数按设备去重（871 不虚增到 2066）；根级设备归到业务根
 14. **CI 发布**（`.github/workflows/build-windows.yml`）：push main 只传 artifact；标签 `v*` 自动发布、手动触发发草稿；macOS 只编译 x64（`--mac --x64`，arm64 不编译）；两平台 build job 完成后由单独 release job 汇总发布（避免并发建 Release 冲突）
 15. **gitee 同步**（`scripts/sync-to-gitee.js`）：只依赖 Node 18+ 内置 fetch/FormData，无第三方依赖，CI 和本机都能跑；**10MB 分块** + 每附件 60s 超时 + 失败重试 3 次（2/4s 背退），对抗海外 runner → 国内网络；多个分片文件**逐条**拼接提示，不混进一条 cat 命令拼坏
-16. **主题系统**（renderer.js）：预设只写 term 配色 + `appearance`，UI 变量走 `deriveUiTokens` 派生（dark 面板/边框比 bg 提亮，light 则加深），预设可 `css` 覆盖；`auto` 跟随系统
+16. **主题系统**（renderer.js）：10 套配色取自 Tabby 社区配色（Xresources 转换，MIT；v1.0.8 替换掉原来的自研 10 套），预设只写 term 配色 + `appearance`，UI 变量走 `deriveUiTokens` 派生（dark 面板/边框比 bg 提亮，light 则加深）并做**对比度保底**（正文 ≥4.5、`--text-dim` ≥3.0）；旧键走 `THEME_ALIASES` 迁移；`auto` 跟随系统（深→tokyonight / 浅→github）
 17. **断点续传磁盘化**（lib/sftp-partials.js + main.js）：中断点存 `lockDir()/sftp-partials.json`（仿 known-hosts：原子写 + 0600 + 损坏兜底），每次 set/remove **同步落盘**（崩溃/强杀后记录仍在，这是磁盘化的核心价值）；键用**稳定主机身份** `hostId:kind:path`（`hostId` 在 ssh:connect 时补存 = `username@host:port`，JMS 复合用户名区分同网关不同资产；sessionId 每次启动从 sess-1 重计、不能单独做键，否则 A 主机断点会续到 B 主机）；启动时 `prune` 掉 7 天前过期条目防磁盘表无限增长；「判定失效删记录返回 0（全量）」与「续传成功后删记录」语义不变
 18. **main.js 拆模块**（v1.0.38，3263→2712 行）：抽 `lib/connect-opts.js`（makeHostVerifier/resolvePrivateKey/withHostVerify 指纹校验链，被 ssh:connect/批量/AI/导入共用）、`lib/session-groups.js`（分组/命令历史归档/快速命令/导入模板 IPC）、`lib/session-ipc.js`（会话管理/导入导出/系统探测，含 packJump/unpackJump）。**依赖惰性注入**：`register(ipcMain, { getSessionStore, schedulePersist, getMainWindow })`——sessionStore/mainWindow 启动早期不可用，传 getter 不取快照。SFTP/SSH/堡垒机等被数据管线重度消费的命脉区块**未拆**（拆分需同步改消费方，收益/风险不成比例）
 19. **命令补全**（v1.0.38，renderer.js）：输入命令前缀 ≥2 字符弹候选（内置常用命令数组 + `recommendCmds(host)` 该主机历史高频带 desc + 快捷命令首词），**Tab 补全选中 / ↑↓ 切换 / 点击补全，不自动执行**；转义/回车/Ctrl+C/U/点击面板外自动关闭；**dirty 保护**（行被服务器改写时不补全，避免误删输入）；只补全命令词（第一个词），不做路径/参数（远程文件系统不可知）
@@ -170,7 +170,7 @@ node verify-<功能>.js
 
 **已解决（2026-08-25，历史会话复盘）**：**历史最高频问题——左侧堡垒机（尤其 H3C）获取不到资产列表 /「未捕获到资产」**，跨 4 个会话出现 15+ 次。它是一串根因而非单个 bug，已在 v1.0.2→v1.0.12 逐个铲除，关键节点：v1.0.2 `4ac370d`（API 写死 getAccessViewTree → 改读浏览器真实请求体 paths）、v1.0.3 `c7a28de`（钩子注入死锁）、v1.0.8/9 `8b331c2` + `5c63ff2`（**根因**：注入脚本正则被宿主模板解码破坏 → 钩子永远进不去）、v1.0.12 `f5b5401`（H3C 会话保活放宽到面板隐藏也运行）、08-25 未打 tag（JMS/H3C 共性问题：折叠层级把资产藏起来 → 登录后默认展开）。**判断依据**：v1.0.13 起用户抱怨转移到显示层（分组重复 `df6f473`、收藏分组 `66d4184`/`2a8fffc`/`471aab2`，均已修），资产捕获链路本身是通的（确认 870/879 台设备 dirs 含根），当前 v1.0.18「获取不到资产列表」本体不再出现。**遗留**：SFTP 偶发目录读取超时/大文件传输失败——根因是 v1.0.11 加的 stat 探测挂住 H3C 串行 SFTP 通道，v1.0.17 `5dbb8ef` 移除修复，v1.0.18 `0076967` 加 [SFTP] 调试日志，等真实设备复现后按日志收尾
 - **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析）：**A1/B1/B2 已完成**（2026-09-11 核对），**A2 已完成**（2026-11-03：堡垒机下拉只留 tabs 覆盖不到的站点——左侧 JumpServer 服务器 + 已有资产的堡垒机 URL，按来源分组，无额外站点时整个下拉收起；`bastionSelectServer` 仍支持 `B:id` 双击资产链路并同步标签高亮）。剩 A3（工具栏 🌐 与分组右键入口轻度重复）、A4/A5、B3/B4/B5 为可选体验项
-- **主题/字体优化**（`docs/theme-font-optimization.md`）：T1–T4 已实现（主题已由 25 套精简为 10 套精选，每套带 ANSI 16 色）
+- **主题/字体优化**（`docs/theme-font-optimization.md`）：T1–T4 已实现；v1.0.8 起 10 套主题改为 Tabby/iTerm2 精选配色（每套带 ANSI 16 色，署名见 `NOTICE`）
 - **回归与 CI**：全量入口 `node run-verify.js`（入库；`--pure` 纯 Node / `--e2e` / `--only=` / `--retry=N`，默认对失败脚本重跑 1 次以吸收 CDP/mock 抖动）；CI 两道——`build-windows.yml`（tag `v*` 出包发 Release）+ `test.yml`（push/PR 跑 `run-verify.js --pure`）。已知红灯 3 例（debug-log / space-composition-flush / vim-real，与本轮改动无关）见 `docs/verify-known-red.md`
 
 **已解决（2026-09-01，v1.0.35→v1.0.40）**：
