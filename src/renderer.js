@@ -782,7 +782,7 @@ function applyTheme() {
 }
 
 function openSettingsModal() {
-  // 主题下拉:auto(跟随系统) + 按明暗分组,20 项平铺难扫
+  // 主题下拉:auto(跟随系统) + 按明暗分组(v1.0.8 共 10 套:8 深 2 浅),平铺难扫
   els.setTheme.innerHTML = '';
   const addThemeOpt = (value, text) => {
     const opt = document.createElement('option');
