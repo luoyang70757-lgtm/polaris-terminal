@@ -3102,6 +3102,7 @@ function setupImeGuard(term) {
   };
   ta.addEventListener('compositionstart', () => {
     composing = true;
+    clearDeadKeys(); // 真组合开始 ⇒ 之前的 229 都是正常输入法,死键统计作废
     clearTimer();
     // 兜底:组合若卡死(长时间无任何输入),10s 后强制复位,避免候选窗永久弹不出。
     // 正常打字时每次 compositionupdate 都会重置计时;10s 足够慢速拼音(边想边打)不被误杀
@@ -3119,31 +3120,60 @@ function setupImeGuard(term) {
   ta.addEventListener('focus', resetStuck);
   // macOS/Windows 输入法"假组合"守卫:key='Process'/keyCode 229 连发,但本终端并没有真正在组合
   // (composing=false,即 compositionstart 从未触发)→ 是输入法残留的死键状态拦截了字符键
-  // (日志:KEY 'Process' 刷屏,命令打不进去,只剩 Enter 能发)。分两档:
-  //   1) 每次死键都派发空 compositionend,让 xterm 的 _isComposing 复位;
-  //   2) 连续 ≥3 个死键仍没恢复(真卡死)→ 强制 blur+focus 重建输入法会话
-  //      (Chromium 向系统申请全新 IME session,OS 层的拦截才真正解除)。
-  // 有真实组合(compositionstart 已触发)时一律不干预,打拼音不受影响。
-  let processBurst = 0;
+  // (日志:KEY 'Process' 刷屏,命令打不进去,只剩 Enter/Backspace 能发)。
+  // 旧实现按"**连续** N 个死键"计数,门槛 3;实测用户是「2 连发 → 敲退格 → 2 连发」,
+  // 计数器被普通按键复位,永远到不了 3 → 死键状态一直挂着、字符一直吞(v1.0.9 线上日志即此)。
+  // 现在改成「**时间窗 + 延迟判定**」:
+  //   ① keydown 时先按老规矩派发空 compositionend(让 xterm 复位);
+  //   ② **150ms 后再确认**:真输入法按下的第一次按键同样带 229,但紧接着就有 compositionstart;
+  //      等不到 compositionstart 才算死键 —— 延迟判定保证正常拼音输入不被误伤;
+  //   ③ 3s 窗口内累计 ≥2 个死键 ⇒ blur+focus 重建输入法会话(Chromium 向系统申请全新 IME
+  //      session,OS 层的拦截才真正解除);跨窗口的死键不累计,避免长期零散死键把会话炸掉。
+  const DEAD_KEY_WINDOW = 3000; // 死键统计窗口(ms)
+  const DEAD_KEY_THRESHOLD = 2; // 窗口内累计到几个就重建(2:一次"连打两键没反应"即救)
+  const DEAD_KEY_SETTLE = 150;  // 延迟判定:这段时间内没来 compositionstart 才算死键
+  const deadKeyHits = [];       // 已确认的死键时间戳
+  const deadKeyProbes = new Set(); // 待结算的死键(每个死键各排一个,连发不会漏计)
   let imeHintShown = false;
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Process' || e.keyCode === 229) {
-      if (composing) { processBurst = 0; return; } // 真实组合中,让 IME 正常走
-      try { resetTermComposition(term); } catch { /* ignore */ }
-      if (++processBurst >= 3) {
-        processBurst = 0;
-        try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
-        // 连续死键说明输入法(IME)持续激活拦截字符键(命令打不进、空格被选字吞)。
-        // 终端里输命令应切英文输入法;提示一次,不刷屏。
-        if (!imeHintShown && navigator.platform.toUpperCase().includes('WIN')) {
-          imeHintShown = true;
-          try { setStatus('⚠️ 检测到输入法(IME)开启,终端输命令请切换英文输入法(Win+Space)', 'var(--orange)'); } catch { /* ignore */ }
-        }
-      }
-    } else {
-      processBurst = 0; // 有真实按键/正常键进来,复位计数
+  const clearDeadKeyProbes = () => {
+    for (const timer of deadKeyProbes) clearTimeout(timer);
+    deadKeyProbes.clear();
+  };
+  const clearDeadKeys = () => { deadKeyHits.length = 0; clearDeadKeyProbes(); };
+  const noteDeadKey = () => {
+    const now = Date.now();
+    // 只保留窗口内的累计:跨窗口的死键不叠加,避免长期零散死键把会话炸掉
+    while (deadKeyHits.length && now - deadKeyHits[0] >= DEAD_KEY_WINDOW) deadKeyHits.shift();
+    deadKeyHits.push(now);
+    if (deadKeyHits.length < DEAD_KEY_THRESHOLD) return;
+    deadKeyHits.length = 0;
+    try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
+    dlog('RECOVER', `输入法死键 ×${DEAD_KEY_THRESHOLD}(${DEAD_KEY_WINDOW}ms 内)→ 已重建输入法会话`);
+    // 连续死键说明输入法(IME)持续激活拦截字符键(命令打不进、空格被选字吞)。
+    // 终端里输命令应切英文输入法;每个终端提示一次,不刷屏。
+    if (!imeHintShown) {
+      imeHintShown = true;
+      try { setStatus('⚠️ 输入法一直处于激活状态,字符键被吞了:请切到英文输入法再输命令(⌘/Ctrl+Space)', 'var(--orange)'); } catch { /* ignore */ }
     }
+  };
+  ta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Process' && e.keyCode !== 229) return;
+    if (composing) { clearDeadKeys(); return; } // 真实组合中,让 IME 正常走
+    try { resetTermComposition(term); } catch { /* ignore */ }
+    // 每个死键单独排一个延迟结算:150ms 内没等到 compositionstart 才算真的死键。
+    // 不用单个共享句柄,否则"2 连发"只算 1 次(两次按键落在同一个结算周期里)。
+    const timer = setTimeout(() => {
+      deadKeyProbes.delete(timer);
+      if (composing) return; // 期间来了 compositionstart ⇒ 正常输入法,不是死键
+      noteDeadKey();
+    }, DEAD_KEY_SETTLE);
+    deadKeyProbes.add(timer);
   });
+  // 真实字符到达 ⇒ 这条链路是通的,清空死键统计(避免跨场景累计误触发)。
+  // 不能挂在 ta 的 keydown 上清:普通按键被 xterm 处理完会 stopImmediatePropagation,
+  // 后注册的监听根本收不到(实测:只有 229 能收到),会误以为"一直没通过、一直死键"。
+  // term.onData 对真实字符必定触发(它就是送进 SSH 的那条路),语义正好。
+  try { term.onData(clearDeadKeys); } catch { /* ignore */ }
   return resetStuck;
 }
 
