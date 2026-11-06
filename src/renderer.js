@@ -890,6 +890,8 @@ function ensureWindowFocus() {
 function focusModalInput(modalEl, inputEl) {
   if (!modalEl || !inputEl) return;
   const apply = () => {
+    // 锁定期间不把焦点抢去弹窗输入框(否则看起来又是"锁定后输不了密码")
+    if (lockOverlayVisible()) { focusLockInput(); return; }
     if (modalEl.classList.contains('hidden')) return;
     const ae = document.activeElement;
     if (ae && modalEl.contains(ae) && ae !== modalEl) return; // 用户正在弹窗内操作
@@ -2535,6 +2537,23 @@ function menuDisconnect() {
   if (!done) alert('当前没有可断开的连接');
 }
 
+// 锁定中?(闲置自动锁定 / 菜单「锁定」都走覆盖层)
+function lockOverlayVisible() {
+  return !!els.lockOverlay && !els.lockOverlay.classList.contains('hidden');
+}
+// 锁定期间把键盘焦点强制抓回密码框:
+// 用户常见的操作是"点一下窗口任意位置再敲密码",点空白处会把 activeElement 变成 body,
+// 而全局 keydown 里有"BODY 兜底转发给终端"的逻辑 → 密码字符被发到远端 shell,界面看起来
+// 就是"输不进密码"(用户报的 bug)。这里三道保险:
+//   ① 全局 keydown 最前面:锁定时一律路由到密码框,绝不进终端/快捷键/命令补全;
+//   ② 密码框 blur 后立刻抓回;
+//   ③ 点覆盖层空白处(非输入框/按钮)不改变焦点。
+function focusLockInput() {
+  try {
+    if (document.activeElement !== els.loPw) els.loPw.focus();
+  } catch { /* ignore */ }
+}
+
 // 锁定覆盖层(临时锁定):铺满主窗口,保留窗口按钮;会话在底层保持,解锁后原样恢复
 function showLockOverlay() {
   els.lockOverlay.classList.remove('hidden');
@@ -2918,6 +2937,17 @@ window.addEventListener('keydown', (e) => {
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
 // 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
+  // 锁定中:所有按键只归密码框(哪怕焦点被顶到 body/终端),绝不转发给 SSH 会话或触发快捷键
+  if (lockOverlayVisible()) {
+    if (document.activeElement === els.loPw) return; // 焦点正确 → 交给输入框自己处理
+    e.preventDefault(); // 防止默认动作把字符插到别处
+    focusLockInput();
+    // 把这次按键补进密码框(与 BODY 兜底同思路:焦点刚抓回来,这次 keydown 不会再派发一次)
+    if (e.key === 'Enter') { submitLock(); return; }
+    if (e.key === 'Backspace') { els.loPw.value = els.loPw.value.slice(0, -1); return; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) els.loPw.value += e.key;
+    return;
+  }
   // 弹窗打开时绝不允许按键漏进终端(焦点被抢走 → 用户看到的是“密码框无法输入”)
   // 注意:必须取“最上层”弹窗。导入时导入弹窗仍开着、密码弹窗叠在上面,
   // 用 querySelector 会拿到先出现的导入弹窗,把按键/焦点抢到背后的输入框。
@@ -9430,6 +9460,7 @@ function formatTime(ms) {
 // 终端右键菜单粘贴后把焦点还回终端:ctx 菜单是 <div>,点击它会把 textarea 的焦点顶掉
 // (落到 body),用户接着敲的字会全被吞掉直到再次点击终端 —— 表现就是"粘贴后打不出字/空格"。
 function refocusTerminal(sessionId) {
+  if (lockOverlayVisible()) { focusLockInput(); return; } // 锁定中:焦点只归密码框
   const ae = document.activeElement;
   if (ae && ae.tagName === 'BUTTON') { try { ae.blur(); } catch { /* ignore */ } }
   const t = state.tabs.get(sessionId);
@@ -9439,6 +9470,7 @@ function refocusTerminal(sessionId) {
 // SFTP 工具栏按钮操作完,把焦点还给终端:原生 <button> 点击后一直占着焦点,
 // 用户接着敲空格会被按钮当"激活键"吞掉(打不出空格 / 误触发按钮)。先 blur 按钮再聚焦终端。
 function sftpRefocusTerminal() {
+  if (lockOverlayVisible()) { focusLockInput(); return; }
   const el = document.activeElement;
   if (el && el.tagName === 'BUTTON') el.blur();
   const t = state.tabs.get(state.activeSessionId);
@@ -10476,6 +10508,9 @@ els.filePwdInput2.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e
 // 弹窗焦点锁:任何弹窗打开期间,焦点被终端/原生菜单/堡垒机 webview 抢回时,
 // 自动拉回最上层弹窗里的第一个可输入元素(否则按键会漏进终端,密码框永远为空)。
 document.addEventListener('focusin', () => {
+  // 锁定优先于弹窗焦点锁:自动锁定时若正开着设置/导入弹窗,弹窗锁会把焦点从密码框抢回去
+  // → 用户看到的正是「自动锁定后无法输入密码」。锁定时一切焦点都归密码框。
+  if (lockOverlayVisible()) { focusLockInput(); return; }
   const modal = topVisibleModal();
   if (!modal) return;
   const ae = document.activeElement;
@@ -10488,6 +10523,7 @@ document.addEventListener('focusin', () => {
 // 弹窗内控件之间切换不受影响(activeElement 仍在 modal 内则直接返回)。
 document.addEventListener('focusout', () => {
   setTimeout(() => {
+    if (lockOverlayVisible()) { focusLockInput(); return; }
     const modal = topVisibleModal();
     if (!modal) return;
     const ae = document.activeElement;
@@ -10722,6 +10758,20 @@ els.jmsAdvToggle.addEventListener('click', () => {
 });
 els.loBtn.addEventListener('click', submitLock); // 锁定覆盖层:解锁按钮
 els.loPw.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) submitLock(); });
+// 锁定期间:密码框被点走/被代码 blur → 立刻抓回(避免"输入不了密码")
+els.loPw.addEventListener('blur', () => {
+  if (!lockOverlayVisible()) return;
+  setTimeout(() => { if (lockOverlayVisible()) focusLockInput(); }, 0);
+});
+// 点覆盖层空白处不改变焦点(点输入框/按钮仍按原样)
+els.lockOverlay.addEventListener('mousedown', (e) => {
+  if (e.target !== els.loPw && e.target !== els.loBtn) {
+    e.preventDefault();
+    focusLockInput();
+  }
+}, true);
+// 窗口重新获得焦点(切回来/从别的 App 回来)→ 焦点必须在密码框
+window.addEventListener('focus', () => { if (lockOverlayVisible()) focusLockInput(); });
 // 视图下拉菜单:垂直/横向分屏
 els.btnView.addEventListener('click', toggleViewMenu);
 els.viewMenu.addEventListener('click', onViewMenuClick);

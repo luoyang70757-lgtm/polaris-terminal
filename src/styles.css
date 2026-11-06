@@ -1050,7 +1050,7 @@ input[type="checkbox"] {
 .lock-overlay {
   position: fixed;
   inset: 0;
-  z-index: 300; /* 高于弹窗(100)和右键菜单(200) */
+  z-index: 1200; /* 高于弹窗(100)/右键菜单(200)/调试面板(300)/命令补全(1000):锁定后不允许任何浮层盖住密码框 */
   background: radial-gradient(ellipse at 50% 30%, #2a2f4a 0%, #1a1b26 70%);
   display: flex;
   align-items: center;
