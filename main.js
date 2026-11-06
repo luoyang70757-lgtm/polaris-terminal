@@ -2675,11 +2675,13 @@ ipcMain.handle('app:openRelease', async (_e, url) => {
   try { await shell.openExternal(s); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
 });
 
-// 通用外部链接(堡垒机「在系统浏览器打开」等):只允许 http/https
+// 通用外部链接(堡垒机「在系统浏览器打开」、终端 Cmd/Ctrl+点击链接):只允许 http/https
 ipcMain.handle('app:openExternal', async (_e, url) => {
   try {
     const u = new URL(String(url || ''));
     if (!/^https?:$/.test(u.protocol)) return { ok: false, error: '仅支持 http/https 地址' };
+    // 测试钩子:回归用例要断言"点了什么 URL",但不该真的弹出浏览器(v1.0.9)
+    if (process.env.POLARIS_TEST_NO_EXTERNAL === '1') return { ok: true, skipped: true };
     await shell.openExternal(u.href);
     return { ok: true };
   } catch (e) {

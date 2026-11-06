@@ -8450,8 +8450,12 @@ async function connectToServer(session, opts) {
   paneEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const sel = term.getSelection();
+    const selUrl = (sel || '').trim();
     showCtxMenu(e.clientX, e.clientY, [
       { label: '📋 复制', action: () => { const s = term.getSelection(); if (s) window.api.copyText(s); } },
+      // 选中就是一条链接(或整行只有一条链接)时,给一个明确的打开入口:
+      // 折行/被截断的长 URL 用 Cmd+点击不一定点得准,这里有兜底。
+      ...(isOpenableUrl(selUrl) ? [{ label: '🔗 在系统浏览器打开', action: () => openExternalUrl(selUrl) }] : []),
       { label: '📥 粘贴', action: () => {
         const t = window.api.readClipboard();
         if (t) term.paste(t);
@@ -8489,6 +8493,10 @@ async function connectToServer(session, opts) {
   }
   term.open(paneEl);
   fit.fit();
+  // 终端里的 URL:Cmd/Ctrl+点击 → 系统浏览器。注意 `tab` 对象在本函数后面才创建(会踩 TDZ),
+  // 所以这里先拿句柄,等 tab 建好再挂上去。
+  let linkProvider = null;
+  try { linkProvider = registerTermLinks(term); } catch { /* 链接识别失败不影响终端 */ }
 
   // 键盘输入 → SSH(term.onData 会在每个按键/粘贴时触发)
   term.onData((data) => {
@@ -8670,6 +8678,7 @@ async function connectToServer(session, opts) {
     cmdCompCmds: [],        // 该主机历史高频命令(首词),补全候选之一
     cmdCompQuick: [],       // 快捷命令,补全候选之一
   };
+  tab.linkProvider = linkProvider; // 终端链接识别句柄(回归用例可直取;dispose 随 tab 一起)
   state.tabs.set(sessionId, tab);
   // 命令补全候选:异步加载(该主机历史高频 + 快捷命令),一次缓存,不阻塞连接
   try { window.api.recommendCmds(cmdHostKey(session)).then((r) => { if (Array.isArray(r)) tab.cmdCompCmds = r.map((x) => ({ cmd: String(x.command || '').trim().split(/\s+/)[0], desc: x.desc || '' })).filter((x) => x.cmd); }).catch(() => {}); } catch { /* ignore */ }
@@ -9459,6 +9468,151 @@ function formatTime(ms) {
 
 // 终端右键菜单粘贴后把焦点还回终端:ctx 菜单是 <div>,点击它会把 textarea 的焦点顶掉
 // (落到 body),用户接着敲的字会全被吞掉直到再次点击终端 —— 表现就是"粘贴后打不出字/空格"。
+// =====================================================================
+// 终端里的链接:Cmd/Ctrl + 点击 → 系统默认浏览器打开
+// 需求来源:用户问「能否支持打开浏览器链接」。此前终端里 URL 只是死文本,
+// 只能手动拖选再复制到浏览器,查资产/看日志里的文档链接很别扭。
+// 设计约束:
+//   ① 只有 http/https 才认(避免 javascript:/file: 被当成链接;主进程 IPC 也有白名单双保险);
+//   ② 默认必须带修饰键(mac ⌘ / win·linux Ctrl)才打开 —— 裸点击要留给"拖选文本";
+//   ③ 行宽窄时 URL 会折行,provideLinks 只给单行,这里自己按 isWrapped 把折行拼回来。
+// =====================================================================
+// 尽量宽松地抓 URL,尾部标点单独裁掉(中文句号/逗号、英文句号、右括号、引号等)
+const TERM_URL_RE = /https?:\/\/[^\s<>"'`，。；、（）【】「」]+/gi;
+function trimUrlTail(u) {
+  let out = u;
+  // 尾部成对括号只裁掉"多出来的那半":.../a_(b) 保留,http://x/y) 裁掉
+  for (;;) {
+    const last = out.slice(-1);
+    if (!last) break;
+    if (/[.,;:!?'"”’、，。；：！？]/.test(last)) { out = out.slice(0, -1); continue; }
+    if (last === ')') {
+      const open = (out.match(/\(/g) || []).length;
+      const close = (out.match(/\)/g) || []).length;
+      if (close > open) { out = out.slice(0, -1); continue; }
+    }
+    if (last === ']') {
+      const open = (out.match(/\[/g) || []).length;
+      const close = (out.match(/\]/g) || []).length;
+      if (close > open) { out = out.slice(0, -1); continue; }
+    }
+    break;
+  }
+  return out;
+}
+// 纯函数:从一行文本里抽出所有 URL(带起始列,便于建 range;回归用例直接测它)
+function extractTermUrls(text) {
+  const out = [];
+  if (!text) return out;
+  TERM_URL_RE.lastIndex = 0;
+  let m;
+  while ((m = TERM_URL_RE.exec(text))) {
+    const url = trimUrlTail(m[0]);
+    if (!/^https?:\/\/[^/?#\s]+$/i.test(url.replace(/\/$/, '')) && !/^https?:\/\/[^/?#\s]+[/?#]/i.test(url)) continue; // 至少要有主机名
+    out.push({ url, index: m.index, length: url.length });
+  }
+  return out;
+}
+// URL 是否允许打开(与主进程 app:openExternal 的白名单保持一致)
+function isOpenableUrl(u) {
+  try {
+    const p = new URL(String(u || '')).protocol;
+    return p === 'http:' || p === 'https:';
+  } catch { return false; }
+}
+// 打开外链:统一走主进程 IPC(http/https 白名单在那边再校验一次)
+async function openExternalUrl(url) {
+  if (!isOpenableUrl(url)) { setStatus('只支持打开 http/https 链接', 'var(--orange)'); return false; }
+  try {
+    const res = await window.api.openExternal(url);
+    if (!res || !res.ok) { setStatus('打开浏览器失败: ' + ((res && res.error) || '未知错误'), 'var(--red)'); return false; }
+    setStatus('已在系统浏览器打开:' + url, 'var(--green)');
+    return true;
+  } catch (e) {
+    setStatus('打开浏览器失败: ' + ((e && e.message) || e), 'var(--red)');
+    return false;
+  }
+}
+// 给终端注册链接识别器(xterm 5.x:registerLinkProvider)
+// 返回 provider 句柄(dispose 用),同时挂在 tab 上方便回归用例直接取
+function registerTermLinks(term) {
+  if (!term || typeof term.registerLinkProvider !== 'function') return null;
+  const buffer = () => term.buffer && term.buffer.active;
+  // 把"折行块"拼成一行:text + 每个字符对应的 (bufferLineNumber, col) 映射
+  function readWrappedLine(lineNo) {
+    const b = buffer();
+    if (!b) return null;
+    let start = lineNo;
+    // bufferLineNumber 是 1-based;向上找到非继续行
+    for (let guard = 0; guard < 200; guard++) {
+      const ln = b.getLine(start - 1);
+      if (!ln || !ln.isWrapped) break;
+      start -= 1;
+    }
+    let text = '';
+    const cells = [];
+    const cols = term.cols || 80;
+    let cur = start;
+    for (let guard = 0; guard < 200; guard++) {
+      const ln = b.getLine(cur - 1);
+      if (!ln) break;
+      // 按"单元格"取字符:中文/emoji 占两列(getWidth()===2),用字符串下标当列号会让
+      // range 在含 CJK 的行上整体偏移,链接点不准。cells 里每个可见字符记真实列号。
+      let lineText = '';
+      for (let x = 1; x <= cols; x++) {
+        const cell = ln.getCell(x - 1);
+        if (!cell) break;
+        const w = cell.getWidth();
+        if (w === 0) continue; // 双宽字符的右半格:跳过,不重复计字符
+        const ch = cell.getChars() || ' ';
+        lineText += ch;
+        cells.push({ line: cur, col: x });
+      }
+      text += lineText.replace(/\s+$/, (m) => (ln.isWrapped ? m : '')); // 非折行行尾空白不参与匹配
+      const next = b.getLine(cur);
+      if (!next || !next.isWrapped) break;
+      cur += 1;
+    }
+    return { text, cells };
+  }
+  const provider = {
+    provideLinks(bufferLineNumber, callback) {
+      let info;
+      try { info = readWrappedLine(bufferLineNumber); } catch { info = null; }
+      if (!info || !info.text) { callback(undefined); return; }
+      const found = extractTermUrls(info.text);
+      if (!found.length) { callback(undefined); return; }
+      const links = found.map((f) => {
+        const first = info.cells[f.index];
+        const last = info.cells[f.index + f.length - 1];
+        if (!first || !last) return null;
+        return {
+          range: { start: { x: first.col, y: first.line }, end: { x: last.col, y: last.line } },
+          text: f.url,
+          decorations: { underline: true, pointerCursor: true },
+          activate: (event) => {
+            // 必须带修饰键:mac ⌘ / 其他 Ctrl(裸点击留给拖选)
+            const mod = event && (event.metaKey || event.ctrlKey);
+            if (!mod) { setStatus('按住 ' + (navigator.platform.indexOf('Mac') >= 0 ? '⌘' : 'Ctrl') + ' 再点击可打开:' + f.url, 'var(--text-dim)'); return; }
+            openExternalUrl(f.url);
+          },
+          hover: () => setStatus('🔗 ' + f.url + '(按住 ' + (navigator.platform.indexOf('Mac') >= 0 ? '⌘' : 'Ctrl') + ' 点击打开)', 'var(--text-dim)'),
+          leave: () => setStatus('', 'var(--text-dim)'),
+        };
+      }).filter(Boolean);
+      callback(links.length ? links : undefined);
+    },
+  };
+  // 返回 { provideLinks, dispose }:既方便回归用例直接按行号取链接,也保留 dispose 随 tab 释放
+  try {
+    const disposable = term.registerLinkProvider(provider);
+    return {
+      provideLinks: provider.provideLinks,
+      dispose: () => { try { disposable.dispose(); } catch { /* ignore */ } },
+    };
+  } catch { return null; }
+}
+
 function refocusTerminal(sessionId) {
   if (lockOverlayVisible()) { focusLockInput(); return; } // 锁定中:焦点只归密码框
   const ae = document.activeElement;

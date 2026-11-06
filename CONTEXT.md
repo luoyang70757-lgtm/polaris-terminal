@@ -190,6 +190,8 @@ node verify-<功能>.js
 
 **已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
 
+**已实现（2026-11-06，v1.0.9）**：**终端打开浏览器链接**——此前终端里的 URL 只是死文本。现由 `registerTermLinks`（`term.registerLinkProvider`）识别 `http/https` 链接：悬停下划线/手型光标 + 状态栏提示，⌘/Ctrl+点击走 `app:openExternal` 打开系统浏览器；裸点击仍归拖选。要点：range 按单元格宽度算（CJK 占两列，用字符串下标会点偏）；折行按 `isWrapped` 拼回；主进程保留 http/https 白名单，另加 `POLARIS_TEST_NO_EXTERNAL=1` 测试钩子。回归 `verify-term-links.js` 28/28。
+
 **已解决（2026-11-06，v1.0.8）**：**自动锁定后无法输入密码**（用户反馈，已用 `verify-autolock-input.js` 复现并修复）——根因是锁定覆盖层没守住焦点：① 点卡片空白处 → 焦点掉到 BODY → 全局 keydown 的"BODY 兜底转发给终端"把密码字符发到 SSH 会话；② 弹窗开着时锁定 → 弹窗焦点锁（`focusin`/`focusout`）把焦点抢回弹窗输入框；③ 命令补全面板 z-index 1000 浮在锁定层（300）之上。修法：锁定期全局 keydown 一律路由到 `#lo-pw`（Enter 解锁/Backspace 删除，不 preventDefault 正常字符）、覆盖层 mousedown 抓回焦点、`lo-pw` blur 抓回、弹窗焦点锁锁定时让位、`refocusTerminal`/`sftpRefocusTerminal` 锁定时不抢、窗口 focus 回密码框、`.lock-overlay` z-index → 1200
 
 **已解决（2026-09-15，v1.0.44）**：用户报「SFTP 点击下载后没有任何反应」。现场取证（直接查运行中的 app）：进程仍持有 4 个残留写 fd、`sftp-partials.json` 有 0B/2106B 两条失败记录、本地落下 3 个 0 字节文件、app 日志**无任何下载记录**、面板截图**无任何传输行**。根因是"失败文件零进度 → 不建行 + 不写日志"，叠加"读错不销毁写流 → fd 泄漏"。修法与回归见技术决策 30 与 `verify-sftp-download-fail.js`(7/7)。
