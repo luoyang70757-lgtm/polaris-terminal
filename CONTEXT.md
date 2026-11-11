@@ -190,6 +190,8 @@ node verify-<功能>.js
 
 **已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
 
+**已实现（2026-11-11，v1.0.13）**：**「文件夹下载 / 多文件下载失败」五个成因全修**——① `walkRemote` 子目录 `readdir` 失败不再整批抛错（记失败项 + 继续，界面出「✗ 失败」行）；② 批量下载失败项**串行重试**一次（H3C/KoKo 串行 SFTP 设备上"并发 2 路部分文件失败、单文件正常"正是这个原因，`retried:true` + 日志「下载重试成功」，重试前 `getSftp` 重开通道）；③ 符号链接按 `stat` 跟随判真实类型（链接到目录继续递归 + `visited` 防环）；④ `sftp:downloadMany` 对 `isDir:false` 条目 stat 兜底；⑤ 批量进度 `total` 不再被回调参数遮蔽（此前总进度恒 100%）。附带：`friendlyDownloadError` 按错误码补提示（ENAMETOOLONG/ENOSPC/EISDIR/EPERM）、递归时先 `mkdirSync` 本地子目录（空目录不再丢）。回归 `verify-sftp-download-many.js` 16/16（修复前 5/11）。
+
 **已实现（2026-11-11，v1.0.12）**：**DeepSeek 默认改 OpenAI 兼容端点**（`https://api.deepseek.com/v1` + `format:openai`，实测工具调用正常），Anthropic 兼容端点（`…/anthropic` + `format:anthropic`）作为备选模板保留；**端点与格式必须配套**，`migrateDeepSeekUrl` 按各厂商 `format` 补对应地址（否则空地址的 openai 厂商会被补成 `…/anthropic` → `…/anthropic/chat/completions` 404）。回归 `verify-ai-config.js` 11/11。
 
 **已实现（2026-11-11，v1.0.11）**：**修「AI 功能用不了」+ 工具栏「调试」移入菜单栏**——

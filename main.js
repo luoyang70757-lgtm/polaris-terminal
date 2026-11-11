@@ -1964,6 +1964,21 @@ function recordDownloadPartial(sessionId, localPath) {
   try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, 'd', localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
 }
 
+// 本地写失败的原因里挑出最常见的坑(路径过长/磁盘满/被占用),直接告诉用户怎么办
+function friendlyDownloadError(msg, localPath) {
+  const m = String(msg || '');
+  if (!m) return '未知错误';
+  if (/ENAMETOOLONG|path too long/i.test(m)) {
+    return `${m}\n提示:本地路径过长(Windows 默认 260 字符限制),把下载目录换短一点(如 D:\\dl)后重试`;
+  }
+  if (/ENOSPC|no space/i.test(m)) return `${m}\n提示:本地磁盘空间不足`;
+  if (/EISDIR/i.test(m)) return `${m}\n提示:本地同名位置已经是一个文件夹,请删掉它或者换个保存目录`;
+  if (/EPERM|EACCES|EBUSY|read.?only|只读/i.test(m)) {
+    return `${m}\n提示:本地文件被占用或无写权限(只读属性 / 杀软扫描 / 正被其它程序打开)`;
+  }
+  return m;
+}
+
 // 远程 shell 输出的家目录 → 绝对路径。
 // Unix 是 /root;/Windows OpenSSH(PowerShell)是 C:\Users\x —— Windows 上 SFTP 统一用
 // 正斜杠(C:/Users/x),否则后续 readdir/拼接会被反斜杠搞坏。客户端在 Windows 上连
@@ -2452,7 +2467,7 @@ function startDownloadJob(sessionId, kind, args) {
     const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId, sessionId }, p));
     try {
       let ok = false, failed, localPath;
-      const sftp = await getSftp(sessionId);
+      let sftp = await getSftp(sessionId);
       if (kind === 'single') {
         const { remotePath, localPath: lp, resumeFrom } = args;
         if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', lp));
@@ -2470,8 +2485,10 @@ function startDownloadJob(sessionId, kind, args) {
           throw err;
         }
       } else {
-        const { plans, targetDir } = args;
-        const total = plans.reduce((s, p) => s + (p.size || 0), 0);
+        const { plans, targetDir, walkFails } = args;
+        // 总字节用单独变量:旧版在回调参数里写 `(d, total)` 把外层 total 遮蔽了,
+        // 进度事件里的 total 变成了“当前文件大小” → 总进度恒 100%(多文件下载看着像已完成)
+        const batchTotal = plans.reduce((s, p) => s + (p.size || 0), 0);
         let done = 0, finished = 0;
         const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
           if (shouldCancel()) return { ok: false, remotePath: p.rp, error: '已取消' };
@@ -2480,14 +2497,42 @@ function startDownloadJob(sessionId, kind, args) {
           let fDone = resumeFrom;
           try {
             fs.mkdirSync(path.dirname(p.lp), { recursive: true });
-            await sshClient.downloadFile(sftp, p.rp, p.lp, (d, total) => { done += (d - fDone); fDone = d; prog({ done, total, file: p.rp, fileDone: d, fileTotal: total, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
+            await sshClient.downloadFile(sftp, p.rp, p.lp, (d, dtotal) => { done += (d - fDone); fDone = d; prog({ done, total: batchTotal, file: p.rp, fileDone: d, fileTotal: dtotal, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
             return { ok: true, remotePath: p.rp, localPath: p.lp };
           } catch (err) {
             recordDownloadPartial(sessionId, p.lp);
             __sftpLog('下载失败(单文件)', { sessionId, remotePath: p.rp, localPath: p.lp, error: err && err.message });
-            return { ok: false, remotePath: p.rp, error: err.message };
+            return { ok: false, remotePath: p.rp, error: friendlyDownloadError(err && err.message, p.lp) };
           } finally { finished++; }
         });
+        // 失败项再逐个串行重试一次:批量并发(2 路)在 H3C/KoKo 类“SFTP 串行处理”的设备上
+        // 会让部分文件失败,而单文件/串行能成 —— 这类设备上「多文件下载失败、单文件正常」就是这个原因。
+        const fails = results.filter((r) => r && !r.ok && r.error !== '已取消');
+        if (fails.length && !shouldCancel()) {
+          try { sftp = await getSftp(sessionId); } catch { /* 重连不上就保留原失败 */ }
+          __sftpLog('批量下载失败项串行重试', { sessionId, count: fails.length });
+          for (const f of fails) {
+            if (shouldCancel()) break;
+            const plan = plans.find((p) => p.rp === f.remotePath);
+            if (!plan) continue;
+            const resumeFrom = resolveDownloadResume(sessionId, plan.lp);
+            let fDone = resumeFrom;
+            try {
+              fs.mkdirSync(path.dirname(plan.lp), { recursive: true });
+              await sshClient.downloadFile(sftp, plan.rp, plan.lp, (d, dtotal) => { done += (d - fDone); fDone = d; prog({ done, total: batchTotal, file: plan.rp, fileDone: d, fileTotal: dtotal, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
+              f.ok = true; f.error = undefined; f.localPath = plan.lp; f.retried = true;
+              __sftpLog('下载重试成功', { sessionId, remotePath: plan.rp });
+            } catch (err) {
+              recordDownloadPartial(sessionId, plan.lp);
+              f.error = friendlyDownloadError(err && err.message, plan.lp);
+              __sftpLog('下载重试仍失败', { sessionId, remotePath: plan.rp, error: err && err.message });
+            }
+          }
+        }
+        // 目录展开阶段就失败的条目(子目录无权限等)也算失败项,一并回给渲染层建「✗ 失败」行
+        for (const w of (walkFails || [])) {
+          if (w && w.remotePath) results.push({ ok: false, remotePath: w.remotePath, error: friendlyDownloadError(w.error, '') });
+        }
         // 空目录(plans 为空)不是失败:没有任何文件要传 = 成功(旧版 some([])=false → 静默无反馈)
         ok = results.length ? results.some((r) => r.ok) : true;
         failed = results.filter((r) => !r.ok);
@@ -2501,7 +2546,7 @@ function startDownloadJob(sessionId, kind, args) {
       // 单文件下载在"首个进度事件之前"失败(stat/读失败)时没有传输行;把失败条目带回去,
       // 渲染层据此补出「✗ 失败」行(与批量下载一致,避免又变成"点了没反应")。
       const failed = (kind === 'single' && args && args.remotePath)
-        ? [{ remotePath: args.remotePath, error: (err && err.message) || String(err) }]
+        ? [{ remotePath: args.remotePath, error: friendlyDownloadError((err && err.message) || String(err), args.localPath) }]
         : undefined;
       sftpJobDone(jobId, { sessionId, op: 'download', ok: false, error: err && err.message, cancelled: shouldCancel(), failed });
     }
@@ -2596,6 +2641,7 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
     try { fs.unlinkSync(probe); } catch { /* Windows:杀软占用导致删不掉,不影响下载 */ }
     // 先把目录展开成文件清单,算总字节 → 统一进度
     const plans = [];
+    const walkFails = []; // 目录展开阶段的失败(某子目录列不出来等),与传输失败一起回给渲染层
     const usedLeaves = new Set(); // 净化后重名(a:b / a*b)或 Windows 大小写冲突时避免互相覆盖
     for (const e of list) {
       const rawLeaf = safeLocalName(e.remotePath.split(/[\\/]/).filter(Boolean).pop() || 'download');
@@ -2605,17 +2651,36 @@ ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
         leaf = dot > 0 ? `${rawLeaf.slice(0, dot)} (${n})${rawLeaf.slice(dot)}` : `${rawLeaf} (${n})`;
       }
       usedLeaves.add(leaf.toLowerCase());
-      if (e.isDir) {
+      // 兜底:调用方标成文件但远端其实是目录(例如旧版列表缺 isDir / 从缓存恢复的条目)
+      // → 单独 stat 一次,是目录就按目录递归,避免「把目录当文件下 → 逐文件失败」
+      let isDir = !!e.isDir;
+      if (!isDir) {
+        const st = await new Promise((res) => {
+          let done = false;
+          const to = setTimeout(() => { if (!done) { done = true; res(null); } }, 10000);
+          try { sftp.stat(e.remotePath, (err2, s2) => { if (done) return; done = true; clearTimeout(to); res(err2 ? null : s2 || null); }); } catch { if (!done) { done = true; clearTimeout(to); res(null); } }
+        });
+        isDir = !!(st && (typeof st.isDirectory === 'function' ? st.isDirectory() : ((st.mode & 0o170000) === 0o040000)));
+      }
+      if (isDir) {
         const localTarget = path.join(dir, leaf);
         // 空目录也要在本地建出来(否则勾选一个空文件夹下载,本地什么都没出现)
         try { fs.mkdirSync(localTarget, { recursive: true }); } catch { /* 后续单文件写入会报具体错误 */ }
-        plans.push(...(await sshClient.walkRemote(sftp, e.remotePath, localTarget)));
+        try {
+          plans.push(...(await sshClient.walkRemote(sftp, e.remotePath, localTarget, {
+            visited: new Set(),
+            onError: (msg, rp) => walkFails.push({ remotePath: rp || e.remotePath, error: msg }),
+          })));
+        } catch (err) {
+          // 整个目录都打不开(无权限/不存在):只把这个条目标失败,其它勾选的条目照常下载
+          walkFails.push({ remotePath: e.remotePath, error: err && err.message ? err.message : String(err) });
+        }
       } else {
         plans.push({ rp: e.remotePath, lp: path.join(dir, leaf), size: 0 });
       }
     }
     // 后台跑批量传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
-    return startDownloadJob(sessionId, 'many', { plans, targetDir: dir });
+    return startDownloadJob(sessionId, 'many', { plans, targetDir: dir, walkFails });
   } catch (err) {
     return { ok: false, error: err.message };
   }

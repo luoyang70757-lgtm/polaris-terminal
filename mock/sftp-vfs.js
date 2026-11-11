@@ -53,8 +53,20 @@ function makeTree() {
     const children = {};
     for (const name of fs.readdirSync(dir)) {
       const full = path.join(dir, name);
-      const st = fs.statSync(full);
-      const mtime = Math.floor(st.mtimeMs / 1000);
+      const lst = fs.lstatSync(full);
+      const mtime = Math.floor(lst.mtimeMs / 1000);
+      // 符号链接:attrs.mode 报 0o120xxx(真实服务器就是这样),节点内容按链接目标类型建。
+      // 用来验证「链接到目录被当文件下载 → 逐文件失败」这个真实场景。
+      if (lst.isSymbolicLink()) {
+        let tgt;
+        try { tgt = fs.statSync(full); } catch { continue; } // 断链:服务器不会列出来,直接跳过
+        const node = tgt.isDirectory()
+          ? { type: 'dir', children: walk(full), mtime, _disk: full, symlink: true }
+          : { type: 'file', content: fs.readFileSync(full), mtime, _disk: full, symlink: true };
+        children[name] = node;
+        continue;
+      }
+      const st = lst;
       if (st.isDirectory()) children[name] = { type: 'dir', children: walk(full), mtime, _disk: full };
       else children[name] = { type: 'file', content: fs.readFileSync(full), mtime, _disk: full };
     }
@@ -97,6 +109,11 @@ function resolveDir(node, parts) {
 const LIE_SIZES = process.env.MOCK_LIE_SIZES === '1';
 function toAttrs(node) {
   const realSize = node.type === 'dir' ? 0 : node.content.length;
+  if (node.symlink) {
+    return {
+      mode: 0o120777, uid: 1000, gid: 1000, size: realSize, atime: node.mtime, mtime: node.mtime,
+    };
+  }
   return {
     mode: node.type === 'dir' ? 0o40755 : 0o100644,
     uid: 1000,
@@ -109,6 +126,8 @@ function toAttrs(node) {
 
 // ---------- 会话句柄(OpenSSH 语义:操作目录/文件前先 OPEN,拿一个 handle) ----------
 let handleSeq = 0;
+// 测试钩子用的「一次性失败」路径集合(跨连接共享:重试通常是同一文件再来一次)
+let failOnce = new Set();
 const handles = new Map(); // handleId -> { kind: 'dir'|'file', ... }
 
 function allocHandle(obj) {
@@ -146,7 +165,13 @@ function createSftpServer(sftpStream) {
   });
 
   sftpStream.on('OPENDIR', (reqid, p) => {
+    // 测试钩子:模拟「子目录没有读权限」。用法 MOCK_SFTP_FAIL_READDIR=<磁盘路径子串>
+    const failReadDir = process.env.MOCK_SFTP_FAIL_READDIR;
+    const normP = (x) => String(x || '').replace(/\\/g, '/');
     const node = resolve(root, normalize(p));
+    if (failReadDir && node && node._disk && normP(node._disk).includes(normP(failReadDir))) {
+      return sftpStream.status(reqid, STATUS_CODE.PERMISSION_DENIED);
+    }
     if (!node || node.type !== 'dir') return sftpStream.status(reqid, STATUS_CODE.NO_SUCH_FILE);
     const names = Object.entries(node.children).map(([name, child]) => ({
       filename: name,
@@ -172,9 +197,16 @@ function createSftpServer(sftpStream) {
   sftpStream.on('STAT', (reqid, p) => {
     const node = resolve(root, normalize(p));
     if (!node) return sftpStream.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+    // 真实 OpenSSH 语义:SSH_FXP_STAT **跟随**符号链接(返回目标属性),只有 LSTAT 返回链接本身。
+    // 客户端就是靠 stat 判断"链接指向文件还是目录",这里必须照做。
+    sftpStream.attrs(reqid, node.symlink ? toAttrs(Object.assign({}, node, { symlink: false })) : toAttrs(node));
+  });
+  sftpStream.on('LSTAT', (reqid, p) => {
+    // LSTAT 不跟随链接:原样返回(链接的 mode=0o12xxxx)
+    const node = resolve(root, normalize(p));
+    if (!node) return sftpStream.status(reqid, STATUS_CODE.NO_SUCH_FILE);
     sftpStream.attrs(reqid, toAttrs(node));
   });
-  sftpStream.on('LSTAT', (reqid, p) => sftpStream.emit('STAT', reqid, p));
 
   sftpStream.on('OPEN', (reqid, p, flags) => {
     const parts = normalize(p);
@@ -206,6 +238,16 @@ function createSftpServer(sftpStream) {
     const normPath = (x) => String(x || '').replace(/\\/g, '/');
     if (failPat && h.node._disk && normPath(h.node._disk).includes(normPath(failPat))) {
       return sftpStream.status(reqid, STATUS_CODE.FAILURE);
+    }
+    // 测试钩子:首个 READ 失败、之后正常 —— 验证「批量下载失败项串行重试」。
+    // 用法 MOCK_SFTP_FAIL_READ_ONCE=<磁盘路径子串>
+    const oncePat = process.env.MOCK_SFTP_FAIL_READ_ONCE;
+    if (oncePat && h.node._disk && normPath(h.node._disk).includes(normPath(oncePat))) {
+      failOnce = failOnce || new Set();
+      if (!failOnce.has(h.node._disk)) {
+        failOnce.add(h.node._disk);
+        return sftpStream.status(reqid, STATUS_CODE.FAILURE);
+      }
     }
     const buf = h.node.content;
     if (offset >= buf.length) return sftpStream.status(reqid, STATUS_CODE.EOF);
