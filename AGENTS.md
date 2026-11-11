@@ -80,7 +80,7 @@ npm run dist -- --win
 
 ## 常用调试
 
-- 工具栏「🧾 调试」：终端调试日志（按键/焦点/收发数据），「⬇ 下载日志」导出完整 app 日志
+- 菜单栏「调试」（紧跟「帮助」）：终端调试日志（按键/焦点/收发数据，⌘⇧D 开关）、「⬇ 下载完整日志…」导出 app 日志、打开日志目录、清空调试日志。**工具栏不再有「调试」按钮**（v1.0.11 按要求挪进菜单栏）
 - e2e 验证：`node verify-<功能>.js`（自动 spawn electron + 调试端口 + 临时数据目录，用后 pkill）
 - **全量回归入口**：`node run-verify.js`（串行跑全部 `verify-*.js` 并汇总；`--pure` 只跑纯 Node 断言、`--e2e` 只跑 CDP、`--only=bastion` 按名字过滤、`--list` 看计划、`--fail-fast`/`--timeout=N`）。旧入口 `test-all.js` 含真实凭据、已被 .gitignore 排除且新克隆没有 → 以此脚本代替（入库，可直接在 CI 跑）
 - CI 两道：`.github/workflows/build-windows.yml`（tag `v*` 触发打包发 Release）+ `.github/workflows/test.yml`（push/PR 跑 `run-verify.js --pure`，不启 Electron、不需要显示环境）
@@ -90,7 +90,9 @@ npm run dist -- --win
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.10**（2026-11-06，**未发版**）：**修「输入法死键吞字符」**——输入法卡在"假组合"状态时字符键只产生 `KEY 'Process' kc=229`、**没有任何 SEND**（命令打不进去，只剩退格/回车能发）。旧逻辑要求"**连续** 3 个死键"才 `blur()+focus()` 重建 IME 会话，而用户实际节奏是「2 连发 → 退格 → 2 连发」，计数被普通按键复位 → 永远到不了阈值。现在改成**时间窗 + 延迟判定**（`src/renderer.js` `setupImeGuard`）：每个 `Process/229` 各自排一个 150ms 结算定时器，期间没等到真正的 `compositionstart` 才算死键（正常拼音输入第一时间就来组合事件，不会误伤），3s 内累计 2 个即重建会话；跨窗口不累计；`compositionstart` 清空统计。另一处隐患同时修掉：普通按键被 xterm 处理完会 `stopImmediatePropagation`，靠 `ta` 上的 keydown 清计数收不到（实测只有 229 能收到），改用 `term.onData` 清；状态栏提示由"仅 Windows"放开到全平台（每终端一次）。回归：新增 `verify-ime-deadkey.js` 9/9（修复前 6/9，②③ 红）。
+**当前版本 v1.0.11**（2026-11-11）：**修「AI 功能用不了」+ 工具栏「调试」移入菜单栏**——① AI 配置缺失时不再静默回落到官方 Anthropic/OpenAI 地址与 `claude-sonnet-5` 模型（那正是「填了 DeepSeek Key 也发不出去」的根因）：`main.js` `ai:chat` 与 `lib/session-groups.js` `ai:suggestCmd` 在 `url`/`model` 为空时直接返回可读错误；`src/renderer.js` `aiSend` 发送前校验并自动展开 ⚙；`lib/ai-stream.js` 新增 `aiErrorHint`（401/402/404/429/5xx → 指向该改哪个输入框）。② ⚙ 新增「快速模板」下拉（`AI_VENDOR_PRESETS`：DeepSeek/OpenAI/DashScope/智谱/Moonshot/Anthropic/OpenRouter），DeepSeek 模板已实测跑通；「＋ 新增厂商」默认即为 DeepSeek 可跑通配置。③ 工具栏「调试」按钮删除，入口移到菜单栏「调试」（紧跟「帮助」：终端调试日志 ⌘⇧D / 下载完整日志 / 打开日志目录 / 清空调试日志）——**新增菜单项必须同时在 `preload.js` `onMenu` 白名单里登记 channel，否则点击静默无反应**。回归：新增 `verify-ai-config.js` 10/10（含可选真实 Key 实测）。
+
+上一版本 v1.0.10（2026-11-06，已发版）：**修「输入法死键吞字符」**——输入法卡在"假组合"状态时字符键只产生 `KEY 'Process' kc=229`、**没有任何 SEND**（命令打不进去，只剩退格/回车能发）。旧逻辑要求"**连续** 3 个死键"才 `blur()+focus()` 重建 IME 会话，而用户实际节奏是「2 连发 → 退格 → 2 连发」，计数被普通按键复位 → 永远到不了阈值。现在改成**时间窗 + 延迟判定**（`src/renderer.js` `setupImeGuard`）：每个 `Process/229` 各自排一个 150ms 结算定时器，期间没等到真正的 `compositionstart` 才算死键（正常拼音输入第一时间就来组合事件，不会误伤），3s 内累计 2 个即重建会话；跨窗口不累计；`compositionstart` 清空统计。另一处隐患同时修掉：普通按键被 xterm 处理完会 `stopImmediatePropagation`，靠 `ta` 上的 keydown 清计数收不到（实测只有 229 能收到），改用 `term.onData` 清；状态栏提示由"仅 Windows"放开到全平台（每终端一次）。回归：新增 `verify-ime-deadkey.js` 9/9（修复前 6/9，②③ 红）。
 
 上一版本 v1.0.9（2026-11-06，已发版）：**终端支持 Cmd/Ctrl+点击打开浏览器链接**——`term.registerLinkProvider` 自研链接识别器（`registerTermLinks`）：只认 `http/https`（`extractTermUrls` 正则 + 尾部标点/括号裁剪 + 主机名校验），鼠标悬停给下划线/手型光标并在状态栏提示，**⌘（mac）/ Ctrl 点击**才打开（裸点击留给拖选，避免误触），走既有 `app:openExternal`（主进程 http/https 白名单第二道）。range 按**单元格**算（`line.getCell(x).getWidth()`，双宽字符占两列），含中文的行不会把链接点偏；折行 URL 按 `line.isWrapped` 拼回整条。右键菜单在选中内容是链接时多一项「🔗 在系统浏览器打开」。主进程加测试钩子 `POLARIS_TEST_NO_EXTERNAL=1`（只回 `{ok:true,skipped:true}`，回归不弹浏览器）。回归：新增 `verify-term-links.js` 28/28。
 

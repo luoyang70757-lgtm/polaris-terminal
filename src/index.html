@@ -35,7 +35,6 @@
       <button id="btn-filter" class="btn-mini" title="输出过滤:创建/清除过滤条件(含关键词的行常亮、其余变暗) (⌘⇧F)">过滤</button>
       <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持) (⌘L)">锁定</button>
       <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI) (⌘,)">设置</button>
-      <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题 (⌘⇧D)">调试</button>
       <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手 (⌘⇧A)">
         <span class="ai-logo"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg></span>
         AI
@@ -276,6 +275,18 @@
         </div>
         <!-- 模型配置(点 ⚙ 展开/收起) -->
         <div id="ai-config" class="ai-config hidden">
+          <label class="field"><span>快速模板(一键填好接口地址 / 协议 / 模型)</span>
+            <select id="ai-vendor-preset" class="select" title="选常见服务商,自动填好接口地址、协议格式和模型名;填完补上 API Key 保存即可">
+              <option value="">自定义(手动填写)</option>
+              <option value="deepseek">DeepSeek(官方)</option>
+              <option value="openai">OpenAI(官方)</option>
+              <option value="dashscope">通义千问(DashScope · OpenAI 兼容)</option>
+              <option value="zhipu">智谱 GLM(OpenAI 兼容)</option>
+              <option value="moonshot">Moonshot Kimi(OpenAI 兼容)</option>
+              <option value="anthropic">Anthropic Claude(官方)</option>
+              <option value="openrouter">OpenRouter(聚合)</option>
+            </select>
+          </label>
           <label class="field"><span>模型厂商(如 DeepSeek / OpenAI / 通义千问 / Anthropic)</span>
             <input id="ai-vendor" placeholder="DeepSeek" />
           </label>

@@ -24,7 +24,7 @@ Claude Code 项目上下文。本文件 + 下方 `@import` 的内容会在每次
 
 ## 调试与验证
 
-- 工具栏「🧾 调试」→ 终端调试日志 + 「⬇ 下载日志」导出完整 app 日志（`数据目录/logs/app-*.log`）
+- 菜单栏「调试」（紧跟「帮助」，⌘⇧D 开关）→ 终端调试日志 + 「⬇ 下载完整日志」导出 app 日志（`数据目录/logs/app-*.log`）
 - e2e：`node verify-<功能>.js`（自建 electron + CDP 端口 + 临时数据目录，跑完自动清理）
 - 堡垒机资产轮询只在 H3C 站点（URL 含 `/shterm`）运行；SFTP 默认家目录探测走 `sftp:home` IPC
 

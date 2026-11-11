@@ -1,7 +1,7 @@
 'use strict';
 /**
- * verify-debug-log.js — 验证终端调试日志(🧾 调试)功能:
- *  ① 点击 🧾 调试 → 面板打开
+ * verify-debug-log.js — 验证终端调试日志(菜单栏「调试」)功能:
+ *  ① 菜单栏「调试 → 终端调试日志」→ 面板打开(工具栏按钮已按用户要求移入菜单栏)
  *  ② 终端聚焦时按 a → KEY 日志标记 active=…textarea →终端,且有 SEND 日志
  *  ③ 焦点被顶到 BODY 时按空格 → KEY 日志标记「BODY 按键被吞」(诊断 vim 粘贴后打不出字)
  *  ④ 复制按钮 → 剪贴板拿到日志
@@ -78,11 +78,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (!sid) throw new Error('会话连接失败');
     ok(`会话已连接(sid=${sid})`);
 
-    // ① 打开调试面板
-    await ev(c, `document.getElementById('btn-debug').click(); true`);
+    // ① 打开调试面板(入口已从工具栏挪到菜单栏「调试」;菜单事件最终调用的就是这个函数)
+    const toolbarBtn = await ev(c, `!!document.getElementById('btn-debug')`);
+    if (!toolbarBtn) ok('工具栏已无「调试」按钮(入口移到菜单栏「调试」)'); else bad('工具栏仍留着调试按钮');
+    await ev(c, `toggleDebugPanel(); true`);
     await sleep(200);
     const vis = await ev(c, `!document.getElementById('debug-panel').classList.contains('hidden')`);
-    if (vis) ok('点击 🧾 调试 → 日志面板打开'); else bad('面板未打开');
+    if (vis) ok('菜单「调试 → 终端调试日志」→ 日志面板打开'); else bad('面板未打开');
 
     // ② 聚焦终端,按 a
     const hasTa = await ev(c, `(function(){ const ta=document.querySelector('.xterm-helper-textarea'); if(ta) ta.focus(); return !!ta; })()`);

@@ -935,11 +935,19 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   // 只清本次请求的遗留标记:旧版 clear() 会把其他并发请求的"停止"也一起清掉
   aiStopSet.delete(requestId);
   if (!apiKey) return { ok: false, error: '请先在 AI 面板 ⚙ 里填 API Key' };
+  // 地址/模型必须是用户显式配置过的:旧版为空时静默回落到官方 Anthropic/OpenAI 地址 + claude 模型,
+  // 于是"新加的厂商没填地址"会拿到 401/404 天书错误。现在直接说清该改哪个输入框。
+  if (!String(url || '').trim()) {
+    return { ok: false, error: '请先在 AI 面板 ⚙ 里填「接口地址」(DeepSeek: https://api.deepseek.com/anthropic;OpenAI 兼容: https://api.deepseek.com/v1)' };
+  }
+  if (!String(model || '').trim()) {
+    return { ok: false, error: '请先在 AI 面板 ⚙ 里选一个模型(模型下拉为空时用「＋」添加模型名,如 deepseek-v4-flash)' };
+  }
   // 注册要在所有"提前 return"之后:否则 AI 未配置 Key 时直接返回,controller 永远留在 Map 里
   const abortCtl = new AbortController();
   if (requestId) aiAborters.set(requestId, abortCtl);
   const base = normalizeAiUrl(url, format);
-  const mdl = (model && model.trim()) || 'claude-sonnet-5';
+  const mdl = String(model).trim();
   // 多主机:每项含连接信息 + 对应终端的 sessionId(命令会同步到这些终端)
   const hostList = (Array.isArray(hosts) ? hosts : []).map((h) => ({
     hostOpts: h && h.host
@@ -2907,6 +2915,19 @@ function buildMenu() {
         { label: '检查更新…', click: send('menu:check-update') },
         { type: 'separator' },
         { label: '关于 Polaris', click: send('menu:about') },
+      ],
+    },
+    // 排障入口:从工具栏挪到菜单栏(紧跟「帮助」之后)。快捷键 ⌘⇧D 由渲染层自己处理,
+    // 这里只在名字里标注、不注册 accelerator,避免同一次按键被菜单和页面各触发一遍。
+    {
+      label: '调试',
+      submenu: [
+        { label: `终端调试日志(开/关) (${isMac ? '⌘⇧D' : 'Ctrl+Shift+D'})`, click: send('menu:debug-toggle') },
+        { type: 'separator' },
+        { label: '⬇ 下载完整日志…', click: send('menu:debug-download') },
+        { label: '打开日志目录', click: send('menu:log-open') },
+        { type: 'separator' },
+        { label: '清空调试日志', click: send('menu:debug-clear') },
       ],
     },
   ];

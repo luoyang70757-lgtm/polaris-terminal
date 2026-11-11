@@ -64,13 +64,14 @@ contextBridge.exposeInMainWorld('api', {
   onTrustAll: (cb) => ipcRenderer.on('settings:trustAll', () => cb()),
   onTrustPersistFail: (cb) => ipcRenderer.on('settings:trustPersistFail', (_e, id, where) => cb(id, where)),
 
-  // ---- 应用菜单事件(文件/视图/工具/帮助) ----
+  // ---- 应用菜单事件(文件/视图/工具/帮助/调试) ----
   onMenu: (cb) => {
     for (const ch of [
       'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about', 'menu:check-update',
       'menu:split-v', 'menu:split-h', 'menu:sftp', 'menu:tunnel', 'menu:batch', 'menu:quick',
       'menu:cmd', 'menu:record-toggle', 'menu:record-list', 'menu:log-open', 'menu:ai',
       'menu:connect', 'menu:disconnect', 'menu:lock', 'menu:jms',
+      'menu:debug-toggle', 'menu:debug-download', 'menu:debug-clear',
     ]) {
       ipcRenderer.on(ch, () => cb(ch));
     }

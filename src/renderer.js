@@ -459,6 +459,7 @@ const els = {
   aiKey: $('ai-key'),
   aiVendor: $('ai-vendor'),
   aiVendorSelect: $('ai-vendor-select'),
+  aiVendorPreset: $('ai-vendor-preset'),
   aiVendorNew: $('ai-vendor-new'),
   aiVendorDel: $('ai-vendor-del'),
   aiConfigSave: $('ai-config-save'),
@@ -1075,6 +1076,37 @@ function migrateAiVendors() {
   }
 }
 
+// 常见服务商的"能直接跑通"配置模板(用户最常见的坑:新加厂商后地址为空 → 静默打到
+// api.anthropic.com 拿 401/404,看起来就是"AI 用不了")。地址按 normalizeAiUrl 的口径填 base_url:
+//   OpenAI 兼容: base 以 /v1 结尾(会自动拼 /chat/completions)
+//   Anthropic : base 不带 /v1(会自动拼 /v1/messages,写成 .../v1 会变成 /v1/v1/messages)
+const AI_VENDOR_PRESETS = {
+  deepseek:   { name: 'DeepSeek',  url: 'https://api.deepseek.com/anthropic', format: 'anthropic', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  openai:     { name: 'OpenAI',    url: 'https://api.openai.com/v1', format: 'openai', models: [] },
+  dashscope:  { name: '通义千问',   url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai', models: [] },
+  zhipu:      { name: '智谱 GLM',  url: 'https://open.bigmodel.cn/api/paas/v4', format: 'openai', models: [] },
+  moonshot:   { name: 'Moonshot',  url: 'https://api.moonshot.cn/v1', format: 'openai', models: [] },
+  anthropic:  { name: 'Anthropic', url: 'https://api.anthropic.com', format: 'anthropic', models: [] },
+  openrouter: { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', format: 'openai', models: [] },
+};
+
+// 把模板应用到"当前激活厂商"(不填 Key,Key 只能用户自己粘)
+function applyAiPreset(key) {
+  const p = AI_VENDOR_PRESETS[key];
+  const v = activeAiVendor();
+  if (!p || !v) return;
+  v.url = p.url;
+  v.format = p.format;
+  if (p.models && p.models.length) { v.models = p.models.slice(); v.model = v.models[0]; }
+  // 厂商名还停留在"默认厂商/自定义"这类占位名字时,顺手改成模板名
+  if (!els.aiVendor.value.trim() || /^(默认厂商|自定义|新建厂商)$/.test(els.aiVendor.value.trim())) {
+    els.aiVendor.value = p.name;
+  }
+  saveSettings();
+  fillAiConfig();
+  setStatus(`已填入「${p.name}」模板:地址 ${p.url} · ${p.format === 'openai' ? 'OpenAI 兼容' : 'Anthropic'} 格式${p.models.length ? ' · 模型 ' + v.model : ' · 模型请用「＋」自己加'}`);
+}
+
 // v3 迁移:默认厂商接入 DeepSeek。旧默认 url 指到 Anthropic 官网,模型却是 deepseek-*(对不上),
 // 这里只修正"没配过 / 还是旧默认地址"的厂商 url,不碰用户自己填的其他厂商。
 function migrateDeepSeekUrl() {
@@ -1342,6 +1374,15 @@ async function aiSend() {
   const av = activeAiVendor(); // 用当前激活厂商的配置发请求
   if (!av || !av.key) {
     alert('请先在 AI ⚙ 里配置当前厂商的 API Key');
+    return;
+  }
+  // 地址/模型为空是"AI 用不了"的头号原因(旧版会静默打到官方 Anthropic 地址拿 401/404),
+  // 这里在发请求之前就把该改哪儿说清楚,并顺手展开 ⚙ 面板。
+  if (!String(av.url || '').trim() || !String(av.model || '').trim()) {
+    els.aiConfig.classList.remove('hidden');
+    alert(!String(av.url || '').trim()
+      ? '请先在 AI ⚙ 里填「接口地址」\n\nDeepSeek: https://api.deepseek.com/anthropic\nOpenAI 兼容: https://api.deepseek.com/v1\n也可以直接用 ⚙ 顶部的「快速模板」一键填好'
+      : '请先在 AI ⚙ 里的模型下拉选一个模型(下拉为空说明该厂商还没加模型,点「＋」添加,如 deepseek-v4-flash)');
     return;
   }
   // 记录发送的提问,供 ↑↓ 调出历史(连续重复只记一条,上限 100)
@@ -2808,7 +2849,7 @@ function closeCtxMenu(from) {
 
 // ---------- 终端调试日志 ----------
 // 排查"终端/vim 按键不生效、粘贴后打不出空格"这类问题:常驻记录 按键(含当时焦点)、
-// 焦点迁移、收/发数据、连接状态。工具栏「🧾 调试」打开面板;内容可能含敏感输入,排查完请清空。
+// 焦点迁移、收/发数据、连接状态。菜单栏「调试 → 终端调试日志」打开面板(⌘⇧D 同效);内容可能含敏感输入,排查完请清空。
 const termDebug = { lines: [], max: 2000 };
 // dlog 批量落盘:攒 500ms 的行一次 IPC 发给主进程写文件(高频 dlog 不逐条 IPC,降低开销)
 let dlogFlushTimer = null;
@@ -2846,7 +2887,8 @@ window.addEventListener('unhandledrejection', (e) => {
 function toggleDebugPanel() {
   const hidden = els.debugPanel.classList.contains('hidden');
   els.debugPanel.classList.toggle('hidden', !hidden);
-  els.btnDebug.classList.toggle('active', hidden);
+  // 工具栏按钮已按用户要求移出(改由菜单栏「调试」菜单打开),这里保留空值兜底
+  if (els.btnDebug) els.btnDebug.classList.toggle('active', hidden);
   if (!hidden) {
     positionDebugPanel(); // 打开时放到记忆位置(默认右下角)
     renderDebugBody();
@@ -10548,6 +10590,9 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:record-toggle') toggleRecord();
   else if (ch === 'menu:record-list') openRecordingsModal();
   else if (ch === 'menu:log-open') window.api.logOpenDir();
+  else if (ch === 'menu:debug-toggle') toggleDebugPanel();
+  else if (ch === 'menu:debug-download') els.debugDownload.click();
+  else if (ch === 'menu:debug-clear') { termDebug.lines.length = 0; renderDebugBody(); setStatus('调试日志已清空'); }
   else if (ch === 'menu:ai') toggleAiPanel();
   else if (ch === 'menu:connect') menuConnect();
   else if (ch === 'menu:disconnect') menuDisconnect();
@@ -11059,8 +11104,11 @@ els.filterClear.addEventListener('click', () => {
 els.filterCloseX.addEventListener('click', closeFilterModal);
 // 终端调试日志面板
 initDebugPanelDrag(); // 面板头部可拖动 + 位置记忆
-els.btnDebug.addEventListener('click', toggleDebugPanel);
-els.debugClose.addEventListener('click', () => { els.debugPanel.classList.add('hidden'); els.btnDebug.classList.remove('active'); });
+if (els.btnDebug) els.btnDebug.addEventListener('click', toggleDebugPanel);
+els.debugClose.addEventListener('click', () => {
+  els.debugPanel.classList.add('hidden');
+  if (els.btnDebug) els.btnDebug.classList.remove('active');
+});
 els.debugClear.addEventListener('click', () => { termDebug.lines.length = 0; renderDebugBody(); });
 els.debugCopy.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(termDebug.lines.join('\n')); setStatus('调试日志已复制到剪贴板'); }
@@ -11207,6 +11255,13 @@ els.aiFormat.addEventListener('change', () => {
 });
 // 头部厂商下拉框:切换激活厂商
 els.aiVendorSelect.addEventListener('change', () => selectAiVendor(els.aiVendorSelect.value));
+// 「快速模板」:选中即把地址/协议/模型填进当前厂商并落盘(Key 仍需用户自己填)
+els.aiVendorPreset.addEventListener('change', () => {
+  const key = els.aiVendorPreset.value;
+  if (!key) return;
+  applyAiPreset(key);
+  try { els.aiVendorPreset.value = ''; } catch { /* ignore */ } // 复位成"自定义",下次还能选同一家
+});
 
 // 「保存配置」:编辑的是"当前激活厂商"。
 // 改厂商名 = 给当前厂商改名(配置跟着走,不产生孤儿);新增用「＋ 新增厂商」。
@@ -11248,7 +11303,12 @@ els.aiVendorNew.addEventListener('click', () => {
       if (!name) return;
       const vendors = state.settings.aiVendors || (state.settings.aiVendors = {});
       if (vendors[name]) { alert('该厂商已存在,直接编辑即可'); selectAiVendor(name); return; }
-      vendors[name] = { url: '', key: '', format: 'anthropic', model: '', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] };
+      // 默认就给 DeepSeek 的可跑通配置(地址+模型),用户只需粘 Key 就能发消息;
+      // 想换别的服务商,用 ⚙ 顶部的「快速模板」一键换。
+      vendors[name] = {
+        url: 'https://api.deepseek.com/anthropic', key: '', format: 'anthropic',
+        model: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      };
       state.settings.aiActiveVendor = name;
       saveSettings();
       fillVendorSelect();
