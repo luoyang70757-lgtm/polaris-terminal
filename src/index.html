@@ -371,7 +371,8 @@
             <div id="kb-results" class="kb-results dim small"></div>
           </div>
         </div>
-        <div id="ai-chat" class="ai-chat"></div>
+        <!-- tabindex=-1:点进对话区就把焦点给它,否则焦点停在 BODY 时全局按键兜底会 preventDefault(Cmd+C 被吞) -->
+        <div id="ai-chat" class="ai-chat" tabindex="-1"></div>
         <div class="ai-input-row">
           <textarea id="ai-input" rows="2" placeholder="输入运维问题,回车发送(Shift+回车换行)…"></textarea>
           <button id="ai-stop" class="btn-mini ai-stop-btn hidden" title="停止 AI 执行">

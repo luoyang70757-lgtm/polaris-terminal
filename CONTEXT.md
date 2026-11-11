@@ -192,6 +192,8 @@ node verify-<功能>.js
 
 **已实现（2026-11-11，v1.0.13）**：**「文件夹下载 / 多文件下载失败」五个成因全修**——① `walkRemote` 子目录 `readdir` 失败不再整批抛错（记失败项 + 继续，界面出「✗ 失败」行）；② 批量下载失败项**串行重试**一次（H3C/KoKo 串行 SFTP 设备上"并发 2 路部分文件失败、单文件正常"正是这个原因，`retried:true` + 日志「下载重试成功」，重试前 `getSftp` 重开通道）；③ 符号链接按 `stat` 跟随判真实类型（链接到目录继续递归 + `visited` 防环）；④ `sftp:downloadMany` 对 `isDir:false` 条目 stat 兜底；⑤ 批量进度 `total` 不再被回调参数遮蔽（此前总进度恒 100%）。附带：`friendlyDownloadError` 按错误码补提示（ENAMETOOLONG/ENOSPC/EISDIR/EPERM）、递归时先 `mkdirSync` 本地子目录（空目录不再丢）。回归 `verify-sftp-download-many.js` 16/16（修复前 5/11）。
 
+**已实现（2026-11-11，v1.0.14）**：**修「AI 对话区文字不能复制」+「Ctrl+C 不生效」**（用户同一份日志，同一根因）——全局 keydown 兜底（BODY 焦点）对每个按键 `preventDefault()` 后合成 `KeyboardEvent` 转发给终端：一方面把 ⌘/Ctrl+C 的**原生复制**一起吞掉（AI 对话区不可聚焦 → 点过面板焦点就掉 BODY），另一方面合成事件**没带 keyCode**（日志 `KEY 'c' ^ … kc=0`）→ xterm 键码映射拿不到 → 静默丢弃（`SEND` 一条都没有，Ctrl+C/Ctrl+D/Tab/字母全废）。修法：`#ai-chat` 加 `tabindex="-1"` + mousedown 取焦点；`hasSelectionOutsideTerm()` 命中时放行 ⌘C（不 preventDefault、不转终端）；合成事件 `Object.defineProperty` 补 `keyCode`/`which`；合成事件打 `__polarisSynthetic` 防递归；对话区 ⌘A = `selectAllInRegion`；每条消息「📋」+ 代码块「📋 复制命令」（`window.api.copyText`）；`.ai-*` 补 `user-select: text`；对话区组合键不转发（避免无声 `^C` 打断远端命令）。回归 `verify-ai-copy.js` 11/11（修复前 1/9）、`verify-key-forward.js` 7/7（修复前 3/7）。
+
 **已实现（2026-11-11，v1.0.12）**：**DeepSeek 默认改 OpenAI 兼容端点**（`https://api.deepseek.com/v1` + `format:openai`，实测工具调用正常），Anthropic 兼容端点（`…/anthropic` + `format:anthropic`）作为备选模板保留；**端点与格式必须配套**，`migrateDeepSeekUrl` 按各厂商 `format` 补对应地址（否则空地址的 openai 厂商会被补成 `…/anthropic` → `…/anthropic/chat/completions` 404）。回归 `verify-ai-config.js` 11/11。
 
 **已实现（2026-11-11，v1.0.11）**：**修「AI 功能用不了」+ 工具栏「调试」移入菜单栏**——

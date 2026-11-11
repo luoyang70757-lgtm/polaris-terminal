@@ -1,5 +1,18 @@
 # 更新日志
 
+## v1.0.14（2026-11-11）
+
+- **修「AI 对话框文字不能复制」+「Ctrl+C 不生效」**（用户反馈，同一根因）：全局按键兜底会把按键 `preventDefault()` 后转发给终端，连 ⌘/Ctrl+C 的原生复制一起吞掉；而"转发"这条路径本身也是坏的——合成 `KeyboardEvent` 没带 `keyCode`（线上日志特征 `KEY 'c' ^ … kc=0`），xterm 拿不到键码直接丢弃，所以 Ctrl+C 既没打断远端命令也没复制界面文字。
+  1. **AI 对话区可聚焦**：`#ai-chat` 加 `tabindex="-1"`，点进对话区就把焦点给它，按键不再走"转发给终端"的兜底。
+  2. **有选中文字时放行 ⌘C**：焦点即使在 BODY（点过面板空白），只要选中了终端以外的文字，⌘/Ctrl+C 原样交给浏览器做原生复制，不 `preventDefault`、不转给终端。
+  3. **合成按键补回键码**：兜底转发时用 `Object.defineProperty` 补 `keyCode`/`which` → Ctrl+C(`\u0003`)、Ctrl+D(`\u0004`)、Tab、方向键、普通字母都真正进终端（以前全是"日志有、SEND 没有"）。
+  4. **合成事件加 `__polarisSynthetic` 标记**：防止同一个 window 捕获 handler 二次处理导致无限递归转发。
+  5. **⌘A 在对话区 = 全选对话内容**（以前会被当"终端全选"），方便整段复制。
+- **一键复制入口**：每条 AI 消息一个悬停显形的「📋」（复制整条含代码块），每个代码块一个「📋 复制命令」；复制走 `window.api.copyText`，状态栏给反馈。AI 面板补 `user-select: text`（SFTP 面板早有同类修复，AI 漏了）。
+- **对话区里不转发组合键**：以前在对话区按 Ctrl+C（无选中文字）会静默给远端发 `^C` 打断命令；现在组合键留给界面/系统，只有普通打字才还给终端（点一下 AI 面板仍能直接敲命令）。
+- 回归：新增 `verify-ai-copy.js` 11/11（未修复版 1/9）+ `verify-key-forward.js` 7/7（未修复版 3/7，日志与用户现场一致）；`verify-ai-config` 11/11、`verify-ime-deadkey` 9/9、`verify-bufferfocus` 4/4、`verify-line-clear` 6/6、`verify-ui-layout` 21/21、`verify-theme` 21/21、`run-verify --pure` 12/12 脚本 103 断言。细节见 `docs/release-v1.0.14.md`。
+
+
 ## v1.0.13（2026-11-11）
 
 - **修「文件夹下载 / 多文件下载失败」**（用户反馈）：这条链路以前有 5 个会直接坑到真实服务器的点，现在全部修掉。

@@ -1343,8 +1343,33 @@ input[type="checkbox"] {
 .kb-hit-name { font-size: var(--fs-sm); color: var(--accent, #6ea8fe); }
 .kb-hit-snippet { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .ai-chat { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+/* 对话区文字必须能选中复制(默认在部分容器里被 user-select:none 波及,选不中 → 用户报"AI 对话框文本不能复制") */
+.ai-chat, .ai-msg, .ai-msg-body, .ai-code {
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* 聚焦是为了拿到键盘(⌘C 原生复制 / ⌘A 全选对话区),不要画焦点框 */
+.ai-chat:focus, .ai-chat:focus-visible { outline: none; }
 .ai-msg { display: flex; flex-direction: column; gap: 4px; }
-.ai-msg-label { font-size: var(--fs-xs); color: var(--text-dim); }
+.ai-msg-label { font-size: var(--fs-xs); color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+/* 每条消息的「复制」:悬停才显形,不打扰阅读 */
+.ai-msg-copy {
+  margin-left: auto;
+  opacity: 0;
+  padding: 0 4px;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+.ai-msg:hover .ai-msg-copy { opacity: 0.85; }
+.ai-msg-copy:hover { opacity: 1; color: var(--accent); border-color: var(--border); background: var(--bg-hover); }
+/* 代码块下方的操作行:执行 + 复制 */
+.ai-code-actions { display: flex; gap: 6px; margin: 2px 0 6px; }
 .ai-msg.user .ai-msg-label { color: var(--accent); }
 .ai-msg.tool .ai-msg-label { color: var(--orange); }
 .ai-msg.tool .ai-msg-body { background: var(--input-bg, #1a1b1e); font-family: Menlo, Consolas, monospace; font-size: var(--fs-sm); }

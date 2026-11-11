@@ -1491,6 +1491,14 @@ els.aiStop.addEventListener('click', () => {
   if (activeAiStream) window.api.aiStop(activeAiStream.requestId);
 });
 
+// 点进 AI 对话区 → 把焦点交给这个容器(tabindex=-1)。
+// 不 preventDefault:否则拖选文字会失效。插在下面的消息渲染之前即可。
+els.aiChat.addEventListener('mousedown', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('button, a, input, textarea, select')) return; // 别抢按钮/输入框的焦点
+  try { els.aiChat.focus({ preventScroll: true }); } catch { /* ignore */ }
+});
+
 // 把文本填进消息体,解析 ```bash 代码块(带"执行"按钮)
 function fillAiBody(body, text) {
   body.innerHTML = '';
@@ -1504,11 +1512,24 @@ function fillAiBody(body, text) {
       pre.className = 'ai-code';
       pre.textContent = code;
       body.appendChild(pre);
+      const actions = document.createElement('div');
+      actions.className = 'ai-code-actions';
       const btn = document.createElement('button');
       btn.className = 'btn-mini ai-run';
       btn.textContent = '▶ 在当前终端执行';
       btn.addEventListener('click', () => runInActiveTerminal(code));
-      body.appendChild(btn);
+      actions.appendChild(btn);
+      const cbtn = document.createElement('button');
+      cbtn.className = 'btn-mini ai-copy';
+      cbtn.textContent = '📋 复制命令';
+      cbtn.addEventListener('click', () => {
+        window.api.copyText(code);
+        setStatus('已复制命令到剪贴板', 'var(--green)');
+        cbtn.textContent = '✓ 已复制';
+        setTimeout(() => { cbtn.textContent = '📋 复制命令'; }, 1200);
+      });
+      actions.appendChild(cbtn);
+      body.appendChild(actions);
     }
   }
 }
@@ -1519,7 +1540,25 @@ function appendAiMsg(role, text) {
   wrap.className = `ai-msg ${role}`;
   const label = document.createElement('div');
   label.className = 'ai-msg-label';
-  label.textContent = role === 'user' ? '你' : 'AI';
+  const labelText = document.createElement('span');
+  labelText.textContent = role === 'user' ? '你' : 'AI';
+  label.appendChild(labelText);
+  // 一键复制整条消息:选中文字不一定好拖(流式文本边滚边变),给个显式入口
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'ai-msg-copy';
+  copyBtn.title = '复制这条消息(含代码块)';
+  copyBtn.textContent = '📋';
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const body = wrap.querySelector('.ai-msg-body');
+    const txt = (body ? body.innerText : wrap.innerText) || '';
+    if (txt.trim()) window.api.copyText(txt.trim());
+    setStatus('已复制 AI 消息到剪贴板', 'var(--green)');
+    copyBtn.textContent = '✓';
+    setTimeout(() => { copyBtn.textContent = '📋'; }, 1200);
+  });
+  label.appendChild(copyBtn);
   wrap.appendChild(label);
   const body = document.createElement('div');
   body.className = 'ai-msg-body';
@@ -2955,6 +2994,28 @@ function termElInfo(el) {
   return tag + id + (cls ? '.' + cls.split(/\s+/).join('.') : '');
 }
 
+// ---------- 复制辅助:终端以外的可选中区域(AI 对话 / SFTP 日志 / 调试日志…) ----------
+// 判定"当前有没有终端以外的文字选中":全局按键兜底会 preventDefault(否则 BODY 焦点按键进不了终端),
+// 但那样连 ⌘C 的原生复制也一起吞掉了 —— AI 对话里的文字因此复制不出来。
+function hasSelectionOutsideTerm() {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (!node) return false;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || !el.closest) return false;
+  return !el.closest('.xterm, .xterm-helper-textarea');
+}
+// ⌘A 在 AI 对话区 = 全选整个对话记录(而不是把按键丢给终端)
+function selectAllInRegion(el) {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || !el) return;
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
 // ---------- 全局快捷键:⌘K 命令面板 + 高频面板开关 ----------
 // 必须注册在下方 window keydown(2459)之前:该 handler 在 BODY 焦点会把按键转发给终端,
 // 新快捷键命中组合时要 stopImmediatePropagation 阻断它,否则 ⌘K 等会被当普通键转发。
@@ -2987,6 +3048,9 @@ window.addEventListener('keydown', (e) => {
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
 // 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
+  // 本 handler 自己合成的"转发给终端"按键(见下方 BODY 兜底)不要再被自己处理一遍 ——
+  // 否则焦点没真正落到终端(容器不可聚焦/测试桩)时会无限递归转发。
+  if (e.__polarisSynthetic) return;
   // 锁定中:所有按键只归密码框(哪怕焦点被顶到 body/终端),绝不转发给 SSH 会话或触发快捷键
   if (lockOverlayVisible()) {
     if (document.activeElement === els.loPw) return; // 焦点正确 → 交给输入框自己处理
@@ -3018,10 +3082,33 @@ window.addEventListener('keydown', (e) => {
   const inTerm = !!cls && cls.indexOf('xterm-helper-textarea') >= 0;
   const isBody = ae === document.body;
   const onMenu = !!cls && cls.indexOf('ctx-menu') >= 0;
-  if (!inTerm && !isBody && !onMenu) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
+  // AI 对话区(可聚集的滚动容器):点进来后焦点在这里,按键既不该被兜底转给终端,
+  // 也不该把 ⌘C/⌘A 吞掉 —— 见下方 inAiChat 分支。
+  const inAiChat = !!ae && ae.id === 'ai-chat';
+  if (!inTerm && !isBody && !onMenu && !inAiChat) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
   const mod = (e.ctrlKey ? '^' : '') + (e.altKey ? '⌥' : '') + (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '');
   const key = k.length === 1 ? (k === ' ' ? '␣' : k) : k;
-  if (isBody) {
+  const isMod = PLATFORM_IS_MAC ? e.metaKey : e.ctrlKey;
+  // 焦点兜底只为了"按键进终端",复制快捷键(⌘C)例外:界面上已经选中了文字(AI 对话/日志/SFTP 路径)
+  // 就把这次按键原样交给浏览器做原生复制,否则用户永远复制不出 AI 的回答。
+  if ((isBody || inAiChat) && isMod && !e.altKey && !e.shiftKey && k.toLowerCase() === 'c' && hasSelectionOutsideTerm()) {
+    dlog('KEY', `'${key}' ${mod} active=${inAiChat ? 'AI-对话区' : 'BODY'} →有选中文字,放行原生复制`);
+    return; // 不 preventDefault、不转给终端
+  }
+  // AI 对话区:⌘A = 全选这段对话(方便整段复制);其它按键才按"用户其实想敲终端"还给终端
+  if (inAiChat && isMod && !e.altKey && !e.shiftKey && k.toLowerCase() === 'a') {
+    e.preventDefault();
+    selectAllInRegion(ae);
+    dlog('KEY', `'${key}' ${mod} active=AI-对话区 →全选对话内容`);
+    return;
+  }
+  if (isBody || inAiChat) {
+    // AI 对话区里的"组合键"一律留给界面/系统(尤其 Ctrl+C 没选中文字时):否则会静默给远端发 ^C,
+    // 把正在跑的命令打断 —— 用户只是想复制/安静待着。只有普通打字才还给终端(见下)。
+    if (inAiChat && (e.ctrlKey || e.metaKey || e.altKey)) {
+      dlog('KEY', `'${key}' ${mod} active=AI-对话区 →组合键留给界面`);
+      return;
+    }
     // BODY 焦点兜底:把键盘焦点还给当前活跃终端,并阻止默认行为,让按键真正进终端。
     // Cmd+A(全选)在 BODY 上会被浏览器当"全选页面"吞掉,这里显式交给 xterm。
     const t = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
@@ -3040,10 +3127,18 @@ window.addEventListener('keydown', (e) => {
             key: k, code: e.code || '', bubbles: true, cancelable: true,
             ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey,
           });
+          ne.__polarisSynthetic = true; // 防递归(见 handler 开头的同名判断)
+          // 关键:把原事件的 keyCode/which 补回去。KeyboardEvent 构造函数不接受这两个字段,
+          // 不补的话合成事件 keyCode=0(线上日志特征 `KEY 'c' ^ ime=0 kc=0`),xterm 的按键映射
+          // 拿不到键码就直接吞掉 → Ctrl+C/Ctrl+D/Tab 在 BODY 焦点下全部失效(用户报"ctrl+C 不生效")。
+          const kc = e.keyCode || e.which || (k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0);
+          try { Object.defineProperty(ne, 'keyCode', { get: () => kc, configurable: true }); } catch { /* ignore */ }
+          try { Object.defineProperty(ne, 'which', { get: () => kc, configurable: true }); } catch { /* ignore */ }
+          try { Object.defineProperty(ne, 'charCode', { get: () => 0, configurable: true }); } catch { /* ignore */ }
           ta.dispatchEvent(ne);
         }
       } catch { /* ignore */ }
-      dlog('KEY', `'${key}' ${mod || '-'} active=BODY →已兜底转发终端`);
+      dlog('KEY', `'${key}' ${mod || '-'} active=${inAiChat ? 'AI-对话区' : 'BODY'} →已兜底转发终端`);
       return;
     }
     dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ⚠️BODY 按键被吞`);
