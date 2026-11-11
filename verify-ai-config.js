@@ -10,8 +10,8 @@
  *
  * 本用例覆盖:
  *  ① HTTP 错误码 → 人话提示映射(纯 Node);
- *  ② 「＋ 新增厂商」默认就是能跑通的 DeepSeek 配置(地址/协议/模型都在);
- *  ③ ⚙「快速模板」选 DeepSeek → 地址/协议/模型落盘,且选完自动复位;
+ *  ② 「＋ 新增厂商」默认就是能跑通的 DeepSeek 配置(OpenAI 兼容端点 + 模型都在);
+ *  ③ ⚙「快速模板」:DeepSeek 默认走 OpenAI 兼容 /v1,另备 Anthropic 兼容端点(两种都实测可用);
  *  ④ 接口地址为空 → ai:chat 直接返回可读错误(不再偷偷打到 api.anthropic.com);
  *  ⑤ 模型为空 → ai:chat 直接返回可读错误(不再偷偷用 claude-sonnet-5);
  *  ⑥ aiSend 前置校验:地址/模型缺失时弹提示并展开 ⚙,不发请求;
@@ -136,8 +136,8 @@ const bad = (n, extra) => { failed++; console.error('  ✗ ' + n + (extra ? '  �
     })()`);
     let nvObj = null;
     try { nvObj = JSON.parse(nv); } catch { /* ignore */ }
-    if (nvObj && /deepseek\.com/.test(nvObj.url) && nvObj.format === 'anthropic' && nvObj.model && (nvObj.models || []).length) {
-      ok('＋ 新增厂商 → 默认填好 DeepSeek 地址/协议/模型', `${nvObj.url} · ${nvObj.format} · ${nvObj.model}`);
+    if (nvObj && nvObj.url === 'https://api.deepseek.com/v1' && nvObj.format === 'openai' && nvObj.model && (nvObj.models || []).length) {
+      ok('＋ 新增厂商 → 默认填好 DeepSeek(OpenAI 兼容)地址/协议/模型', `${nvObj.url} · ${nvObj.format} · ${nvObj.model}`);
     } else {
       bad('新增厂商默认配置不能直接跑', nv);
     }
@@ -156,19 +156,36 @@ const bad = (n, extra) => { failed++; console.error('  ✗ ' + n + (extra ? '  �
       return JSON.stringify({ reset: sel.value === '', url: v.url, format: v.format, model: v.model, inputUrl: document.getElementById('ai-url').value });
     })()`);
     const pr = JSON.parse(presetRes);
-    if (pr.url === 'https://api.deepseek.com/anthropic' && pr.format === 'anthropic' && pr.inputUrl === pr.url) {
-      ok('⚙ 快速模板 DeepSeek → 地址/协议写入并同步到输入框', pr.url);
+    if (pr.url === 'https://api.deepseek.com/v1' && pr.format === 'openai' && pr.inputUrl === pr.url) {
+      ok('⚙ 快速模板 DeepSeek → OpenAI 兼容端点 + 协议/地址同步到输入框', pr.url);
     } else {
       bad('快速模板没把配置填对', presetRes);
     }
     if (pr.reset) ok('快速模板选完自动复位成「自定义」(可以重复选同一家)');
     else bad('快速模板没有复位,再次选同一家不触发');
 
+    // 备选:同一把 Key 的 Anthropic 兼容端点(base 不带 /v1,自动拼 /v1/messages)
+    await ev(c, `(function(){
+      var sel = document.getElementById('ai-vendor-preset');
+      sel.value = 'deepseek-anthropic';
+      sel.dispatchEvent(new Event('change'));
+      return true;
+    })()`);
+    await sleep(300);
+    const ap = JSON.parse(await ev(c, `(function(){
+      var v = (state.settings.aiVendors || {})[state.settings.aiActiveVendor] || {};
+      return JSON.stringify({ url: v.url, format: v.format, inputUrl: document.getElementById('ai-url').value, option: !!document.querySelector('#ai-vendor-preset option[value="deepseek-anthropic"]') });
+    })()`));
+    if (ap.url === 'https://api.deepseek.com/anthropic' && ap.format === 'anthropic' && ap.inputUrl === ap.url && ap.option) {
+      ok('⚙ 快速模板 DeepSeek(Anthropic 兼容)→ 端点与协议正确', ap.url);
+    } else bad('Anthropic 兼容模板不对', JSON.stringify(ap));
+
     // ---- ④ 接口地址为空 → 可读错误,不联网 ----
     const r4 = await ev(c, `window.api.aiChat({ apiKey:'k', url:'', model:'deepseek-v4-flash', format:'anthropic', messages:[{role:'user',content:'hi'}], hosts:[], requestId:'t4' })`);
     const e4 = r4 && r4.error ? r4.error : JSON.stringify(r4);
-    if (/接口地址/.test(e4)) ok('地址为空 → 直接提示去 ⚙ 填接口地址(不再打到官方 Anthropic)');
-    else bad('地址为空时没有可读提示', e4);
+    if (/接口地址/.test(e4) && /deepseek\.com\/v1/.test(e4) && /deepseek\.com\/anthropic/.test(e4)) {
+      ok('地址为空 → 提示去 ⚙ 填接口地址(并给出 DeepSeek 两种端点)');
+    } else bad('地址为空时没有可读提示', e4);
 
     // ---- ⑤ 模型为空 → 可读错误,不再回落 claude-sonnet-5 ----
     const r5 = await ev(c, `window.api.aiChat({ apiKey:'k', url:'https://api.deepseek.com/anthropic', model:'', format:'anthropic', messages:[{role:'user',content:'hi'}], hosts:[], requestId:'t5' })`);
@@ -214,7 +231,7 @@ const bad = (n, extra) => { failed++; console.error('  ✗ ' + n + (extra ? '  �
     if (REAL_KEY) {
       await ev(c, `(function(){
         var v = state.settings.aiVendors[state.settings.aiActiveVendor];
-        encryptSecret(${JSON.stringify(REAL_KEY)}).then(function(k){ v.key = k; v.url = 'https://api.deepseek.com/anthropic'; v.format = 'anthropic'; v.model = 'deepseek-v4-flash'; v.models = ['deepseek-v4-flash','deepseek-v4-pro']; state.settings.aiActiveVendor = state.settings.aiActiveVendor; saveSettings(); fillAiConfig(); });
+        encryptSecret(${JSON.stringify(REAL_KEY)}).then(function(k){ v.key = k; v.url = 'https://api.deepseek.com/v1'; v.format = 'openai'; v.model = 'deepseek-v4-flash'; v.models = ['deepseek-v4-flash','deepseek-v4-pro']; saveSettings(); fillAiConfig(); });
         return true;
       })()`);
       await sleep(1200);

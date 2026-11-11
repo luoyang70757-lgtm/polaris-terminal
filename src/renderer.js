@@ -1081,7 +1081,10 @@ function migrateAiVendors() {
 //   OpenAI 兼容: base 以 /v1 结尾(会自动拼 /chat/completions)
 //   Anthropic : base 不带 /v1(会自动拼 /v1/messages,写成 .../v1 会变成 /v1/v1/messages)
 const AI_VENDOR_PRESETS = {
-  deepseek:   { name: 'DeepSeek',  url: 'https://api.deepseek.com/anthropic', format: 'anthropic', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  // DeepSeek 官方 OpenAI 兼容接口(推荐):base 以 /v1 结尾,会自动拼 /chat/completions。
+  // 同一把 DeepSeek Key 也能走下面的 Anthropic 兼容端点(格式选错才会 401,不要混用)。
+  deepseek:   { name: 'DeepSeek',  url: 'https://api.deepseek.com/v1', format: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  'deepseek-anthropic': { name: 'DeepSeek', url: 'https://api.deepseek.com/anthropic', format: 'anthropic', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
   openai:     { name: 'OpenAI',    url: 'https://api.openai.com/v1', format: 'openai', models: [] },
   dashscope:  { name: '通义千问',   url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai', models: [] },
   zhipu:      { name: '智谱 GLM',  url: 'https://open.bigmodel.cn/api/paas/v4', format: 'openai', models: [] },
@@ -1114,7 +1117,12 @@ function migrateDeepSeekUrl() {
   const OLD_ANTHROPIC = 'https://api.anthropic.com/v1/messages';
   for (const v of Object.values(vendors)) {
     const url = String(v.url || '').trim();
-    if (!url || url === OLD_ANTHROPIC) v.url = 'https://api.deepseek.com/anthropic';
+    if (!url || url === OLD_ANTHROPIC) {
+      // 两个端点的路径不同:OpenAI 兼容是 https://api.deepseek.com/v1(/chat/completions),
+      // Anthropic 兼容是 https://api.deepseek.com/anthropic(/v1/messages)。
+      // 按厂商当前选的「接口格式」补对应地址,否则会出现 .../anthropic/chat/completions 这种 404。
+      v.url = v.format === 'openai' ? 'https://api.deepseek.com/v1' : 'https://api.deepseek.com/anthropic';
+    }
   }
 }
 
@@ -1381,7 +1389,7 @@ async function aiSend() {
   if (!String(av.url || '').trim() || !String(av.model || '').trim()) {
     els.aiConfig.classList.remove('hidden');
     alert(!String(av.url || '').trim()
-      ? '请先在 AI ⚙ 里填「接口地址」\n\nDeepSeek: https://api.deepseek.com/anthropic\nOpenAI 兼容: https://api.deepseek.com/v1\n也可以直接用 ⚙ 顶部的「快速模板」一键填好'
+      ? '请先在 AI ⚙ 里填「接口地址」\n\nDeepSeek(OpenAI 兼容): https://api.deepseek.com/v1\nDeepSeek(Anthropic 兼容): https://api.deepseek.com/anthropic\n也可以直接用 ⚙ 顶部的「快速模板」一键填好'
       : '请先在 AI ⚙ 里的模型下拉选一个模型(下拉为空说明该厂商还没加模型,点「＋」添加,如 deepseek-v4-flash)');
     return;
   }
@@ -11306,7 +11314,7 @@ els.aiVendorNew.addEventListener('click', () => {
       // 默认就给 DeepSeek 的可跑通配置(地址+模型),用户只需粘 Key 就能发消息;
       // 想换别的服务商,用 ⚙ 顶部的「快速模板」一键换。
       vendors[name] = {
-        url: 'https://api.deepseek.com/anthropic', key: '', format: 'anthropic',
+        url: 'https://api.deepseek.com/v1', key: '', format: 'openai',
         model: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
       };
       state.settings.aiActiveVendor = name;

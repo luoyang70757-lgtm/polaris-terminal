@@ -938,7 +938,7 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   // 地址/模型必须是用户显式配置过的:旧版为空时静默回落到官方 Anthropic/OpenAI 地址 + claude 模型,
   // 于是"新加的厂商没填地址"会拿到 401/404 天书错误。现在直接说清该改哪个输入框。
   if (!String(url || '').trim()) {
-    return { ok: false, error: '请先在 AI 面板 ⚙ 里填「接口地址」(DeepSeek: https://api.deepseek.com/anthropic;OpenAI 兼容: https://api.deepseek.com/v1)' };
+    return { ok: false, error: '请先在 AI 面板 ⚙ 里填「接口地址」(DeepSeek OpenAI 兼容: https://api.deepseek.com/v1;Anthropic 兼容: https://api.deepseek.com/anthropic)' };
   }
   if (!String(model || '').trim()) {
     return { ok: false, error: '请先在 AI 面板 ⚙ 里选一个模型(模型下拉为空时用「＋」添加模型名,如 deepseek-v4-flash)' };

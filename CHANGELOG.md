@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.0.12（2026-11-11）
+
+- **DeepSeek 配置改为官方 OpenAI 兼容端点**（默认模板 + 新增厂商默认值都用 `https://api.deepseek.com/v1`，自动拼 `/chat/completions`）。同一把 DeepSeek Key 也能走 `https://api.deepseek.com/anthropic`（Anthropic 兼容端点），两种都保留在「快速模板」里，各自对应的**接口格式**不同——格式与端点混用才会 401。
+- **迁移修正**：老配置里接口地址为空（或还指向旧官方 Claude 地址）的厂商，补 DeepSeek 端点时**按该厂商当前选的接口格式**给对应地址（OpenAI 兼容 `/v1`、Anthropic 兼容 `/anthropic`），避免拼出 `…/anthropic/chat/completions` 这种 404。
+- 「接口地址没有填」的报错现在同时给出两种端点，并自动展开 ⚙。
+- 回归：`verify-ai-config.js` 11/11（新增 Anthropic 兼容模板断言；真实 Key 连通性实测走 OpenAI 兼容端点）。
+
+
 ## v1.0.11（2026-11-11）
 
 - **修「AI 功能用不了」**（用户反馈：填了 DeepSeek 的 Key 也发不出消息）：根因是配置项缺失时静默回落到官方地址/模型 —— 新加的厂商「接口地址」为空 → 请求被悄悄发到 `https://api.anthropic.com/v1/messages`，界面只给一句 `HTTP 401/404`；模型为空 → 静默用 `claude-sonnet-5` 去请求 DeepSeek，直接 400。现在：

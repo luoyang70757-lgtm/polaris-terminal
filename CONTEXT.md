@@ -190,6 +190,8 @@ node verify-<功能>.js
 
 **已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
 
+**已实现（2026-11-11，v1.0.12）**：**DeepSeek 默认改 OpenAI 兼容端点**（`https://api.deepseek.com/v1` + `format:openai`，实测工具调用正常），Anthropic 兼容端点（`…/anthropic` + `format:anthropic`）作为备选模板保留；**端点与格式必须配套**，`migrateDeepSeekUrl` 按各厂商 `format` 补对应地址（否则空地址的 openai 厂商会被补成 `…/anthropic` → `…/anthropic/chat/completions` 404）。回归 `verify-ai-config.js` 11/11。
+
 **已实现（2026-11-11，v1.0.11）**：**修「AI 功能用不了」+ 工具栏「调试」移入菜单栏**——
 ① 用户填了 DeepSeek Key 仍发不出消息,根因是配置缺失时**静默回落**:新厂商 `url` 为空 → 请求偷偷发到 `https://api.anthropic.com/v1/messages`,界面只有 `HTTP 401/404`;`model` 为空 → 静默用 `claude-sonnet-5` 请求 DeepSeek → 400。现 `main.js` `ai:chat` / `lib/session-groups.js` `ai:suggestCmd` 在 url/model 为空时直接返回可读错误,`aiSend` 发送前校验并自动展开 ⚙,`lib/ai-stream.js` 新增 `aiErrorHint`(401/403 Key 无效、402 余额、404 地址或模型名、429 限流、5xx 服务端)。② ⚙ 新增「快速模板」(`AI_VENDOR_PRESETS`:DeepSeek/OpenAI/DashScope/智谱/Moonshot/Anthropic/OpenRouter),选中即填地址+协议+模型(Anthropic 格式的 base 不带 `/v1`,否则 normalize 会拼成 `/v1/v1/messages`);「＋ 新增厂商」默认即 DeepSeek 可跑通配置。③ 工具栏「调试」删除,入口移到菜单栏「调试」(紧跟「帮助」);**新增菜单项必须同步登记 `preload.js` `onMenu` 白名单,否则点击静默无反应**(本次踩过)。回归 `verify-ai-config.js` 10/10(含可选 `POLARIS_AI_KEY` 真实连通性)。
 
