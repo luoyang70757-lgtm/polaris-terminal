@@ -10134,6 +10134,12 @@ function winScpPayloadFor(sessionId) {
   const s = t && t.session;
   if (!s) return { error: '找不到该会话的连接信息(先连上这台主机再试)' };
   if ((s.protocol || 'ssh') === 'telnet') return { error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
+  // 交给 WinSCP 的起始目录:优先面板当前目录(同一会话),否则标签自己记住的 SFTP 路径,
+  // 再否则交互 shell 里跟踪到的 cd 目录。相对/未知一律不传,让 WinSCP 自己落位。
+  let remotePath = '';
+  if (state.sftp.visible && state.sftp.sessionId === sessionId) remotePath = state.sftp.path || '';
+  if (!remotePath) remotePath = (t.sftpPath && t.sftpPath !== '.') ? t.sftpPath : '';
+  if (!remotePath) remotePath = t.shellCwd || '';
   return {
     protocol: 'ssh',
     host: s.host || '',
@@ -10143,6 +10149,7 @@ function winScpPayloadFor(sessionId) {
     privateKey: s.private_key || '',   // Polaris 存的是私钥路径,WinSCP 可直接用
     passphrase: s.passphrase || '',
     name: s.name || '',
+    remotePath: /^\//.test(remotePath) ? remotePath : '',
   };
 }
 

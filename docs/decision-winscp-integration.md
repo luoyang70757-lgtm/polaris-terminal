@@ -215,3 +215,38 @@ user/password 全 `encodeURIComponent`），配套硬约束：
 - `verify-winscp-open.js`（真启动 electron，27 条）：桩程序收到 argv、脱敏（渲染层 dlog + 落盘日志 +
   状态栏三处）、telnet 与缺主机拒绝、三档行为（replace 拉起 / 未装回落面板 / button 出按钮 /
   panel 隐身）、标签右键菜单项显隐、渲染层入口返回值与状态栏反馈。
+
+## 追加（v1.0.16）：必须带 `SFTPRealPath=off`
+
+v1.0.15 上线后用户实测立刻踩到 WinSCP 的经典坑：
+
+```
+不能获得'.'的真实路径。一般错误（服务器应该提供错误描述）。
+错误码：4，服务器返回的错误消息：General failure
+```
+
+源码定位（`winscp/winscp` master）：
+
+- `source/core/SftpFileSystem.cpp:2976` `FHomeDirectory = RealPath(L".");` —— 建会话时对 `"."` 求真实路径当作家目录；
+- 同文件 `:2785` `RealPath()`：只有 `SessionData->SFTPRealPath == asOff` 才走 `LocalCanonify`（纯本地拼接），否则发 `SSH_FXP_REALPATH`；
+- `source/core/SessionData.cpp:303` 默认 `asAuto`。
+
+所以只要服务器不支持/拒绝 REALPATH（chroot 型：KoKo 网关、H3C 网关、`internal-sftp` chroot、老 ProFTPD…），
+WinSCP 连会话都开不起来。Polaris 自己的 SFTP 面板之所以没这问题，是因为我们**从不发 REALPATH**（家目录用
+`exec pwd` + `readdir` 验证），路径一律按字符串使用。
+
+**决定：每次拉起都下发 `/rawsettings SFTPRealPath=off`**，不做事前探测：
+
+- 探测要真开一条 SFTP 通道，H3C/KoKo 类网关可达 15~20s，点一下「SFTP」等 20 秒不可接受；
+- `off` 只关掉"服务器端 canonicalize"，对正常 OpenSSH 服务器同样可用（`LocalCanonify` 不访问服务器）；
+- 想保留 WinSCP 原生行为：`POLARIS_WINSCP_REALPATH=on|auto`。
+
+配套：把 Polaris 已知的绝对路径作为 `RemoteDirectory` 一起交过去（面板当前目录 > 标签 `sftpPath` >
+跟踪的 `shellCwd`；相对/未知不传），这样 WinSCP 打开就落在用户刚才所在的位置，而不是自己猜（猜错会报
+「目录不存在」）。
+
+回归：`verify-winscp-args.js` 32/32（新增 `RAW_SETTINGS_DEFAULTS`/`/rawsettings` 拼装/空值跳过/带空格中文目录/
+与私钥口令共存顺序/`normalizeRemotePath`/`realPathCompat`）+ `verify-winscp-open.js` 32/32（argv 里确有
+`SFTPRealPath=off`、`RemoteDirectory=/srv/my dir` 整段到达、payload 起始目录优先级、相对路径丢弃）。
+手工绕过（不改 Polaris）：WinSCP 站点「高级 → Canonicalize paths on the server = Off」，
+或命令行 `/rawsettings SFTPRealPath=off`，或站点 ini 里加 `SFTPRealPath=off`。

@@ -128,8 +128,48 @@ t('调试模式才加 /log= 与 /loglevel=', () => {
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=1']);
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/']);
 });
+t('realPathCompat:默认开(与关 WinSCP 默认行为),on/auto 时不动)', () => {
+  assert.strictEqual(w.realPathCompat({}), true);
+  assert.strictEqual(w.realPathCompat({ POLARIS_WINSCP_REALPATH: '' }), true);
+  assert.strictEqual(w.realPathCompat({ POLARIS_WINSCP_REALPATH: 'off' }), true);
+  assert.strictEqual(w.realPathCompat({ POLARIS_WINSCP_REALPATH: 'ON' }), false);
+  assert.strictEqual(w.realPathCompat({ POLARIS_WINSCP_REALPATH: 'auto' }), false);
+});
 t('缺 URL → 抛错', () => {
   assert.throws(() => w.buildArgs({}), /缺少会话 URL/);
+});
+t('默认 rawsettings = SFTPRealPath off(绕开 chroot 服务器的 REALPATH(".") 失败)', () => {
+  assert.deepStrictEqual(w.RAW_SETTINGS_DEFAULTS, { SFTPRealPath: 'off' });
+  const a = w.buildArgs({ url: 'sftp://u:p@h/', rawSettings: w.RAW_SETTINGS_DEFAULTS });
+  assert.deepStrictEqual(a, ['sftp://u:p@h/', '/rawsettings', 'SFTPRealPath=off']);
+});
+t('rawsettings:多个「名=值」各自一个 argv,空值跳过,顺序保持', () => {
+  const a = w.buildArgs({ url: 'sftp://u:p@h/', rawSettings: { SFTPRealPath: 'off', RemoteDirectory: '/root/www', Skip: '' } });
+  assert.deepStrictEqual(a, ['sftp://u:p@h/', '/rawsettings', 'SFTPRealPath=off', 'RemoteDirectory=/root/www']);
+});
+t('rawsettings:带空格/中文的目录整段传(不拆参)', () => {
+  const a = w.buildArgs({ url: 'sftp://u:p@h/', rawSettings: { RemoteDirectory: '/srv/my dir/数据' } });
+  assert.deepStrictEqual(a, ['sftp://u:p@h/', '/rawsettings', 'RemoteDirectory=/srv/my dir/数据']);
+});
+t('rawsettings 与私钥/口令/日志共存顺序固定', () => {
+  const a = w.buildArgs({ url: 'sftp://u@h/', rawSettings: { SFTPRealPath: 'off' }, privateKey: 'C:\\k\\id_rsa', passphrase: 'pp', debug: true, logPath: 'C:\\t\\w.log' });
+  assert.deepStrictEqual(a, ['sftp://u@h/', '/rawsettings', 'SFTPRealPath=off', '-privatekey=C:\\k\\id_rsa', '-passphrase=pp', '/log=C:\\t\\w.log', '/loglevel=1']);
+});
+t('normalizeRemotePath:只收绝对路径,相对/~ /换行一律丢弃', () => {
+  assert.strictEqual(w.normalizeRemotePath('/root/www'), '/root/www');
+  assert.strictEqual(w.normalizeRemotePath('  /tmp/x  '), '/tmp/x');
+  assert.strictEqual(w.normalizeRemotePath('/srv/my dir'), '/srv/my dir');
+  assert.strictEqual(w.normalizeRemotePath('~'), '');
+  assert.strictEqual(w.normalizeRemotePath('.'), '');
+  assert.strictEqual(w.normalizeRemotePath('rel/dir'), '');
+  assert.strictEqual(w.normalizeRemotePath('/a\nb'), '');
+  assert.strictEqual(w.normalizeRemotePath(null), '');
+});
+t('describeCommand 脱敏不误伤 rawsettings(目录不是敏感信息)', () => {
+  const s = w.describeCommand('C:\\WinSCP.exe', w.buildArgs({ url: w.buildSessionUrl({ host: 'h', username: 'u', password: 'p@ss' }), rawSettings: { SFTPRealPath: 'off', RemoteDirectory: '/root' } }));
+  assert.ok(s.includes('SFTPRealPath=off'), s);
+  assert.ok(s.includes('RemoteDirectory=/root'), s);
+  assert.ok(!s.includes('p@ss') && s.includes('u:***@h'), s);
 });
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);

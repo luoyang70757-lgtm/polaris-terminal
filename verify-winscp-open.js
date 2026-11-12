@@ -7,6 +7,8 @@
  * 断言:
  *   ① 探测:装了 → installed/path;没装 → 入口不出现
  *   ② 打开:argv 第一条是 sftp://会话 URL,密码经过 percent-encode
+ *      + `/rawsettings SFTPRealPath=off`(chroot 服务器不发 REALPATH("."),否则 WinSCP 报错误码 4)
+ *      + 已知起始目录时附带 `RemoteDirectory=/x`
  *   ③ 日志/状态栏里不出现明文密码(只有 ***)
  *   ④ 设置项 winscpMode=replace/button/panel 三种模式行为(替代/加按钮/只用内置面板)
  *   ⑤ replace 模式下拉起失败或没装 → 自动回落内置面板(功能不消失)
@@ -115,8 +117,12 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     const wantUrl = `sftp://root:p%40ss%3Aw%2Frd%231@10.0.0.9:22/`;
     if (first === wantUrl) ok('会话 URL 正确(密码已 percent-encode)');
     else bad('会话 URL 正确', `实际: ${first}`);
-    if (frames[0].length === 1) ok('无多余参数(只有 URL)');
-    else bad('无多余参数', JSON.stringify(frames[0]));
+    const argv1 = frames[0] || [];
+    // rawsettings 必须带上 SFTPRealPath=off(否则 chroot 服务器报「不能获得 '.' 的真实路径,错误码 4」)
+    if (argv1.includes('/rawsettings') && argv1.includes('SFTPRealPath=off')) ok('参数带 /rawsettings SFTPRealPath=off(绕开 REALPATH(".") 探测)');
+    else bad('参数带 SFTPRealPath=off', JSON.stringify(argv1));
+    if (argv1.length === 3 && argv1[1] === '/rawsettings') ok('无多余参数(URL + /rawsettings + 1 个设置)');
+    else bad('无多余参数', JSON.stringify(argv1));
     // 日志里不能有明文密码
     const logs = await evaluate(c, `(function(){ var t = termDebug.lines.join('\\n'); try { t += '\\n' + (document.getElementById('debug-body') ? document.getElementById('debug-body').textContent : ''); } catch(e){} return t; })()`);
     const diskLog = (() => {
@@ -150,7 +156,14 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     if (sJson === 'NOTFOUND' || sJson === 'TIMEOUT') throw new Error('会话未创建');
     await ev(c, `(function(){ connectToServer(${sJson}); return 'started'; })()`);
     // 用「一次 evaluate 内自轮询」拿 sid:避免测试端反复 round-trip(偶发 CDP 卡顿会被误判成未连接)
-    const sid = await ev(c, `(async()=>{ for (let i=0;i<60;i++){ const id=state.activeSessionId; const t=id&&state.tabs.get(id); if (t && t.status==='connected') return id; await new Promise(function(r){setTimeout(r,300);}); } return 'NOTCONNECTED'; })()`, 40000);
+    const pollSid = `(async()=>{ for (let i=0;i<60;i++){ const id=state.activeSessionId; const t=id&&state.tabs.get(id); if (t && t.status==='connected') return id; await new Promise(function(r){setTimeout(r,300);}); } return 'NOTCONNECTED'; })()`;
+    let sid = await ev(c, pollSid, 40000);
+    if (sid === 'NOTCONNECTED' || sid === 'TIMEOUT') {
+      // mock/SSH 握手偶发慢(连跑多次时见过一次):再点一次连接再等一轮,
+      // 不让一次抖动把后面 18 条断言全部带走
+      await ev(c, `(function(){ connectToServer(${sJson}); return 'retry'; })()`);
+      sid = await ev(c, pollSid, 40000);
+    }
     if (!sid || sid === 'NOTCONNECTED' || sid === 'TIMEOUT') throw new Error('mock 会话连接失败');
     ok(`mock 会话已连接(sid=${sid})`);
 
@@ -219,6 +232,25 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     else bad('公钥会话:URL 不带密码', JSON.stringify(f2));
     if (f2.some((a) => a.startsWith('-privatekey=')) && f2.some((a) => a === '-passphrase=kpp')) ok('私钥路径与口令作为参数传给 WinSCP');
     else bad('私钥路径与口令作为参数传给 WinSCP', JSON.stringify(f2));
+
+    // ---------- 起始目录(RemoteDirectory)直通 ----------
+    const beforePath = argvFrames().length;
+    const rPath = JSON.parse(await evaluate(c, `(async()=>JSON.stringify(await window.api.winScpOpen(${JSON.stringify({
+      protocol: 'ssh', host: 'h.example.com', port: 22, username: 'u', password: 'pw', remotePath: '/srv/my dir',
+    })})))()`));
+    await sleep(400);
+    const fPath = argvFrames().slice(beforePath)[0] || [];
+    if (rPath.ok && fPath.some((a) => a === 'RemoteDirectory=/srv/my dir')) ok('起始目录原样交给 WinSCP(含空格不拆参)');
+    else bad('起始目录原样交给 WinSCP', JSON.stringify(fPath));
+    if (fPath.includes('SFTPRealPath=off')) ok('起始目录与 SFTPRealPath=off 同在一个 /rawsettings 里');
+    else bad('SFTPRealPath=off 仍在', JSON.stringify(fPath));
+    // 渲染层组装 payload:面板/标签/跟踪的 cwd 都能被用作起始目录,相对路径丢弃
+    const payload = JSON.parse(await ev(c, `(function(){ state.sftp.visible=false; var t=state.tabs.get('${sid}'); if (!t) return '{}'; t.sftpPath='/root/www'; t.shellCwd=null; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
+    if (payload.remotePath === '/root/www') ok('winScpPayloadFor 用标签自己的 SFTP 路径作起始目录');
+    else bad('winScpPayloadFor 起始目录', JSON.stringify(payload));
+    const payloadRel = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); t.sftpPath='.'; t.shellCwd=null; state.sftp.visible=false; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
+    if (payloadRel.remotePath === '') ok('相对路径 / 未知目录不传给 WinSCP(避免它报目录不存在)');
+    else bad('相对路径不传', JSON.stringify(payloadRel));
 
     // 走渲染层自己的入口(标签右键菜单/按钮调的就是它),返回值 + 状态栏文案一起验
     await ev(c, `state.winScp.installed = true; true`);

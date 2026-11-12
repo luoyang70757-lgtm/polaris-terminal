@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.0.16（2026-11-12）
+
+- **修「WinSCP 报『不能获得 \'.\' 的真实路径』(错误码 4)」**（用户反馈，v1.0.15 拉起 WinSCP 后必现）：根因是 WinSCP **建会话时会先对 `"."` 发一次 `SSH_FXP_REALPATH`** 当作家目录（`source/core/SftpFileSystem.cpp:2976` `FHomeDirectory = RealPath(L".")`；默认 `SessionData.cpp:303` `SFTPRealPath = asAuto`），而 **chroot 型服务端**（JumpServer KoKo 网关、H3C 网关、`internal-sftp` chroot、老 ProFTPD）对这个请求直接回 `SSH_FX_FAILURE`（错误码 4）→ WinSCP 当致命错误抛出，会话进不去。Polaris 自己的 SFTP 面板从不受影响，因为我们从不发 REALPATH（家目录走 `exec pwd` + `readdir` 验证）。
+  - **修法**：拉起的命令追加 `/rawsettings SFTPRealPath=off`（WinSCP 官方支持的会话级 ini 注入），`RealPath()` 改走 `LocalCanonify`、不再发请求；同时把 Polaris 已知的目录作为 `RemoteDirectory` 交过去（**SFTP 面板当前目录 > 该标签记住的 `sftpPath` > 终端跟踪到的 `shellCwd`**，相对路径/未知一律不传，避免猜错报「目录不存在」）。要恢复 WinSCP 原生行为：`POLARIS_WINSCP_REALPATH=on` 启动 Polaris。
+  - **代码落点**：`lib/winscp-open.js` 新增 `RAW_SETTINGS_DEFAULTS` / `buildArgs()` 支持 `rawSettings`（空值跳过、顺序稳定）/ `normalizeRemotePath()`（只收绝对路径）/ `realPathCompat(env)`；`main.js winScp:open` 组装 rawsettings 并在拉起日志里记 `rawsettings=…`（只有设置、无凭据）；`src/renderer.js winScpPayloadFor()` 增加 `remotePath`。
+  - 回归：`verify-winscp-args.js` **25 → 32**（rawsettings 拼装/空值跳过/带空格中文目录/与私钥口令共存顺序/`normalizeRemotePath`/`realPathCompat`）、`verify-winscp-open.js` **27 → 32**（argv 里确有 `SFTPRealPath=off`、`RemoteDirectory=/srv/my dir` 整段到达、payload 起始目录优先级与相对路径丢弃）；`run-verify --pure` **13/13 脚本 135 断言全绿**。排障与用户侧手工绕过见 `docs/winscp-realpath-fix.md`，发布说明见 `docs/release-v1.0.16.md`。
+
 ## v1.0.15（2026-11-12）
 
 - **新功能：点「SFTP」直接用本机 WinSCP 打开这个会话**（用户诉求：一份 Key/密码不想再手输一遍，要拿 WinSCP 的同步、权限对话框、限速、双窗格干重活）。

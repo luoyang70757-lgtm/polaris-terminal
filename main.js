@@ -2043,10 +2043,24 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     const url = winScp.buildSessionUrl(p);
     // POLARIS_WINSCP_DEBUG=1:让 WinSCP 自己写日志(排障用;该日志含会话信息,共享前先看)
     const debug = /^1|true$/i.test(String(process.env.POLARIS_WINSCP_DEBUG || ''));
+    // SFTPRealPath=off:WinSCP 开会话时会 REALPATH(".") 探测家目录,chroot 型服务器
+    // (JumpServer KoKo / H3C 网关 / internal-sftp chroot)对该请求直接回 SSH_FX_FAILURE
+    // → WinSCP 弹「不能获得 '.' 的真实路径。错误码 4」,会话根本进不去。
+    // 关掉这个探测即可(WinSCP 改用本地 canonify),详见 lib/winscp-open.js 文件头。
+    // 想保留 WinSCP 默认行为:设 POLARIS_WINSCP_REALPATH=on。
+    const rawSettings = {};
+    if (winScp.realPathCompat(process.env)) {
+      Object.assign(rawSettings, winScp.RAW_SETTINGS_DEFAULTS);
+    }
+    // 知道落在哪个目录(标签的 SFTP 路径 / 跟踪到的 cd 目录)就把起始目录也交过去,
+    // 免得 WinSCP 自己猜(猜错会让用户看到 "目录不存在" 或落到错误位置)。
+    const remotePath = winScp.normalizeRemotePath(p.remotePath);
+    if (remotePath) rawSettings.RemoteDirectory = remotePath;
     const args = winScp.buildArgs({
       url,
       privateKey: p.privateKey,
       passphrase: p.passphrase,
+      rawSettings,
       debug,
       logPath: debug ? path.join(process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal'), 'logs', 'winscp.log') : '',
     });
@@ -2057,7 +2071,7 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       try { appLog.log('main', `[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { appLog.log('main', `[WINSCP] 已拉起: ${show}`); } catch { /* ignore */ }
+    try { appLog.log('main', `[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}`); } catch { /* ignore */ }
     return { ok: true, command: show };
   } catch (err) {
     return { ok: false, error: err.message };
