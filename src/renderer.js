@@ -520,6 +520,7 @@ const els = {
   btnSftpDownload: $('btn-sftp-download'),
   btnSftpDelete: $('btn-sftp-delete'),
   btnSftpSelectAll: $('btn-sftp-select-all'),
+  btnSftpWinScp: $('btn-sftp-winscp'),
   btnSftpEdit: $('btn-sftp-edit'),
   sftpProgress: $('sftp-progress'),
   sftpProgressLabel: $('sftp-progress-label'),
@@ -541,6 +542,7 @@ const els = {
   setCmdRecord: $('set-cmdrecord'),
   setSessionLog: $('set-sessionlog'),
   setAutoFillPw: $('set-autofillpw'),
+  setWinScpMode: $('set-winscp-mode'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
   // 智能命令推荐
@@ -667,6 +669,8 @@ const state = {
     settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
     autoFillPassword: true,     // 自动填充密码:终端出现 Password: 提示时自动发会话保存的密码(默认开)
+    // 打开 SFTP 时的行为:replace=直接拉本机 WinSCP(没装则回落内置面板) | button=内置面板+WinSCP 按钮 | panel=只用内置面板
+    winscpMode: 'replace',
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
@@ -675,6 +679,7 @@ const state = {
     debugPanelPos: null,        // 调试日志面板位置 {x, y}(null=默认右下角)
     bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
+  winScp: { installed: false, path: '' }, // 本机 WinSCP 探测结果(winScp:detect IPC;没装则不显示入口)
   jmsServers: [],   // JumpServer 服务器列表: [{ id, name, baseUrl, sshHost, sshPort, account, password, token, user, assets, seq }]
   jmsActiveId: null, // 当前正在管理/登录的服务器 id
   jmsSeq: 0,         // 合成会话 id 全局计数器
@@ -818,6 +823,8 @@ function openSettingsModal() {
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
+  if (els.setWinScpMode) els.setWinScpMode.value = winScpMode();
+  refreshWinScpButton(); // SFTP 面板里的 WinSCP 按钮只在"装了 + 模式=button"时出现
   els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
   renderAnsiEditor();
   refreshLockNote();
@@ -3425,6 +3432,10 @@ function showTabMenu(e, sessionId) {
   // 已断开的标签:提供"重新连接"
   if (t.status !== 'connected' && t.status !== 'connecting') {
     items.push({ label: '🔃 重新连接', action: () => reconnectTab(sessionId) });
+  }
+  // 用本机 WinSCP 打开这个会话的 SFTP(只在装了 WinSCP + 非 telnet 时出现)
+  if (state.winScp.installed && t.session && (t.session.protocol || 'ssh') !== 'telnet') {
+    items.push({ label: '🪟 用 WinSCP 打开 SFTP', action: () => openSessionInWinScp(sessionId) });
   }
   items.push(
     { separator: true },
@@ -10092,6 +10103,64 @@ function closeSftpPanel() {
   syncPanelButtons();
 }
 
+// =====================================================================
+// 用本机 WinSCP 打开会话(SFTP)
+// —— 见 docs/decision-winscp-integration.md:WinSCP 是 Windows-only 原生程序(GPLv3)
+//    无库 API,所以不"集成引擎",只把"主机/账号/密码"拼成一条 SFTP 会话 URL 外链拉起。
+// 前提:本机装了 WinSCP(state.winScp.installed);没装时所有入口都不出现/自动回落内置面板。
+// 安全:密码只交给主进程拼 argv / 会话 URL,不落盘、不写日志(日志里一律 ***)。
+// =====================================================================
+function winScpMode() { return state.settings.winscpMode || 'replace'; }
+
+// 面板里的「🪟 WinSCP」按钮:只在"装了 WinSCP + 模式选了带按钮的那个"时出现
+function refreshWinScpButton() {
+  if (!els.btnSftpWinScp) return;
+  els.btnSftpWinScp.classList.toggle('hidden', !(state.winScp.installed && winScpMode() === 'button'));
+}
+
+async function detectWinScp() {
+  const r = await window.api.winScpDetect().catch(() => null);
+  state.winScp = { installed: !!(r && r.ok && r.installed), path: (r && r.path) || '' };
+  refreshWinScpButton();
+  return state.winScp;
+}
+
+// 取某个标签页会话的连接参数(给 WinSCP 用)。注意堡垒机会话:
+//   host/port 是堡垒机网关(KoKo 2222)、username 是复合用户名(jms@ssh@账号@资产IP),
+//   这正是 Polaris 自己连接时用的口径,原样交给 WinSCP 就行。
+//   session.displayHost 只是"展示用"的真实资产地址,不能用来连。
+function winScpPayloadFor(sessionId) {
+  const t = state.tabs.get(sessionId);
+  const s = t && t.session;
+  if (!s) return { error: '找不到该会话的连接信息(先连上这台主机再试)' };
+  if ((s.protocol || 'ssh') === 'telnet') return { error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
+  return {
+    protocol: 'ssh',
+    host: s.host || '',
+    port: s.port || 22,
+    username: s.username || '',
+    password: s.password || '',
+    privateKey: s.private_key || '',   // Polaris 存的是私钥路径,WinSCP 可直接用
+    passphrase: s.passphrase || '',
+    name: s.name || '',
+  };
+}
+
+async function openSessionInWinScp(sessionId) {
+  const sid = sessionId || state.sftp.sessionId || state.activeSessionId;
+  const payload = winScpPayloadFor(sid);
+  if (payload.error) { setStatus(payload.error, 'var(--orange)'); return false; }
+  if (!state.winScp.installed) {
+    setStatus('本机没装 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)', 'var(--orange)');
+    return false;
+  }
+  const r = await window.api.winScpOpen(payload).catch((e) => ({ ok: false, error: e && e.message }));
+  if (!r || !r.ok) { setStatus('WinSCP: ' + ((r && r.error) || '打开失败'), 'var(--orange)'); return false; }
+  const t = state.tabs.get(sid);
+  setStatus(`已用 WinSCP 打开「${(t && t.title) || payload.host}」`, 'var(--green)');
+  return true;
+}
+
 // ---- 面板开关:只开关"当前激活标签"自己的 SFTP(各标签独立) ----
 function toggleSftpPanel() {
   const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
@@ -10114,36 +10183,51 @@ function toggleSftpPanel() {
     els.sftpPanel.classList.add('hidden');
     els.dividerH.classList.add('hidden');
     setSftpConnLabel(null);
+  } else if (winScpMode() === 'replace' && state.winScp.installed) {
+    // 设置里选了"打开 SFTP 时用 WinSCP"→ 拉起 WinSCP,不显示内置面板。
+    // 拉起失败(路径变了/被杀软拦)自动回落内置面板,不让功能"凭空消失"。
+    openSessionInWinScp(active.sessionId).then((ok) => {
+      if (!ok) { openInlineSftp(active); refitAll(); syncPanelButtons(); }
+    });
+    refitAll();
+    syncPanelButtons();
+    return;
   } else {
-    // 打开:记录到当前标签,浏览它的目录
-    active.sftpOpen = true;
-    state.sftp.visible = true;
-    state.sftp.sessionId = active.sessionId;
-    // 优先定位到终端当前目录(跟踪 cd 的结果);终端目录未知时,探测默认家目录
-    // (规则:当前用户家目录优先,无家目录则 /tmp),再退回上次浏览/默认
-    const sid = active.sessionId;
-    state.sftp.selected = null;
-    els.sftpPanel.classList.remove('hidden');
-    els.dividerH.classList.remove('hidden');
-    setSftpConnLabel(sid);
-    if (active.shellCwd) {
-      state.sftp.path = active.shellCwd;
-      loadSftpList();
-    } else if (active.sftpPath && active.sftpPath !== '.') {
-      state.sftp.path = active.sftpPath;
-      loadSftpList();
-    } else {
-      // 探测默认家目录(主进程:realpath '.' 非根 → 用它;否则找 /root、/home/<user>,都没有 → /tmp)
-      state.sftp.path = '.';
-      window.api.sftpHome(sid).then((r) => {
-        if (state.sftp.sessionId !== sid || !state.sftp.visible) return; // 已切换/关闭
-        if (r && r.ok && r.home) state.sftp.path = r.home;
-        loadSftpList();
-      }).catch(() => loadSftpList());
-    }
+    openInlineSftp(active);
   }
   refitAll(); // 终端区域高度变了,重新适配
   syncPanelButtons();
+}
+
+// 打开内置 SFTP 面板(记录到当前标签,浏览它的目录)
+function openInlineSftp(active) {
+  if (!active) return;
+  // 打开:记录到当前标签,浏览它的目录
+  active.sftpOpen = true;
+  state.sftp.visible = true;
+  state.sftp.sessionId = active.sessionId;
+  // 优先定位到终端当前目录(跟踪 cd 的结果);终端目录未知时,探测默认家目录
+  // (规则:当前用户家目录优先,无家目录则 /tmp),再退回上次浏览/默认
+  const sid = active.sessionId;
+  state.sftp.selected = null;
+  els.sftpPanel.classList.remove('hidden');
+  els.dividerH.classList.remove('hidden');
+  setSftpConnLabel(sid);
+  if (active.shellCwd) {
+    state.sftp.path = active.shellCwd;
+    loadSftpList();
+  } else if (active.sftpPath && active.sftpPath !== '.') {
+    state.sftp.path = active.sftpPath;
+    loadSftpList();
+  } else {
+    // 探测默认家目录(主进程:realpath '.' 非根 → 用它;否则找 /root、/home/<user>,都没有 → /tmp)
+    state.sftp.path = '.';
+    window.api.sftpHome(sid).then((r) => {
+      if (state.sftp.sessionId !== sid || !state.sftp.visible) return; // 已切换/关闭
+      if (r && r.ok && r.home) state.sftp.path = r.home;
+      loadSftpList();
+    }).catch(() => loadSftpList());
+  }
 }
 
 // ---- SFTP 连接切换下拉:列出所有已连接的 SSH 会话,点选 = 切到该标签并打开它的 SFTP ----
@@ -11332,6 +11416,16 @@ els.setAutoFillPw.addEventListener('change', () => {
   state.settings.autoFillPassword = els.setAutoFillPw.checked;
   saveSettings();
 });
+// 打开 SFTP 时用内置面板还是拉 WinSCP(面板里 WinSCP 按钮的显隐也随之变)
+els.setWinScpMode.addEventListener('change', () => {
+  state.settings.winscpMode = els.setWinScpMode.value || 'replace';
+  saveSettings();
+  refreshWinScpButton();
+  setStatus(winScpMode() === 'replace'
+    ? (state.winScp.installed ? '以后打开 SFTP 直接用 WinSCP' : '以后打开 SFTP 用内置面板(本机没装 WinSCP)')
+    : (winScpMode() === 'button' ? '打开 SFTP 用内置面板(面板里加了 WinSCP 按钮)' : '打开 SFTP 只用内置面板'),
+  'var(--text-dim)');
+});
 els.setLockIdle.addEventListener('change', () => {
   state.settings.lockIdleMin = Math.max(0, parseInt(els.setLockIdle.value, 10) || 0);
   saveSettings();
@@ -11716,6 +11810,10 @@ function syncKbToggle() {
   els.kbAiToggle.checked = state.settings.kbEnabled !== false;
 }
 els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
+// 面板里的「🪟 WinSCP」按钮:用当前浏览的那个会话的凭据拉起 WinSCP
+els.btnSftpWinScp.addEventListener('click', () => openSessionInWinScp(state.sftp.sessionId || state.activeSessionId));
+// 启动时探测一次本机有没有装 WinSCP(决定所有入口显不显示)
+detectWinScp();
 // SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
 els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
 document.addEventListener('click', (e) => {

@@ -9,7 +9,7 @@
 - 技术栈：Electron 43 + xterm.js 5.3 + ssh2 + SQLite（node:sqlite 内置）
 - 数据安全：会话数据存本地 SQLite（整库 AES-256-GCM 加密），密码走系统 safeStorage 加密（`enc:v1:` 前缀）
 - 架构：主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~11000 行）+ contextBridge 安全桥（`preload.js`，无 nodeIntegration）；
-  主进程已拆模块（依赖惰性注入，命脉区块 SFTP/SSH/堡垒机仍在 main.js）：`lib/connect-opts.js`、`lib/session-groups.js`、`lib/session-ipc.js`
+  主进程已拆模块（依赖惰性注入，命脉区块 SFTP/SSH/堡垒机仍在 main.js）：`lib/connect-opts.js`、`lib/session-groups.js`、`lib/session-ipc.js`、`lib/winscp-open.js`
 
 ## 核心文件
 
@@ -72,6 +72,13 @@ npm run dist -- --win
 
 11. **终端链接（v1.0.9）**：`registerTermLinks(term)` 挂在每个会话终端上（句柄存 `tab.linkProvider`，随 tab 释放），识别器只认 `http/https`；**必须带修饰键**（mac ⌘ / Win·Linux Ctrl）才真的打开，裸点击保留给拖选；打开统一走 `window.api.openExternal` → 主进程 `app:openExternal`（协议白名单 + 测试钩子）。改这块注意三点：① range 用 `line.getCell(x).getWidth()` 算单元格列，别用字符串下标（中文/emoji 占两列会点偏）；② 折行行要按 `line.isWrapped` 往上找到块首并拼接，否则长 URL 只识别前半截；③ 不要把 `tab` 引用提前到它 `const tab = {...}` 之前（TDZ），provider 句柄先放局部变量再挂 tab。
 
+12. **WinSCP 外链（v1.0.15，Windows-only）**：**不集成引擎**（GPLv3 + 17 个 C++Builder 工程 + VCL 无公共 C ABI，见 `docs/decision-winscp-integration.md`），只在用户机器**已装** WinSCP 时把会话交出去。约定：
+   - 逻辑分两层：`lib/winscp-open.js` 只做**纯函数**（探测/拼 URL/拼参数/脱敏，可注入 `platform/env/exists` 便于单测），`main.js` 才 `spawn`（`detached:true` + `unref()`）。
+   - 入口显隐**只看探测结果**（`state.winScp.installed`）；`replace` 档拉起失败/未装必须**回落内置面板**（`openInlineSftp`），不允许“功能消失”。
+   - 密码**只在 argv**（`sftp://user:pw@host:port/` + `-passphrase=`），所以**任何日志/状态一律脱敏**（`redactUrl`/`describeCommand` → `***`），不落盘、不写临时 ini、不经 shell。
+   - user/password 必须 `encodeURIComponent`；堡垒机复合用户名**整体编码、不拆**；`displayHost` 只展示不连接。
+   - 主机指纹不通用：WinSCP 用 PuTTY 风格 host key，别试图拿 `known_hosts` 去喂它。
+
 ## 安全约定
 
 - 危险命令（rm -rf、dd、mkfs 等）在生产环境标记的主机执行前弹确认框
@@ -90,7 +97,8 @@ npm run dist -- --win
 
 > **2026-11-03 版本号重置**：GitHub 历史 Releases 与 `v*` 标签已按用户要求清理，版本号从 **v1.0.0** 重新开始；下方 v1.0.x 条目仅作为开发历史保留。
 
-**当前版本 v1.0.14**（2026-11-11）：**修「AI 对话区文字不能复制」+「Ctrl+C 不生效」**——两者同一个根因：全局 keydown 兜底把按键 `preventDefault()` 后转发给终端，连 ⌘/Ctrl+C 的原生复制一起吞；而转发本身也坏（合成 `KeyboardEvent` 没带 `keyCode`，线上日志 `KEY 'c' ^ … kc=0`，xterm 拿不到键码直接丢弃）。修法：① `#ai-chat` 加 `tabindex="-1"`，点进对话区焦点就归它，按键不再走终端兜底；② 有"终端以外"选中文字时 ⌘C 一律放行原生复制（`hasSelectionOutsideTerm()`，BODY 焦点也算）；③ 合成事件用 `Object.defineProperty` 补 `keyCode`/`which` → Ctrl+C `\u0003`/Ctrl+D `\u0004`/Tab/方向键/字母真正进终端；④ 合成事件打 `__polarisSynthetic` 标记，handler 开头 return（防递归转发）；⑤ 对话区 ⌘A = 全选对话内容（`selectAllInRegion`）；⑥ 每条消息「📋」+ 每个代码块「📋 复制命令」，AI 面板补 `user-select: text`；⑦ 对话区里组合键不再转发（避免无选中时 Ctrl+C 静默给远端发 `^C` 打断命令）。回归：新增 `verify-ai-copy.js` 11/11（修复前 1/9）、`verify-key-forward.js` 7/7（修复前 3/7）；`--pure` 12/12 脚本 103 断言。
+**当前版本 v1.0.15**（2026-11-12）：**新功能「点 SFTP 直接用本机 WinSCP 打开这个会话」**（用户要“别再手输一遍密码，用 WinSCP 的同步/权限对话框/限速/双窗格干重活”）。① 三档设置（设置 → SFTP）：`replace`（默认，点 SFTP 直接拉起 WinSCP，**没装/拉起失败自动回落内置面板**）/ `button`（照开内置面板 + 工具栏「🪟 WinSCP」按钮）/ `panel`（WinSCP 入口完全不出现）；入口显隐**只认 `state.winScp.installed`**，不出现“按钮在、点了必报错”。② 参数：`WinSCP.exe sftp://账号:密码@主机:端口/ [-privatekey=<路径>] [-passphrase=<口令>]`；user/password 走 `encodeURIComponent`（不编码会被 WinSCP 解析歪 → “密码错误”）；**堡垒机复合用户名 `jms@ssh@账号@资产IP` 原样整体编码**，`displayHost` 绝不用于连接；主机指纹交 WinSCP 自己问（PuTTY 风格与 `known_hosts` 不通用）。③ **密码进 argv 的取舍**（WinSCP 无库 API、读不到 `safeStorage`）：配套硬约束是**不落盘 + 不写日志**——`redactUrl`/`describeCommand` 把密码与 `-passphrase=` 均压成 `***`，`termDebug`/状态栏/`logs/app-*.log` 只有 `sftp://user:***@host:22/`；风险（同用户/本机管理员可见 argv）已写进文档，不想要就切 `button`/`panel`。④ 代码：新增 `lib/winscp-open.js`（纯函数：候选路径/`%VAR%` 展开/`detectExe({platform,env,exists})`/`buildSessionUrl`/`buildArgs`/`redactUrl`/`describeCommand`，可注入便于单测）+ `main.js` `winScp:detect|open`（`spawn` 时 `detached:true`+`unref()`，Polaris 退出后 WinSCP 继续用）+ `preload.js` 两桥接 + `#set-winscp-mode` + `#btn-sftp-winscp` + 标签右键菜单项；`toggleSftpPanel` 内联逻辑抽成 `openInlineSftp()` 供回落复用；`POLARIS_WINSCP_PATH` 指定自定义安装路径、`POLARIS_WINSCP_DEBUG=1` 让 WinSCP 写自己的 `/log`。⑤ **非 Windows 无感**：`detectExe` 对 `darwin/linux` 返 `null`，macOS/Linux 看不到任何 WinSCP 入口。回归：新增 `verify-winscp-args.js` 25/25（纯 Node）+ `verify-winscp-open.js` 27/27（真启动 Electron + shell 桩，连跑两次稳定）；`--pure` **13/13 脚本 128 断言**；key-forward 7/7、ai-copy 11/11、sftp-panel 5/5、sftp-download-many 16/16 无退化。详见 `docs/release-v1.0.15.md` + `docs/decision-winscp-integration.md` 文末「已实现」。
+上一版本 v1.0.14（2026-11-11，已发版）：**修「AI 对话区文字不能复制」+「Ctrl+C 不生效」**——两者同一个根因：全局 keydown 兜底把按键 `preventDefault()` 后转发给终端，连 ⌘/Ctrl+C 的原生复制一起吞；而转发本身也坏（合成 `KeyboardEvent` 没带 `keyCode`，线上日志 `KEY 'c' ^ … kc=0`，xterm 拿不到键码直接丢弃）。修法：① `#ai-chat` 加 `tabindex="-1"`，点进对话区焦点就归它，按键不再走终端兜底；② 有"终端以外"选中文字时 ⌘C 一律放行原生复制（`hasSelectionOutsideTerm()`，BODY 焦点也算）；③ 合成事件用 `Object.defineProperty` 补 `keyCode`/`which` → Ctrl+C `\u0003`/Ctrl+D `\u0004`/Tab/方向键/字母真正进终端；④ 合成事件打 `__polarisSynthetic` 标记，handler 开头 return（防递归转发）；⑤ 对话区 ⌘A = 全选对话内容（`selectAllInRegion`）；⑥ 每条消息「📋」+ 每个代码块「📋 复制命令」，AI 面板补 `user-select: text`；⑦ 对话区里组合键不再转发（避免无选中时 Ctrl+C 静默给远端发 `^C` 打断命令）。回归：新增 `verify-ai-copy.js` 11/11（修复前 1/9）、`verify-key-forward.js` 7/7（修复前 3/7）；`--pure` 12/12 脚本 103 断言。
 上一版本 v1.0.13（2026-11-11，已发版）：**修「文件夹下载 / 多文件下载失败」**——这条链路 5 个真实成因全部修掉：① `lib/ssh-client.js` `walkRemote` 以前一个子目录 `readdir` 报错就整批抛错（真实服务器上 root 拥有的子目录很常见）→ 现在子目录失败只记一条失败项（界面出「✗ 失败」行），其它文件照常下完；② **失败项串行重试**——批量并发（`SFTP_CONCURRENCY=2`）在 H3C/KoKo 类"SFTP 串行处理"设备上会让部分文件失败，`startDownloadJob` 的 `many` 分支现在把失败文件逐个串行再试一次（并重开 SFTP 通道），成功即并入结果（`retried:true` + 日志「下载重试成功」）；③ 符号链接到目录以前被当文件下载（`readdir` 给的是链接自身 mode `0o12xxxx`）→ 现在 `stat`（跟随链接）判真实类型、递归 + `visited` 防环；④ `sftp:downloadMany` 对 `isDir:false` 的条目 stat 兜底（目录仍按目录递归）；⑤ 批量进度 `total` 被回调参数遮蔽（总进度恒 100%）已修，`total` = 全批总字节。另外：本地写失败按错误码补人话提示（Windows 260 字符路径过长/磁盘满/EISDIR/占用只读），递归时先建本地子目录（空文件夹不再消失）。回归：新增 `verify-sftp-download-many.js` 16/16（修复前 5/11）+ `verify-sftp-download-fail` 7/7、`verify-sftp-cancel` 9/9、`verify-sftp-stress` 7/7、`verify-batch-sftp` 5/5、`--pure` 12/12 脚本 103 断言。
 
 上一版本 v1.0.12（2026-11-11，已发版）：**DeepSeek 配置改为官方 OpenAI 兼容端点**——默认模板/新增厂商默认值用 `https://api.deepseek.com/v1`（自动拼 `/chat/completions`），另留 `https://api.deepseek.com/anthropic`（Anthropic 兼容）备选；**端点与「接口格式」必须配套**（openai↔`/v1`、anthropic↔`/anthropic`），混用即 401，`migrateDeepSeekUrl` 已按各厂商 `format` 补对应地址。回归 `verify-ai-config.js` 11/11。

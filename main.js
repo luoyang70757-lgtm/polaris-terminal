@@ -12,6 +12,9 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, shell, session, net: electron
 const path = require('path');
 const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
+const os = require('os'); // 数据目录回退路径(POLARIS_LOCK_DIR 未设时)
+const { spawn } = require('child_process'); // 拉起外部程序(用 WinSCP 打开 SFTP 会话)
+const winScp = require('./lib/winscp-open'); // WinSCP 外链(纯函数:探测安装位置/拼会话 URL 与参数)
 
 // ---------- 便携版数据目录(必须在任何模块读写数据目录之前确定) ----------
 // 便携版(PORTABLE_EXECUTABLE_DIR 由 electron-builder portable 运行时注入,= exe 所在目录):
@@ -2010,6 +2013,56 @@ function execProbePath(conn, cmd, timeoutMs) {
     } catch { finish(null); }
   });
 }
+// =====================================================================
+// WinSCP 外链:把当前会话交给本机安装的 WinSCP 打开(Windows 可选功能)
+//
+// 为什么是"外链"而不是集成:WinSCP 是 Windows-only 原生程序(GPLv3)、没有库 API,
+// 决策与依据见 docs/decision-winscp-integration.md。这里只做两件事:
+//   1. 探测本机 WinSCP(常见安装目录 / POLARIS_WINSCP_PATH;非 Windows 直接"没装")
+//   2. 生成 SFTP 会话 URL + 参数,detached 拉起 winscp.exe
+// 安全约定:密码只进 argv / 会话 URL,**绝不写日志**(日志里一律 redactUrl 抹成 ***)。
+// 凭据来自渲染层(渲染层本来就有会话明文密码);这里不再落盘、不写临时文件。
+// =====================================================================
+ipcMain.handle('winScp:detect', () => {
+  try {
+    const exe = winScp.detectExe({ platform: process.platform, env: process.env });
+    return { ok: true, installed: !!exe, path: exe || '', platform: process.platform };
+  } catch (err) {
+    return { ok: false, installed: false, error: err.message };
+  }
+});
+
+ipcMain.handle('winScp:open', (_e, payload) => {
+  const p = payload || {};
+  try {
+    if ((p.protocol || 'ssh') === 'telnet') return { ok: false, error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
+    const exe = winScp.detectExe({ platform: process.platform, env: process.env });
+    if (!exe) {
+      return { ok: false, error: '未检测到本机安装的 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)' };
+    }
+    const url = winScp.buildSessionUrl(p);
+    // POLARIS_WINSCP_DEBUG=1:让 WinSCP 自己写日志(排障用;该日志含会话信息,共享前先看)
+    const debug = /^1|true$/i.test(String(process.env.POLARIS_WINSCP_DEBUG || ''));
+    const args = winScp.buildArgs({
+      url,
+      privateKey: p.privateKey,
+      passphrase: p.passphrase,
+      debug,
+      logPath: debug ? path.join(process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal'), 'logs', 'winscp.log') : '',
+    });
+    const show = winScp.describeCommand(exe, args);
+    const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    // detached 子进程必须自己能被回收:父进程退出后 WinSCP 继续用(用户要的正是这个)
+    child.on('error', (err) => {
+      try { appLog.log('main', `[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
+    });
+    child.unref();
+    try { appLog.log('main', `[WINSCP] 已拉起: ${show}`); } catch { /* ignore */ }
+    return { ok: true, command: show };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 // 探测 SFTP 默认家目录:
 //   规则(用户要求):优先当前用户家目录;家目录在 SFTP 里不可访问(堡垒机 SFTP 被 chroot)

@@ -133,6 +133,7 @@
               <button id="btn-sftp-delete" class="btn-mini" title="删除选中文件/目录(可多选)">删除</button>
               <button id="btn-sftp-edit" class="btn-mini" title="编辑选中的远程文本文件(双击文件也行,保存即上传)">✏ 编辑</button>
               <button id="btn-sftp-select-all" class="btn-mini" title="全选当前目录全部文件/目录(再点一次取消全选)">☑ 全选</button>
+              <button id="btn-sftp-winscp" class="btn-mini hidden" title="用本机安装的 WinSCP 打开这个会话的 SFTP(主机/账号/密码自动带过去)">🪟 WinSCP</button>
             </div>
             <!-- 第二行:完整路径(连接主机信息下方) -->
             <div class="sftp-toolbar-row sftp-path-row">
@@ -668,6 +669,14 @@
       </label>
       <label class="field field-check"><span>自动填充密码(终端出现 Password:/password: 提示时,自动发送该会话保存的密码)</span>
         <input type="checkbox" id="set-autofillpw" />
+      </label>
+      <div class="settings-sec">SFTP</div>
+      <label class="field"><span>打开 SFTP 时</span>
+        <select id="set-winscp-mode">
+          <option value="replace">用本机 WinSCP 打开(没装 WinSCP 时自动用内置面板)</option>
+          <option value="button">用内置面板(面板里有「🪟 WinSCP」按钮)</option>
+          <option value="panel">只用内置面板(不显示 WinSCP 按钮)</option>
+        </select>
       </label>
       <div class="settings-sec">安全</div>
       <label class="field"><span>闲置自动锁定(分钟,0=关闭)</span>

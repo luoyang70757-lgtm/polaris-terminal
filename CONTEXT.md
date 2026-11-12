@@ -206,3 +206,17 @@ node verify-<功能>.js
 **已解决（2026-11-06，v1.0.8）**：**自动锁定后无法输入密码**（用户反馈，已用 `verify-autolock-input.js` 复现并修复）——根因是锁定覆盖层没守住焦点：① 点卡片空白处 → 焦点掉到 BODY → 全局 keydown 的"BODY 兜底转发给终端"把密码字符发到 SSH 会话；② 弹窗开着时锁定 → 弹窗焦点锁（`focusin`/`focusout`）把焦点抢回弹窗输入框；③ 命令补全面板 z-index 1000 浮在锁定层（300）之上。修法：锁定期全局 keydown 一律路由到 `#lo-pw`（Enter 解锁/Backspace 删除，不 preventDefault 正常字符）、覆盖层 mousedown 抓回焦点、`lo-pw` blur 抓回、弹窗焦点锁锁定时让位、`refocusTerminal`/`sftpRefocusTerminal` 锁定时不抢、窗口 focus 回密码框、`.lock-overlay` z-index → 1200
 
 **已解决（2026-09-15，v1.0.44）**：用户报「SFTP 点击下载后没有任何反应」。现场取证（直接查运行中的 app）：进程仍持有 4 个残留写 fd、`sftp-partials.json` 有 0B/2106B 两条失败记录、本地落下 3 个 0 字节文件、app 日志**无任何下载记录**、面板截图**无任何传输行**。根因是"失败文件零进度 → 不建行 + 不写日志"，叠加"读错不销毁写流 → fd 泄漏"。修法与回归见技术决策 30 与 `verify-sftp-download-fail.js`(7/7)。
+
+**已实现（2026-11-12，v1.0.15）**：**「点 SFTP 直接用本机 WinSCP 打开这个会话」**（Windows-only 外链，不集成引擎）——
+上一轮评估已否决"把 WinSCP 当引擎"（GPLv3 + 17 个 C++Builder `.cbproj` + VCL 无公共 C ABI，见 `docs/decision-winscp-integration.md`），
+本轮只做外链且**升级为默认行为**（用户要求自动登录，据此推翻了原"密码不进 URL"的口径）。要点：
+① 三档设置 `#set-winscp-mode`：`replace`（默认，点 SFTP 拉起 WinSCP，未装/失败回落内置面板）/ `button`（内置面板 + 工具栏按钮）/ `panel`（入口隐身）；
+入口显隐只认 `state.winScp.installed`。② 参数 `sftp://账号:密码@主机:端口/ [-privatekey=<路径>] [-passphrase=<口令>]`，
+user/password 一律 `encodeURIComponent`（否则 WinSCP 解析歪成"密码错误"）；堡垒机复合用户名整体编码、`displayHost` 只展示不连接；
+主机指纹交 WinSCP 自己问（PuTTY 风格与 `known_hosts` 不通用）。③ 密码进 argv 的配套硬约束：**不落盘 + 不写日志**
+（`redactUrl`/`describeCommand` 把密码与 `-passphrase=` 压成 `***`，`termDebug`/状态栏/`app-*.log` 只见 `sftp://user:***@host:22/`），
+风险边界（同用户/本机管理员可见 argv）写进文档，不要就切 `button`/`panel`。④ 代码：新增 `lib/winscp-open.js`（纯函数，可注入
+`platform/env/exists` 便于单测）+ `main.js` `winScp:detect|open`（`spawn` `detached:true` + `unref()`）+ `preload.js` 两桥接 +
+`toggleSftpPanel` 抽出 `openInlineSftp()` 供回落；`POLARIS_WINSCP_PATH` / `POLARIS_WINSCP_DEBUG=1` 供自定义路径与排障。
+⑤ 非 Windows 无感：`detectExe` 对 `darwin/linux` 返 `null`。回归新增 `verify-winscp-args.js` 25/25（纯 Node）、
+`verify-winscp-open.js` 27/27（Electron + shell 桩）、`--pure` 13/13 脚本 128 断言。

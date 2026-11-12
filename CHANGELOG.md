@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.0.15（2026-11-12）
+
+- **新功能：点「SFTP」直接用本机 WinSCP 打开这个会话**（用户诉求：一份 Key/密码不想再手输一遍，要拿 WinSCP 的同步、权限对话框、限速、双窗格干重活）。
+  - **三档设置（设置 → SFTP）**：`replace`（默认）点 SFTP 直接拉起 WinSCP，**没装/拉起失败自动回落内置面板**；`button` 照开内置面板但工具栏留「🪟 WinSCP」按钮；`panel` 只用内置面板、WinSCP 入口完全不出现。入口显隐**只认探测结果**，不会出现"按钮在、点了必报错"。
+  - **带什么过去**：`WinSCP.exe sftp://账号:密码@主机:端口/ -privatekey=<路径> -passphrase=<口令>`。用户名/密码 `encodeURIComponent`（`p@ss:w/rd#1` → `p%40ss%3Aw%2Frd%231`，不编码 WinSCP 会解析歪成"密码错误/主机名错误"）；私钥存的是路径直接传、文件不存在就不传；**堡垒机复合用户名 `jms@ssh@账号@资产IP` 原样整体编码**（KoKo 网关要的就是这个形态），`displayHost` 绝不用于连接；主机指纹交给 WinSCP 自己问（PuTTY 风格 host key 与我们的 `known_hosts` 不通用）。
+  - **密码进 argv 的取舍**：WinSCP 无库 API、读不到 Electron `safeStorage`，要"自动登录"只能命令行 URL / 临时 ini / 用户再输一次。选命令行，配套硬约束是**不落盘 + 不写日志**：`redactUrl` 把密码压成 `***`、`describeCommand` 对 URL 参数与 `-passphrase=` 同样脱敏 → `termDebug`/状态栏/`logs/app-*.log` 里只会有 `sftp://user:***@host:22/`（回归脚本断言明文与编码串都不出现）。风险边界（同用户/本机管理员可见 argv）写进文档；不想要就切 `button`/`panel`。
+  - **新增 `lib/winscp-open.js`（纯函数：候选路径 / 环境变量展开 / 探测 / 拼会话 URL / 拼参数 / 脱敏）** + `main.js` `winScp:detect`、`winScp:open`（`spawn` 时 `detached:true` + `unref()`，Polaris 退出后 WinSCP 继续可用）+ `preload.js` 两个桥接 + 设置项 `#set-winscp-mode` + SFTP 工具栏 `#btn-sftp-winscp` + 标签右键菜单「🪟 用 WinSCP 打开 SFTP」。`toggleSftpPanel` 的内联打开逻辑抽成 `openInlineSftp()` 供回落复用。排障可设 `POLARIS_WINSCP_PATH`（自定义安装路径）、`POLARIS_WINSCP_DEBUG=1`（加 WinSCP 自己的 `/log`）。
+  - **非 Windows 无感**：`detectExe` 对 `darwin/linux` 直接返回 `null`，macOS/Linux 看不到任何 WinSCP 入口，内置面板照旧。
+  - 回归：新增 `verify-winscp-args.js`（纯 Node 25/25）+ `verify-winscp-open.js`（真启动 Electron + shell 桩 27/27，连跑两次稳定）；`run-verify --pure` **13/13 脚本 128 断言**；相关 e2e 无退化（key-forward 7/7、ai-copy 11/11、sftp-panel 5/5、sftp-download-many 16/16）。细节见 `docs/release-v1.0.15.md`，决策补充见 `docs/decision-winscp-integration.md` 文末「已实现」。
+
 ## v1.0.14（2026-11-11）
 
 - **修「AI 对话框文字不能复制」+「Ctrl+C 不生效」**（用户反馈，同一根因）：全局按键兜底会把按键 `preventDefault()` 后转发给终端，连 ⌘/Ctrl+C 的原生复制一起吞掉；而"转发"这条路径本身也是坏的——合成 `KeyboardEvent` 没带 `keyCode`（线上日志特征 `KEY 'c' ^ … kc=0`），xterm 拿不到键码直接丢弃，所以 Ctrl+C 既没打断远端命令也没复制界面文字。

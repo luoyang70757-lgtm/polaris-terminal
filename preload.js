@@ -175,6 +175,10 @@ contextBridge.exposeInMainWorld('api', {
   copyText: (text) => clipboard.writeText(text),
   readClipboard: () => clipboard.readText(),
 
+  // ---- 用 WinSCP 打开 SFTP 会话(Windows 可选:本机装了 WinSCP 才可用) ----
+  winScpDetect: () => ipcRenderer.invoke('winScp:detect'),
+  winScpOpen: (payload) => ipcRenderer.invoke('winScp:open', payload),
+
   // ---- 全量日志 ----
   appAbout: () => ipcRenderer.invoke('app:about'),
   // 检查更新(手动):查 GitHub Releases 最新版本;openRelease 只允许打开本项目 Release
