@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.0.21（2026-11-13）
+
+**修「SFTPRealPath=off 之后 WinSCP 还是打不开」——先让 WinSCP 自己说清是哪一步挂的。**
+
+现场：Windows 上 `[WINSCP] 已拉起: …/rawsettings SFTPRealPath=off`，WinSCP 仍弹
+「一般错误（服务器应该提供错误描述）。错误码：4，服务器返回的错误消息：General failure」。
+注意**报错文字变了**（不再是「不能获得'.'的真实路径」），说明 `off` 生效、REALPATH 那步已经不发了，
+失败点换到后面的请求上（按 WinSCP 源码，`GetHomeDirectory()` 之后紧跟 `TryOpenDirectory` → 先发
+`SSH_FXP_LSTAT`，收到 4/FAILURE 直接致命；嵌入式/H3C 类 SFTP 很可能就栽在这）。
+
+问题是我们此前只在 `POLARIS_WINSCP_DEBUG=1` 时才让 WinSCP 写日志 —— 用户拿不到证据，只能猜。这一版改两处：
+
+1. **WinSCP 日志默认就写**：`<数据目录>/logs/winscp-<YYYYMMDD-HHMMSS>.log`，级别 1（请求级：含
+   "Trying to open directory …" / "Listing directory …" / 服务器返回状态，**不含口令与文件内容**）；
+   拉起日志里直接给出 `日志=<路径>`，`调试 → 打开日志目录` 就能取到。
+   `POLARIS_WINSCP_DEBUG=1` 时级别升到 `*`（全协议包，含敏感内容，排障后请删）。
+2. **逃生阀 `POLARIS_WINSCP_RAWSETTINGS`**：形如 `A=B;C=D`，叠加在默认 rawsettings 之上（同名覆盖），
+   用户自己试 WinSCP 开关不必等新版本。例：`set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp`。
+   解析只收 `[A-Za-z]` 开头的名字与非空值，非法条目整条丢弃（绝不把怪货拼进 argv）。
+
+看不到错误码 4 到底出在哪一步之前，不做"猜着改"的开关；排查表（REALPATH / LSTAT / OPEN 各自的判定与绕过）、
+与「内置面板交叉验证」的判据写在 `docs/winscp-realpath-fix.md` 第六节。
+
+回归：`verify-winscp-args.js` 32→**34**（日志参数默认下发 / debug 换 `*` / 空路径整组不传 / `parseRawSettings` 四类边界）、
+`verify-winscp-open.js` 37→**39**（argv 里确有 `/log=<数据目录>/logs/winscp-<时间戳>.log` + `/loglevel=1`、日志目录提前建好）。
+
 ## v1.0.20（2026-11-13）
 
 ### 发布形态变更：Windows 只发便携版

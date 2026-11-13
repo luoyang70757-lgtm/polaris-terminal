@@ -124,9 +124,12 @@ t('私钥文件不存在 → 不传 -privatekey(让 WinSCP 弹自己的登录框
 t('空口令不传 -passphrase=', () => {
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', passphrase: '   ' }), ['sftp://u:p@h/']);
 });
-t('调试模式才加 /log= 与 /loglevel=', () => {
-  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=1']);
-  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/']);
+t('给了 logPath 就写日志(默认级别 1);debug 时级别换成 *', () => {
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=1']);
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=*']);
+  // 没给路径(比如日志目录建不出来)就整组不传,不能让 WinSCP 收到空的 /log=
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: '' }), ['sftp://u:p@h/']);
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: '   ' }), ['sftp://u:p@h/']);
 });
 t('realPathCompat:默认开(与关 WinSCP 默认行为),on/auto 时不动)', () => {
   assert.strictEqual(w.realPathCompat({}), true);
@@ -153,7 +156,7 @@ t('rawsettings:带空格/中文的目录整段传(不拆参)', () => {
 });
 t('rawsettings 与私钥/口令/日志共存顺序固定', () => {
   const a = w.buildArgs({ url: 'sftp://u@h/', rawSettings: { SFTPRealPath: 'off' }, privateKey: 'C:\\k\\id_rsa', passphrase: 'pp', debug: true, logPath: 'C:\\t\\w.log' });
-  assert.deepStrictEqual(a, ['sftp://u@h/', '/rawsettings', 'SFTPRealPath=off', '-privatekey=C:\\k\\id_rsa', '-passphrase=pp', '/log=C:\\t\\w.log', '/loglevel=1']);
+  assert.deepStrictEqual(a, ['sftp://u@h/', '/rawsettings', 'SFTPRealPath=off', '-privatekey=C:\\k\\id_rsa', '-passphrase=pp', '/log=C:\\t\\w.log', '/loglevel=*']);
 });
 t('normalizeRemotePath:只收绝对路径,相对/~ /换行一律丢弃', () => {
   assert.strictEqual(w.normalizeRemotePath('/root/www'), '/root/www');
@@ -164,6 +167,20 @@ t('normalizeRemotePath:只收绝对路径,相对/~ /换行一律丢弃', () => {
   assert.strictEqual(w.normalizeRemotePath('rel/dir'), '');
   assert.strictEqual(w.normalizeRemotePath('/a\nb'), '');
   assert.strictEqual(w.normalizeRemotePath(null), '');
+});
+t('parseRawSettings:分号/换行分隔,只收合法名字与非空值', () => {
+  assert.deepStrictEqual(w.parseRawSettings('SFTPRealPath=off;RemoteDirectory=/tmp'), { SFTPRealPath: 'off', RemoteDirectory: '/tmp' });
+  assert.deepStrictEqual(w.parseRawSettings('  A=1 \n B=2 \r\n C=3  '), { A: '1', B: '2', C: '3' });
+  // 非法/空/注释都丢掉,避免把怪货拼进 argv
+  assert.deepStrictEqual(w.parseRawSettings('1bad=1;=x;Empt=;ok=1;#注释=1'), { ok: '1' });
+  // 值里带 '=' 与空格:只按第一个 '=' 切,后面原样保留
+  assert.deepStrictEqual(w.parseRawSettings('ProxyCommand=exec echo a=b'), { ProxyCommand: 'exec echo a=b' });
+  assert.deepStrictEqual(w.parseRawSettings(''), {});
+  assert.deepStrictEqual(w.parseRawSettings(null), {});
+});
+t('parseRawSettings 的结果能直接被 buildArgs 用(顺序按对象键)', () => {
+  const rs = Object.assign({}, w.RAW_SETTINGS_DEFAULTS, w.parseRawSettings('RemoteDirectory=/tmp'));
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u@h/', rawSettings: rs }), ['sftp://u@h/', '/rawsettings', 'SFTPRealPath=off', 'RemoteDirectory=/tmp']);
 });
 t('describeCommand 脱敏不误伤 rawsettings(目录不是敏感信息)', () => {
   const s = w.describeCommand('C:\\WinSCP.exe', w.buildArgs({ url: w.buildSessionUrl({ host: 'h', username: 'u', password: 'p@ss' }), rawSettings: { SFTPRealPath: 'off', RemoteDirectory: '/root' } }));

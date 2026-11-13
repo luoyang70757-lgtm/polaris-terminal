@@ -250,3 +250,12 @@ WinSCP 连会话都开不起来。Polaris 自己的 SFTP 面板之所以没这�
 `SFTPRealPath=off`、`RemoteDirectory=/srv/my dir` 整段到达、payload 起始目录优先级、相对路径丢弃）。
 手工绕过（不改 Polaris）：WinSCP 站点「高级 → Canonicalize paths on the server = Off」，
 或命令行 `/rawsettings SFTPRealPath=off`，或站点 ini 里加 `SFTPRealPath=off`。
+
+### 追加（v1.0.21）：WinSCP 日志默认开启 + rawsettings 逃生阀
+
+- 现场反馈：`SFTPRealPath=off` 之后 WinSCP 仍报「错误码 4 / General failure」（报错文字已变，说明 REALPATH 那步
+  已经不发了，失败点移到 `TryOpenDirectory` 的 `SSH_FXP_LSTAT` 或更后面）。
+- 因此**日志默认就写**（`<数据目录>/logs/winscp-<时间戳>.log`，`/loglevel=1` 请求级，不含口令/文件内容），
+  拉起日志里给出 `日志=<path>`；`POLARIS_WINSCP_DEBUG=1` → `/loglevel=*`。
+- `POLARIS_WINSCP_RAWSETTINGS=名=值;名=值` 叠加覆盖默认 rawsettings —— 让用户在**现场试开关**，
+  不必为每个 WinSCP 兼容性问题发一次版；解析在纯函数 `parseRawSettings()` 里（非法条目整条丢弃，不拼怪 argv）。

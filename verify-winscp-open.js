@@ -121,8 +121,14 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     // rawsettings 必须带上 SFTPRealPath=off(否则 chroot 服务器报「不能获得 '.' 的真实路径,错误码 4」)
     if (argv1.includes('/rawsettings') && argv1.includes('SFTPRealPath=off')) ok('参数带 /rawsettings SFTPRealPath=off(绕开 REALPATH(".") 探测)');
     else bad('参数带 SFTPRealPath=off', JSON.stringify(argv1));
-    if (argv1.length === 3 && argv1[1] === '/rawsettings') ok('无多余参数(URL + /rawsettings + 1 个设置)');
-    else bad('无多余参数', JSON.stringify(argv1));
+    // 日志默认就开(v1.0.21):URL + /rawsettings + 1 个设置 + /log=<数据目录>/logs/winscp-*.log + /loglevel=1
+    const logArg = argv1.find((a) => a.startsWith('/log=')) || '';
+    const levelArg = argv1.find((a) => a.startsWith('/loglevel=')) || '';
+    if (argv1.length === 5 && argv1[1] === '/rawsettings' && logArg && levelArg === '/loglevel=1') ok('参数只有 URL + /rawsettings + 日志(默认级别 1)');
+    else bad('参数只有 URL + /rawsettings + 日志', JSON.stringify(argv1));
+    if (/[/\\]logs[/\\]winscp-\d{8}-\d{6}\.log$/.test(logArg) && logArg.includes(DIR)) ok('WinSCP 日志落在数据目录 logs/winscp-<时间戳>.log');
+    else bad('WinSCP 日志落在数据目录 logs/', logArg);
+    try { if (fs.existsSync(path.dirname(logArg.slice(5))) || fs.existsSync(path.dirname(logArg.slice(5)))) ok('日志目录已提前建好(WinSCP 才不会自己失败)'); } catch { /* ignore */ }
     // 日志里不能有明文密码
     const logs = await evaluate(c, `(function(){ var t = termDebug.lines.join('\\n'); try { t += '\\n' + (document.getElementById('debug-body') ? document.getElementById('debug-body').textContent : ''); } catch(e){} return t; })()`);
     const diskLog = (() => {

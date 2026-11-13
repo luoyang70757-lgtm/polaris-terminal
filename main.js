@@ -2079,8 +2079,18 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       return { ok: false, error: '未检测到本机安装的 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)' };
     }
     const url = winScp.buildSessionUrl(p);
-    // POLARIS_WINSCP_DEBUG=1:让 WinSCP 自己写日志(排障用;该日志含会话信息,共享前先看)
+    // WinSCP 自己的会话日志:默认一直写(<数据目录>/logs/winscp-*.log),级别 1(请求级)。
+    // 为什么默认开:WinSCP 报「错误码 4 / General failure」这类消息时,只有它自己的日志
+    // 能说明**是哪个请求**被服务器拒了(REALPATH? LSTAT? OPENDIR?),否则只能猜。
+    // POLARIS_WINSCP_DEBUG=1 → /loglevel=* 全量协议包(含口令/文件内容,排障后请删掉)。
     const debug = /^1|true$/i.test(String(process.env.POLARIS_WINSCP_DEBUG || ''));
+    const logDir = path.join(process.env.POLARIS_LOCK_DIR || path.join(os.homedir(), '.jms-terminal'), 'logs');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
+    let logPath = '';
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      logPath = path.join(logDir, `winscp-${stamp}.log`);
+    } catch { /* 日志目录建不了就算了,不能因此不给用户开 WinSCP */ }
     // SFTPRealPath=off:WinSCP 开会话时会 REALPATH(".") 探测家目录,chroot 型服务器
     // (JumpServer KoKo / H3C 网关 / internal-sftp chroot)对该请求直接回 SSH_FX_FAILURE
     // → WinSCP 弹「不能获得 '.' 的真实路径。错误码 4」,会话根本进不去。
@@ -2090,6 +2100,9 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     if (winScp.realPathCompat(process.env)) {
       Object.assign(rawSettings, winScp.RAW_SETTINGS_DEFAULTS);
     }
+    // 逃生阀:用户可自己追加/覆盖 WinSCP 会话开关(试错不用等新版本),
+    // 例:set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
+    Object.assign(rawSettings, winScp.parseRawSettings(process.env.POLARIS_WINSCP_RAWSETTINGS));
     // 知道落在哪个目录(标签的 SFTP 路径 / 跟踪到的 cd 目录)就把起始目录也交过去,
     // 免得 WinSCP 自己猜(猜错会让用户看到 "目录不存在" 或落到错误位置)。
     const remotePath = winScp.normalizeRemotePath(p.remotePath);
@@ -2100,7 +2113,7 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       passphrase: p.passphrase,
       rawSettings,
       debug,
-      logPath: debug ? path.join(process.env.POLARIS_LOCK_DIR || (os.homedir() + '/.jms-terminal'), 'logs', 'winscp.log') : '',
+      logPath,
     });
     const show = winScp.describeCommand(exe, args);
     const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
@@ -2110,7 +2123,7 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       try { console.log(`[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { console.log(`[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}`); } catch { /* ignore */ }
+    try { console.log(`[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}` : ''}`); } catch { /* ignore */ }
     return { ok: true, command: show };
   } catch (err) {
     return { ok: false, error: err.message };

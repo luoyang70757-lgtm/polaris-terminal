@@ -71,3 +71,71 @@ WinSCP.exe sftp://user:pass@host:port/ /rawsettings SFTPRealPath=off [RemoteDire
 
 - `verify-winscp-args.js`（纯 Node，32 条）：`RAW_SETTINGS_DEFAULTS`、`/rawsettings` 参数拼装（多对、空值跳过、带空格/中文的目录整段传、与私钥/口令/日志共存顺序）、`normalizeRemotePath`、`realPathCompat`。
 - `verify-winscp-open.js`（真启动 Electron + shell 桩，32 条）：argv 里确实出现 `/rawsettings SFTPRealPath=off`、`RemoteDirectory=/srv/my dir` 原样到达、渲染层 payload 的起始目录优先级与相对路径丢弃、脱敏不回退。
+
+## 六、v1.0.21：关掉 REALPATH 之后**仍**报「错误码 4」
+
+现场特征（Windows 实测日志）：
+
+```
+[WINSCP] 已拉起: …WinSCP.exe sftp://root:***@10.204.240.4:22/ /rawsettings SFTPRealPath=off
+→ WinSCP 弹「一般错误（服务器应该提供错误描述）。错误码：4，服务器返回的错误消息：General failure」
+```
+
+要点：**报错文字变了** —— 不再是「不能获得'.'的真实路径」，而是裸的 `错误码 4 / General failure`。
+说明 `SFTPRealPath=off` 生效了（REALPATH 那一步已经不发了），失败点换到了**后面某一个请求**上。
+
+按 WinSCP 的启动顺序，`GetHomeDirectory()` 之后紧跟的是：
+
+| 顺序 | 位置 | 发什么 |
+|---|---|---|
+| 1 | `SftpFileSystem.cpp:2976` | `REALPATH(".")`（已用 `off` 关掉 → 改本地 canonify） |
+| 2 | 同文件 `:3510` `ChangeDirectory` → `:3481` `TryOpenDirectory` | 先发 **`SSH_FXP_LSTAT`**，收到"不支持"才退化成 `OPENDIR` |
+| 3 | 同文件 `ReadDirectory` | `SSH_FXP_OPENDIR` + `SSH_FXP_READDIR` |
+
+`TryOpenDirectory` 只在服务器回 `SSH_FX_OP_UNSUPPORTED`（8）时才走退化路径；**回 4（FAILURE）就是致命错误**
+—— 所以「H3C/嵌入式 SFTP 不实现或拒绝 `LSTAT`」这类服务器会在这里挂掉。
+
+### 排障步骤（v1.0.21 起日志默认就写）
+
+1. 复现一次失败；
+2. 打开 `调试 → 打开日志目录`，取 `logs/winscp-<YYYYMMDD-HHMMSS>.log`（**级别 1 = 请求级**，含主机/用户名，
+   不含口令与文件内容）；
+3. 看最后几行「请求 + 服务器返回状态」：
+
+```
+> 正在获取 '…' 的真实路径 / Trying to open directory "…" / Listing directory "…"
+< 状态：4 (失败)
+```
+
+哪一行后面跟 `4` 就是真凶：
+
+| 失败在 | 判定 | 绕过 |
+|---|---|---|
+| `REALPATH` | `off` 没生效（检查 argv 里是否真有 `/rawsettings SFTPRealPath=off`） | 命令行手工加同一个开关验证 |
+| `LSTAT` / `OPENDIR` | 服务器不认这个请求（嵌入式/非标准 SFTP） | 用 `POLARIS_WINSCP_RAWSETTINGS` 试开关；或改用 Polaris 内置面板 |
+| `OPEN` / `READ` | 目标路径在 chroot 外 / 权限不足 | 换 `RemoteDirectory` 或改用内置面板 |
+
+### 逃生阀：自己下发 WinSCP 开关
+
+```
+set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
+```
+
+- 分号或换行分隔，`名字=值`；名字只收 `[A-Za-z]` 开头的标识符，空值丢弃，非法条目整条忽略；
+- 叠加在 Polaris 的默认值之上（**同名覆盖**），所以 `SFTPRealPath=on` 可以临时恢复 WinSCP 原生行为；
+- 排障想看到协议包：`set POLARIS_WINSCP_DEBUG=1` → `/loglevel=*`（**含口令/文件内容**，共享前先删）。
+
+### 交叉验证（判断是 WinSCP 的问题还是服务器的问题）
+
+同一台主机在 Polaris 里切到 **设置 → SFTP → 「内置面板」**（或用另一台机器的 WinSCP 图形界面手动连）：
+- 内置面板能列出目录 → 服务器 SFTP 正常，问题在 WinSCP 的请求序列（看日志定位到具体请求）；
+- 内置面板也列不出来 → 服务器 SFTP 子系统本身有问题（WinSCP 报 4 只是它的说法）。
+
+### 变更
+
+| 文件 | 改法 |
+|---|---|
+| `lib/winscp-open.js` | 新增 `parseRawSettings()`；`buildArgs()` 从"只在 debug 时写日志"改为**给了 `logPath` 就写** `/log=<path> /loglevel=1`（`debug` → `*`） |
+| `main.js` | `winScp:open` 默认在 `<数据目录>/logs/winscp-<时间戳>.log` 落 WinSCP 日志（先 `mkdir` 再拉起）；`POLARIS_WINSCP_RAWSETTINGS` 合并进 rawsettings；拉起日志里带 `日志=<path>` |
+
+回归：`verify-winscp-args.js` **34/34**、`verify-winscp-open.js` **39/39**（新增日志参数/日志落点/目录预建三条）。
