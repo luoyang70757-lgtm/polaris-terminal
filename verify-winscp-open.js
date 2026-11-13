@@ -92,6 +92,8 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     await sleep(1200);
     // 新手引导弹窗会吞按键/挡操作,先关掉
     await evaluate(c, `state.settings.onboardingDone = true; saveSettings(); document.getElementById('onboarding-modal').classList.add('hidden'); true`);
+    // 主机指纹弹窗会挂住 ssh2 握手(等用户点"信任"),测试里直接放行(真实用户仍走弹窗)
+    await evaluate(c, `state.settings.verifyHostKey = false; state.settings.autoTrustHostKey = true; state.settings.onboardingDone = true; saveSettings(); true`);
 
     // ---------- ① 探测 ----------
     const det = await evaluate(c, `(async()=>JSON.stringify(await window.api.winScpDetect()))()`);
@@ -121,14 +123,15 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     // rawsettings 必须带上 SFTPRealPath=off(否则 chroot 服务器报「不能获得 '.' 的真实路径,错误码 4」)
     if (argv1.includes('/rawsettings') && argv1.includes('SFTPRealPath=off')) ok('参数带 /rawsettings SFTPRealPath=off(绕开 REALPATH(".") 探测)');
     else bad('参数带 SFTPRealPath=off', JSON.stringify(argv1));
-    // 日志默认就开(v1.0.21):URL + /rawsettings + 1 个设置 + /log=<数据目录>/logs/winscp-*.log + /loglevel=1
-    const logArg = argv1.find((a) => a.startsWith('/log=')) || '';
-    const levelArg = argv1.find((a) => a.startsWith('/loglevel=')) || '';
-    if (argv1.length === 5 && argv1[1] === '/rawsettings' && logArg && levelArg === '/loglevel=1') ok('参数只有 URL + /rawsettings + 日志(默认级别 1)');
-    else bad('参数只有 URL + /rawsettings + 日志', JSON.stringify(argv1));
-    if (/[/\\]logs[/\\]winscp-\d{8}-\d{6}\.log$/.test(logArg) && logArg.includes(DIR)) ok('WinSCP 日志落在数据目录 logs/winscp-<时间戳>.log');
-    else bad('WinSCP 日志落在数据目录 logs/', logArg);
-    try { if (fs.existsSync(path.dirname(logArg.slice(5))) || fs.existsSync(path.dirname(logArg.slice(5)))) ok('日志目录已提前建好(WinSCP 才不会自己失败)'); } catch { /* ignore */ }
+    // 日志默认**关闭**(v1.0.24):/loglevel=1 的 `Parameter:` 行是明文口令 → 不再默认落盘。
+    // 默认参数 = URL + /rawsettings + SFTPRealPath=off,没有任何 /log= / /loglevel=
+    if (argv1.length === 3 && argv1[1] === '/rawsettings' && argv1[2] === 'SFTPRealPath=off' && !argv1.some((a) => a.startsWith('/log'))) ok('参数只有 URL + /rawsettings(默认不写日志)');
+    else bad('参数只有 URL + /rawsettings(默认不写日志)', JSON.stringify(argv1));
+    const anyWinScpLog = (() => {
+      try { return fs.readdirSync(path.join(DIR, 'logs')).filter((f) => f.startsWith('winscp-')); } catch { return []; }
+    })();
+    if (anyWinScpLog.length === 0) ok('默认不生成 winscp-*.log(不把口令写进数据目录)');
+    else bad('默认不生成 winscp-*.log', JSON.stringify(anyWinScpLog));
     // 日志里不能有明文密码
     const logs = await evaluate(c, `(function(){ var t = termDebug.lines.join('\\n'); try { t += '\\n' + (document.getElementById('debug-body') ? document.getElementById('debug-body').textContent : ''); } catch(e){} return t; })()`);
     const diskLog = (() => {
@@ -253,8 +256,8 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     else bad('SCP 协议 → scp:// URL', JSON.stringify(scpArgs));
     if (!scpArgs.includes('SFTPRealPath=off')) ok('SCP 协议不下发 SFTPRealPath(避免误以为生效)');
     else bad('SCP 协议仍下发 SFTPRealPath', JSON.stringify(scpArgs));
-    if (scpArgs.includes('/log=') || scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样默认写日志');
-    else bad('SCP 会话缺日志参数', JSON.stringify(scpArgs));
+    if (!scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样不写日志(默认关)');
+    else bad('SCP 会话不该有 /log=', JSON.stringify(scpArgs));
     await evaluate(c, `state.settings.winscpProtocol = 'sftp'; state.settings.winscpMode = 'replace'; true`);
 
     // ---------- ⑦ 标签右键菜单 ----------
@@ -303,6 +306,9 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     const payloadRel = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); t.sftpPath='.'; t.shellCwd=null; state.sftp.visible=false; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
     if (payloadRel.remotePath === '') ok('相对路径 / 未知目录不传给 WinSCP(避免它报目录不存在)');
     else bad('相对路径不传', JSON.stringify(payloadRel));
+    // 起始目录未知时主进程用它现探家目录(exec pwd + readdir 校验),所以 payload 必须带 sessionId
+    if (payload.sessionId === sid) ok('payload 带 sessionId(起始目录未知时主进程自己探家目录)');
+    else bad('payload 带 sessionId', JSON.stringify(payload.sessionId));
 
     // 走渲染层自己的入口(标签右键菜单/按钮调的就是它),返回值 + 状态栏文案一起验
     await ev(c, `state.winScp.installed = true; true`);

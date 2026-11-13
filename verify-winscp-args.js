@@ -124,12 +124,24 @@ t('私钥文件不存在 → 不传 -privatekey(让 WinSCP 弹自己的登录框
 t('空口令不传 -passphrase=', () => {
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', passphrase: '   ' }), ['sftp://u:p@h/']);
 });
-t('给了 logPath 就写日志(默认级别 1);debug 时级别换成 *', () => {
+t('给了 logPath 就写日志(默认级别 1;可显式给级别;0 = 不写)', () => {
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=1']);
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: 'C:\\t\\w.log' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=*']);
-  // 没给路径(比如日志目录建不出来)就整组不传,不能让 WinSCP 收到空的 /log=
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log', loglevel: '*' }), ['sftp://u:p@h/', '/log=C:\\t\\w.log', '/loglevel=*']);
+  // 级别 0 / 空级别 → 整组不传(别给 WinSCP 一个"开日志"的错觉)
+  assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: 'C:\\t\\w.log', loglevel: '0' }), ['sftp://u:p@h/']);
+  // 没给路径(日志目录建不出来/默认关日志)就整组不传,不能让 WinSCP 收到空的 /log=
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', debug: true, logPath: '' }), ['sftp://u:p@h/']);
   assert.deepStrictEqual(w.buildArgs({ url: 'sftp://u:p@h/', logPath: '   ' }), ['sftp://u:p@h/']);
+});
+t('logOptions:WinSCP 日志默认关闭(级别 1 的 Parameter 行是明文口令)', () => {
+  // v1.0.24 起默认关:实测 /loglevel=1 会把 sftp://root:<解码后的密码>@host 打进日志文件
+  assert.deepStrictEqual(w.logOptions({}), { on: false, level: '1', containsSecret: false });
+  assert.deepStrictEqual(w.logOptions({ POLARIS_WINSCP_LOG: '1' }), { on: true, level: '1', containsSecret: true });
+  assert.deepStrictEqual(w.logOptions({ POLARIS_WINSCP_LOG: '0' }).on, false);
+  assert.deepStrictEqual(w.logOptions({ POLARIS_WINSCP_DEBUG: '1' }), { on: true, level: '*', containsSecret: true });
+  // DEBUG 也会自动开(否则给了调试开关却没有日志文件,等于白设)
+  assert.deepStrictEqual(w.logOptions({ POLARIS_WINSCP_DEBUG: '1', POLARIS_WINSCP_LOG: '0' }).level, '*');
 });
 t('realPathCompat:默认开(与关 WinSCP 默认行为),on/auto 时不动)', () => {
   assert.strictEqual(w.realPathCompat({}), true);

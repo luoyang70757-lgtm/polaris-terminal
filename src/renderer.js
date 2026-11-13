@@ -10571,6 +10571,7 @@ function winScpPayloadFor(sessionId) {
   if (!remotePath) remotePath = (t.sftpPath && t.sftpPath !== '.') ? t.sftpPath : '';
   if (!remotePath) remotePath = t.shellCwd || '';
   return {
+    sessionId,                       // 起始目录未知时主进程用它现探一次家目录(exec pwd)
     protocol: 'ssh',
     winscpProtocol: winScpProtocol(), // 交给 WinSCP 的协议(sftp/scp);与上面的会话协议无关
     host: s.host || '',

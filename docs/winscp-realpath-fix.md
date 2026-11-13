@@ -95,12 +95,13 @@ WinSCP.exe sftp://user:pass@host:port/ /rawsettings SFTPRealPath=off [RemoteDire
 `TryOpenDirectory` 只在服务器回 `SSH_FX_OP_UNSUPPORTED`（8）时才走退化路径；**回 4（FAILURE）就是致命错误**
 —— 所以「H3C/嵌入式 SFTP 不实现或拒绝 `LSTAT`」这类服务器会在这里挂掉。
 
-### 排障步骤（v1.0.21 起日志默认就写）
+### 排障步骤（v1.0.21 起可开日志；**v1.0.24 起默认关闭**，见第八节）
 
 1. 复现一次失败；
-2. 打开 `调试 → 打开日志目录`，取 `logs/winscp-<YYYYMMDD-HHMMSS>.log`（**级别 1 = 请求级**，含主机/用户名，
-   不含口令与文件内容）；
-3. 看最后几行「请求 + 服务器返回状态」：
+2. 先开日志环境变量 `POLARIS_WINSCP_LOG=1`，再复现；
+3. 打开 `调试 → 打开日志目录`，取 `logs/winscp-<YYYYMMDD-HHMMSS>.log`（**级别 1 = 请求级**，含主机/用户名，
+   **以及会话 URL 里的明文口令** —— 共享前先删）；
+4. 看最后几行「请求 + 服务器返回状态」：
 
 ```
 > 正在获取 '…' 的真实路径 / Trying to open directory "…" / Listing directory "…"
@@ -155,3 +156,38 @@ set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
 
 同时默认档兜底:点 SFTP 现在默认开**内置面板**(`button`),WinSCP 变成按需按钮——
 再怎么折腾 WinSCP 也挡不住日常传文件。
+
+## 八、v1.0.24：真机日志把两件事同时钉死了
+
+来自 Windows 现场的三份 WinSCP 会话日志（同一台机器，WinSCP 6.7.1 / Windows 11）：
+
+| 日志 | 起始目录 | 结果 |
+|---|---|---|
+| 第一次 | argv 带 `RemoteDirectory=/root` | ✅ 正常（`OPENDIR /root` → `READDIR` → `Status code: 1` = 读完 EOF） |
+| 第二次 | argv 带 `RemoteDirectory=/root` | ✅ 正常 |
+| 第三次 | argv **没有** `RemoteDirectory` | ❌ `SSH_FXP_OPENDIR "."` → `Status code: 4, Server: General failure` → 弹「列出'.'的目录项时出错。错误码：4」 |
+
+也就是说 `SFTPRealPath=off` 之后，**剩下唯一会翻车的就是"起始目录是相对路径 `"."`"**：
+
+- `off` 已经让 WinSCP 不再发 `REALPATH(".")`，但它接着就用 `"."` 去 `OPENDIR` 列目录
+  （`SftpFileSystem.cpp` 里 `RealPath` 关掉后走 `LocalCanonify`，`"."` 原样留着）；
+- 该设备（`sshd-core 1.7.0 (org.apache.sshd)`，Apache MINA）对**相对路径**的处理就是直接回 4，
+  不认 cwd —— `"."` 必挂；换成绝对路径 `/root` 立刻正常。
+
+两条改法（都在 v1.0.24）：
+
+| 改动 | 说明 |
+|---|---|
+| **起始目录一律给绝对路径** | 渲染层知道面板目录/标签 `sftpPath`/跟踪的 `shellCwd` 就用它；**不知道时主进程当场探一次家目录**（`resolveSftpHome`：exec `pwd` → SFTP `readdir` 校验 → 不可访问回退 `/tmp`，与 SFTP 面板同一套逻辑），归一化成绝对路径再当 `RemoteDirectory`。极端情况下连探都失败（连接已断），才回到"不给 `RemoteDirectory`"的老行为 |
+| **WinSCP 日志默认关闭** | `/loglevel=1` 的日志里 `Parameter:` 行是**明文会话 URL（口令 URL 解码后原样）**：`Parameter: sftp://root:OTP%3AtirPq3FdQN6n@host:22/`。默认开着 = 把口令写进 `<数据目录>\logs\winscp-*.log`。要排障就显式 `POLARIS_WINSCP_LOG=1`（级别 1）或 `POLARIS_WINSCP_DEBUG=1`（`*` 全协议包）；两种都含口令，共享前先删文件 |
+
+另外两条结论，免得后人再绕：
+
+- **"独立 SFTP 探测失败(General failure) → 回退主连接成功"** 说明这类网关对**新建连接的 SFTP 子系统**和
+  **已登录会话里的 SFTP 通道**宽容度不一样；WinSCP 永远是新建连接，所以它在"相对路径/不支持的请求"上比内置面板脆弱得多。
+  内置面板能用不代表 WinSCP 一定能用，反之亦然。
+- 现场若仍失败，`SCP`（设置 → SFTP → WinSCP 协议 = SCP）是最后一条不改代码的路（第七节），
+  它连 `OPENDIR` 都不发。
+
+回归：`verify-winscp-args.js` **39/39**（新增 `logOptions()`：默认关、`LOG=1` 开、`DEBUG=1` 全量、`loglevel=0` 不写）、
+`verify-winscp-open.js` **46/46**（默认 argv 里没有任何 `/log`、也不生成 `winscp-*.log`、payload 带 `sessionId`）。

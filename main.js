@@ -2070,7 +2070,7 @@ ipcMain.handle('winScp:detect', () => {
   }
 });
 
-ipcMain.handle('winScp:open', (_e, payload) => {
+ipcMain.handle('winScp:open', async (_e, payload) => {
   const p = payload || {};
   try {
     if ((p.protocol || 'ssh') === 'telnet') return { ok: false, error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
@@ -2085,14 +2085,19 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     // 为什么默认开:WinSCP 报「错误码 4 / General failure」这类消息时,只有它自己的日志
     // 能说明**是哪个请求**被服务器拒了(REALPATH? LSTAT? OPENDIR?),否则只能猜。
     // POLARIS_WINSCP_DEBUG=1 → /loglevel=* 全量协议包(含口令/文件内容,排障后请删掉)。
-    const debug = /^1|true$/i.test(String(process.env.POLARIS_WINSCP_DEBUG || ''));
+    // WinSCP 自己那份日志**默认关闭**(v1.0.24):级别 1 的 `Parameter:` 行会明文打印
+    // 会话 URL(含解码后的密码)→ 等于把口令落盘。要用自己开 POLARIS_WINSCP_LOG=1
+    // (排障时),POLARIS_WINSCP_DEBUG=1 则是全协议包。见 lib/winscp-open.js logOptions()。
+    const logOpt = winScp.logOptions(process.env);
     const logDir = path.join(process.env.POLARIS_LOCK_DIR || path.join(os.homedir(), '.jms-terminal'), 'logs');
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
     let logPath = '';
-    try {
-      fs.mkdirSync(logDir, { recursive: true });
-      logPath = path.join(logDir, `winscp-${stamp}.log`);
-    } catch { /* 日志目录建不了就算了,不能因此不给用户开 WinSCP */ }
+    if (logOpt.on) {
+      try {
+        fs.mkdirSync(logDir, { recursive: true });
+        logPath = path.join(logDir, `winscp-${stamp}.log`);
+      } catch { /* 日志目录建不了就算了,不能因此不给用户开 WinSCP */ }
+    }
     // SFTPRealPath=off:WinSCP 开会话时会 REALPATH(".") 探测家目录,chroot 型服务器
     // (JumpServer KoKo / H3C 网关 / internal-sftp chroot)对该请求直接回 SSH_FX_FAILURE
     // → WinSCP 弹「不能获得 '.' 的真实路径。错误码 4」,会话根本进不去。
@@ -2108,15 +2113,23 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     Object.assign(rawSettings, winScp.parseRawSettings(process.env.POLARIS_WINSCP_RAWSETTINGS));
     // 知道落在哪个目录(标签的 SFTP 路径 / 跟踪到的 cd 目录)就把起始目录也交过去,
     // 免得 WinSCP 自己猜(猜错会让用户看到 "目录不存在" 或落到错误位置)。
-    const remotePath = winScp.normalizeRemotePath(p.remotePath);
+    let remotePath = winScp.normalizeRemotePath(p.remotePath);
+    // 起始目录一定给**绝对路径**:不知道就现探一次(exec pwd + readdir 校验,同 sftp:home)。
+    // 不给的话 WinSCP 会先 OPENDIR(".") 找家目录 —— H3C 这类网关对这个请求直接回
+    // "General failure(错误码 4)",即使连接本身没问题也进不去。
+    if (!remotePath && p.sessionId) {
+      const r = await resolveSftpHome(p.sessionId).catch(() => null);
+      remotePath = winScp.normalizeRemotePath(r && r.ok ? r.home : '');
+      if (remotePath) __sftpLog('WinSCP 起始目录:探到家目录', { sessionId: p.sessionId, remotePath });
+    }
     if (remotePath) rawSettings.RemoteDirectory = remotePath;
     const args = winScp.buildArgs({
       url,
       privateKey: p.privateKey,
       passphrase: p.passphrase,
       rawSettings,
-      debug,
       logPath,
+      loglevel: logOpt.level,
     });
     const show = winScp.describeCommand(exe, args);
     const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
@@ -2126,7 +2139,7 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       try { console.log(`[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { console.log(`[WINSCP] 已拉起(协议=${scheme}): ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}` : ''}`); } catch { /* ignore */ }
+    try { console.log(`[WINSCP] 已拉起(协议=${scheme}): ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}(含口令,勿外发)` : ' | 日志=关闭(要开日志设 POLARIS_WINSCP_LOG=1)'}`); } catch { /* ignore */ }
     return { ok: true, command: show };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -2141,7 +2154,8 @@ ipcMain.handle('winScp:open', (_e, payload) => {
 //        chroot 的,用 SFTP stat 看不到 /root,必须用 exec。
 //     2. 用 SFTP readdir 验证该家目录可访问;能列出 → 用它。
 //     3. 不能(SFTP chroot 看不到家目录,如 KoKo 网关 SFTP 根 = 系统 /tmp)→ 回退 /tmp。
-ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
+// 家目录探测(两端共用:SFTP 面板默认路径 + WinSCP 起始目录)
+async function resolveSftpHome(sessionId) {
   try {
     const s = sshSessions.get(sessionId);
     if (!s || !s.conn) return { ok: false, error: '连接不存在' };
@@ -2182,7 +2196,8 @@ ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
-});
+}
+ipcMain.handle('sftp:home', (_e, { sessionId }) => resolveSftpHome(sessionId));
 
 // 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
 // 某些设备(H3C 网络设备等)SFTP 对刚写入的文件 readdir/stat 恒报 size 0,但数据已落盘。

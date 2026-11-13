@@ -1,5 +1,27 @@
 # 更新日志
 
+## v1.0.24（2026-11-13）
+
+**WinSCP 两处硬伤** —— 用 Windows 现场日志（三份 WinSCP 会话日志）定位：`SFTPRealPath=off` 之后，
+**唯一还会翻车的就是"起始目录是相对路径 `.`"**；以及**默认开启的 WinSCP 日志把明文口令写了进去**。
+
+1. **起始目录一律给绝对路径**：现场第三份日志的 argv 里没有 `RemoteDirectory`，WinSCP 于是
+   `SSH_FXP_OPENDIR "."` → 服务器回 `Status code: 4 / General failure` → 弹「列出'.'的目录项时出错。错误码：4」；
+   同两份**带 `RemoteDirectory=/root`** 的日志全部正常（`OPENDIR /root → READDIR → Status code: 1` 即读完了）。
+   现在渲染层知道面板目录 / 标签 `sftpPath` / 跟踪的 `shellCwd` 就用它，**不知道时主进程当场探家目录**
+   （`resolveSftpHome`：exec `pwd` → SFTP `readdir` 校验 → 不可访问回退 `/tmp`，与 SFTP 面板同一套逻辑），
+   归一成绝对路径再当 `RemoteDirectory`；连探都失败才回到"不传"的老行为。
+2. **WinSCP 日志默认关闭**：`/loglevel=1` 的 `Parameter:` 行是**明文会话 URL**（口令经 URL 解码后原样出现，
+   实测形如 `Parameter: sftp://root:OTP%3A…@host:22/`）——默认开着等于把口令写进 `<数据目录>/logs/winscp-*.log`。
+   要排障显式开：`POLARIS_WINSCP_LOG=1`（请求级）或 `POLARIS_WINSCP_DEBUG=1`（全协议包）；两者都含口令，
+   共享前先删文件。拉起日志里会写「日志=关闭（要开日志设 POLARIS_WINSCP_LOG=1）」。
+3. 顺带：`lib/winscp-open.js` JSDoc 里的示例地址改成占位符（延续 v1.0.23 的去 IP 口径）。
+
+回归：`verify-winscp-args` 38→**39**（新增 `logOptions()` 四条：默认关 / `LOG=1` 开 / `DEBUG=1` 全量 /
+`loglevel=0` 不写）、`verify-winscp-open` **46/46**（默认 argv 里没有任何 `/log`、不生成 `winscp-*.log`、
+`payload` 带 `sessionId`）；`run-verify --pure` **17/17 脚本 344 断言**。
+
+
 ## v1.0.23（2026-11-13）
 
 **对外可见文字去 IP 化** —— 界面里的示例地址、文档、注释、测试用例、发布说明一律不再出现真实 IP / 内网地址 / 凭据串。
