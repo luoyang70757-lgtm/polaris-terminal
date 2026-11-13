@@ -490,9 +490,8 @@ const els = {
   termSearchCount: $('term-search-count'),
   termSearchClose: $('term-search-close'),
 
-  // SFTP 面板
+  // SFTP(交给本机 WinSCP)
   btnSftpToggle: $('btn-sftp-toggle'),
-  sftpPanel: $('sftp-panel'),
   btnTunnel: $('btn-tunnel'),
   tunnelModal: $('tunnel-modal'),
   tunnelList: $('tunnel-list'),
@@ -508,29 +507,6 @@ const els = {
   tunnelCreate: $('tunnel-create'),
   tunnelFormCancel: $('tunnel-form-cancel'),
   tunnelClose: $('tunnel-close'),
-  sftpPath: $('sftp-path'),
-  sftpConn: $('sftp-conn'),
-  sftpConnMenu: $('sftp-conn-menu'),
-  sftpList: $('sftp-list'),
-  sftpLog: $('sftp-log'),
-  btnSftpUp: $('btn-sftp-up'),
-  btnSftpRefresh: $('btn-sftp-refresh'),
-  btnSftpMkdir: $('btn-sftp-mkdir'),
-  btnSftpUpload: $('btn-sftp-upload'),
-  btnSftpDownload: $('btn-sftp-download'),
-  btnSftpDelete: $('btn-sftp-delete'),
-  btnSftpSelectAll: $('btn-sftp-select-all'),
-  btnSftpWinScp: $('btn-sftp-winscp'),
-  btnSftpEdit: $('btn-sftp-edit'),
-  sftpProgress: $('sftp-progress'),
-  sftpProgressLabel: $('sftp-progress-label'),
-  btnSftpTransfersClear: $('btn-sftp-transfers-clear'),
-  editModal: $('edit-modal'),
-  editPath: $('edit-path'),
-  editContent: $('edit-content'),
-  editSave: $('edit-save'),
-  editCancel: $('edit-cancel'),
-  sftpFooter: $('sftp-footer'),
   btnCmd: $('btn-cmd'),
   cmdPanel: $('cmd-panel'),
   cmdList: $('cmd-list'),
@@ -542,22 +518,7 @@ const els = {
   setCmdRecord: $('set-cmdrecord'),
   setSessionLog: $('set-sessionlog'),
   setAutoFillPw: $('set-autofillpw'),
-  setWinScpMode: $('set-winscp-mode'),
   setWinScpProtocol: $('set-winscp-protocol'),
-  setSftpLimit: $('set-sftp-limit'),
-  sftpLimitNote: $('sftp-limit-note'),
-  attrsModal: $('attrs-modal'),
-  attrsPath: $('attrs-path'),
-  attrsMode: $('attrs-mode'),
-  attrsModePreview: $('attrs-mode-preview'),
-  attrsUid: $('attrs-uid'),
-  attrsGid: $('attrs-gid'),
-  attrsMtime: $('attrs-mtime'),
-  attrsRecursiveRow: $('attrs-recursive-row'),
-  attrsRecursive: $('attrs-recursive'),
-  attrsStatus: $('attrs-status'),
-  attrsSave: $('attrs-save'),
-  attrsCancel: $('attrs-cancel'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
   // 智能命令推荐
@@ -614,7 +575,6 @@ const els = {
   // 可拖动分隔条
   sessionPanel: $('session-panel'),
   dividerV: $('divider-v'),
-  dividerH: $('divider-h'),
   dividerBastion: $('divider-bastion'),
   bastionSlot: $('bastion-slot'),
   btnTogglePanel: $('btn-toggle-panel'),
@@ -624,8 +584,6 @@ const els = {
   batchCount: $('batch-count'),
   batchConnect: $('batch-connect'),
   batchClose: $('batch-close'),
-  batchUpload: $('batch-upload'),
-  batchDownload: $('batch-download'),
   batchDelete: $('batch-delete'),
   batchClear: $('batch-clear'),
   btnSelectAllFiltered: $('btn-select-all-filtered'),
@@ -684,9 +642,7 @@ const state = {
     settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
     autoFillPassword: true,     // 自动填充密码:终端出现 Password: 提示时自动发会话保存的密码(默认开)
-    // 打开 SFTP 时的行为:replace=直接拉本机 WinSCP(没装则回落内置面板) | button=内置面板+WinSCP 按钮 | panel=只用内置面板
-    winscpMode: 'replace',
-    sftpSpeedLimitKBps: 0,      // SFTP 传输限速(KB/s,0 = 不限速;对所有连接/批量/目录递归生效)
+    // SFTP = 交给本机 WinSCP(v1.0.25 起无内置面板);winscpProtocol 决定 WinSCP 走 sftp 还是 scp
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
@@ -722,16 +678,6 @@ const state = {
   bastionSavedAutoExpanded: false, // 首次有已保存连接时自动展开一次(连接项可见,右键可编辑);用户手动折叠后不再干预
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
-  sftp: {
-    visible: false,  // 面板是否展开
-    sessionId: null, // 正在浏览哪个连接(跟随活动标签)
-    path: '.',       // 当前远程目录
-    selected: null,  // 最近一次点击的条目 { name, isDir, remotePath }(兼容旧逻辑)
-    selectedSet: new Set(), // 多选集合:存的是 remotePath 字符串,点一下加/取消
-    entries: [],     // 当前列表数据
-    log: [],         // 传输记录: [{ time, text, isError }]
-  },
-  sftpUploadFlash: new Set(), // 刚上传成功的条目名:列表刷新后高亮定位(让用户看到传到了哪)
   cmdHistory: {},    // 命令记录: sessionId -> { host, commands: [{ time, command }] }
   cmdArchivesView: null,   // 命令面板视图: null=当前记录, 'files'=归档文件列表
   cmdArchiveFiles: [],     // 归档批次列表
@@ -769,17 +715,6 @@ function loadSettings() {
   if (!state.settings.settingsVersion || state.settings.settingsVersion < 3) {
     migrateDeepSeekUrl();
     state.settings.settingsVersion = 3;
-    saveSettings();
-  }
-  // v4 迁移:「打开 SFTP 时」的默认从 replace(直接拉 WinSCP)改为 button(内置面板 + WinSCP 按钮)。
-  // 只有"从没自己选过"的老配置(没有 winscpModeMigrated)里仍是 replace 的才跟着改;
-  // 用户自己选过 replace 的(切换时会置 winscpModeMigrated)保持不动。
-  if (!state.settings.settingsVersion || state.settings.settingsVersion < 4) {
-    if (!state.settings.winscpModeMigrated && (!state.settings.winscpMode || state.settings.winscpMode === 'replace')) {
-      state.settings.winscpMode = 'button';
-    }
-    state.settings.winscpModeMigrated = true;
-    state.settings.settingsVersion = 4;
     saveSettings();
   }
 }
@@ -851,11 +786,7 @@ function openSettingsModal() {
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
-  if (els.setWinScpMode) els.setWinScpMode.value = winScpMode();
   if (els.setWinScpProtocol) els.setWinScpProtocol.value = winScpProtocol();
-  if (els.setSftpLimit) els.setSftpLimit.value = String(sftpLimitKbps());
-  refreshSftpLimitNote();
-  refreshWinScpButton(); // SFTP 面板里的 WinSCP 按钮只在"装了 + 模式=button"时出现
   els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
   renderAnsiEditor();
   refreshLockNote();
@@ -2832,46 +2763,6 @@ async function batchDelete() {
   );
 }
 
-// 批量上传:选一个本地文件,传到每个选中主机的远程目录
-function batchUpload() {
-  const list = selectedSessions();
-  if (!list.length) return;
-  showPrompt({
-    title: '批量上传', label: '远程目录(每台主机同一目录,如 /tmp)', value: '/tmp',
-    onOk: async (remoteDir) => {
-      if (!remoteDir) return;
-      const res = await window.api.sftpBatchUpload(list, remoteDir);
-      showBatchResult(res, '上传');
-    },
-  });
-}
-
-// 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名命名)
-function batchDownload() {
-  const list = selectedSessions();
-  if (!list.length) return;
-  showPrompt({
-    title: '批量下载', label: '远程文件路径(每台主机同一路径,如 /var/log/syslog)', value: '',
-    onOk: async (remotePath) => {
-      if (!remotePath) return;
-      const res = await window.api.sftpBatchDownload(list, remotePath);
-      showBatchResult(res, '下载');
-    },
-  });
-}
-
-function showBatchResult(res, label) {
-  if (!res || res.canceled) return;
-  if (!res.ok) { alert(`${label}失败: ${res.error}`); return; }
-  const ok = res.results.filter((r) => r.ok).length;
-  const fail = res.results.filter((r) => !r.ok);
-  let msg = `${label}完成:成功 ${ok} 台,失败 ${fail.length} 台`;
-  if (fail.length) msg += `\n\n${fail.map((r) => `❌ ${r.name}: ${r.error}`).join('\n')}`;
-  if (label === '下载') msg += '\n\n文件保存在所选文件夹,按 主机名_文件名 命名';
-  alert(msg);
-  batchClear();
-}
-
 // 右键菜单:动态填充菜单项(会话的 编辑/删除,分组的 重命名/删除,标签的 关闭/复制/重命名…)
 // items 每项: { label, action, danger? } 或 { separator: true } 分隔线
 let ctxMenuOpenedAt = 0; // 菜单最近打开时间:用于忽略"右键后紧跟的残留 click"
@@ -3072,7 +2963,7 @@ window.addEventListener('keydown', (e) => {
   if (!e.shiftKey || e.altKey) return; // 以下均为 Cmd/Ctrl+Shift+字母
   const runShortcut = (fn) => { closePalette(); fn(); }; // 命令面板开着时按快捷键 = 关面板并执行
   switch (k) {
-    case 's': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleSftpPanel); break;
+    case 's': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(openSftpEntry); break;
     case 'b': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleBatchPanel); break;
     case 'm': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleCmdPanel); break;
     case 'a': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleAiPanel); break;
@@ -3084,7 +2975,7 @@ window.addEventListener('keydown', (e) => {
 
 // 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)。
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
-// 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
+// 而不是吞掉 —— 否则"点一下别处(列表/面板/工具栏空白) → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
   // 本 handler 自己合成的"转发给终端"按键(见下方 BODY 兜底)不要再被自己处理一遍 ——
   // 否则焦点没真正落到终端(容器不可聚焦/测试桩)时会无限递归转发。
@@ -3464,9 +3355,9 @@ function showTabMenu(e, sessionId) {
   if (t.status !== 'connected' && t.status !== 'connecting') {
     items.push({ label: '🔃 重新连接', action: () => reconnectTab(sessionId) });
   }
-  // 用本机 WinSCP 打开这个会话的 SFTP(只在装了 WinSCP + 非 telnet 时出现)
+  // 用本机 WinSCP 打开这个会话的 SFTP(没装 WinSCP / telnet 时点了给提示)
   if (state.winScp.installed && t.session && (t.session.protocol || 'ssh') !== 'telnet') {
-    items.push({ label: '🪟 用 WinSCP 打开 SFTP', action: () => openSessionInWinScp(sessionId) });
+    items.push({ label: '🪟 用 WinSCP 打开 SFTP', action: () => openSftpEntry(sessionId) });
   }
   items.push(
     { separator: true },
@@ -5254,7 +5145,7 @@ function jmsConnect(serverId, asset, accountName, openSftp, opts) {
     displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
   };
   connectToServer(session, opts);
-  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+  if (openSftp) setTimeout(() => openSftpEntry(), 800);
 }
 
 // 断开该 JumpServer 资产已打开的连接(标签保留,显示"已断开")
@@ -5695,14 +5586,10 @@ function applyBastionDefaultWidth() {
   if (saved >= 300) els.bastionPanel.style.width = `${Math.min(saved, maxW)}px`;
   else els.bastionPanel.style.width = `${Math.min(Math.max(420, Math.round(window.innerWidth * 0.5)), maxW)}px`;
 }
-// 会话列表宽度 / SFTP 面板高度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
+// 会话列表宽度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
 function applySessionPanelWidth() {
   const saved = Number(state.settings.sessionPanelWidth) || 0;
   if (saved >= 160) els.sessionPanel.style.width = `${saved}px`;
-}
-function applySftpPanelHeight() {
-  const saved = Number(state.settings.sftpPanelHeight) || 0;
-  if (saved >= 120) els.sftpPanel.style.height = `${saved}px`;
 }
 function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
@@ -7986,7 +7873,7 @@ function setBastionZoom(delta) {
 }
 
 // 处理 accessclient:// —— 解码 token(H3C 单点登录凭证) → 用 Polaris 终端连 SSH
-// openSftp:连上后顺带打开 SFTP 面板;devId:标记来源资产(供会话列表按资产断开)
+// openSftp:连上后顺带拉起 WinSCP(v1.0.25 起没有内置面板);devId:标记来源资产(供会话列表按资产断开)
 async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   bastionLog({ ev: 'token-decode', token: acUrl.slice(0, 60) + '…' });
   const r = await window.api.bastionDecode(acUrl);
@@ -8049,7 +7936,7 @@ async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   if (!(opts && opts.background)) setStatus(`堡垒机直连: ${session.name}`, 'var(--green)');
   // 连接成功 → 最小化到会话列表,终端在前台(SSH 连接独立,不受页面收起影响)
   minimizeBastion();
-  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+  if (openSftp) setTimeout(() => openSftpEntry(), 800);
 }
 
 // 拦截堡垒机触发的 accessclient://(外部工具/单点登录)
@@ -8249,7 +8136,6 @@ function renderBatchResults(results) {
 
 // 横向工具栏开关按钮的激活态:面板打开 → 按钮高亮
 function syncPanelButtons() {
-  els.btnSftpToggle.classList.toggle('active', state.sftp.visible);
   els.btnAi.classList.toggle('active', !els.aiPanel.classList.contains('hidden'));
   els.btnCmd.classList.toggle('active', !els.cmdPanel.classList.contains('hidden'));
   els.btnBatch.classList.toggle('active', !els.batchPanel.classList.contains('hidden'));
@@ -8966,8 +8852,8 @@ async function connectToServer(session, opts) {
         // 还原失败(还没学到提示符)时退回当前行原文(含提示符,危险正则照样能命中)
         effectiveCmd = recalled || lastBufferLineText(term) || lineOnEnter;
       }
-      // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
-      // 与"命令记录"开关无关,SFTP 定位总是需要)
+      // 跟踪 cd 命令 → 更新 shell 当前目录(作为 WinSCP 打开时的起始目录 / RemoteDirectory;
+      // 与"命令记录"开关无关,这个定位总是需要)
       if (effectiveCmd) trackShellCwd(tab, effectiveCmd);
       // 命令记录:开关开启时才记。
       if (state.settings.cmdRecord !== false) {
@@ -9049,8 +8935,6 @@ async function connectToServer(session, opts) {
     customTitle: null,       // 用户改的标签名(null=用会话名)
     status: 'connecting',
     noLogin: false,          // 远端账号 nologin(检测到后停止自动重连并给提示)
-    sftpOpen: false,         // 该标签自己的 SFTP 开关(各标签独立,切换标签时恢复各自状态)
-    sftpPath: '.',           // 该标签 SFTP 浏览到的目录
     shellCwd: null,          // 该标签交互 shell 的当前目录(跟踪 cd 命令;null=未知,SFTP 用默认)
     reconnectAttempts: 0,   // 已自动重连次数
     reconnectTimer: null,   // 重连定时器
@@ -9277,30 +9161,6 @@ function activateTab(sessionId) {
     if (!typingElsewhere && at && at.term) at.term.focus();
   } catch { /* ignore */ }
 
-  // SFTP 按标签各自的状态:每个标签记住自己是否开了 SFTP、浏览到哪个目录。
-  // 选中"未打开 SFTP 的标签页"→ 面板收起、按钮不亮;切回开过的标签 → 恢复它的文件列表。
-  applySftpForTab(state.tabs.get(sessionId));
-}
-
-// 应用某标签的 SFTP 状态(切换标签/关闭标签后调用):开了就展开面板并加载它的目录,没开就收起
-function applySftpForTab(t) {
-  if (!t) return;
-  state.sftp.sessionId = t.sessionId;
-  if (t.sftpOpen) {
-    state.sftp.visible = true;
-    state.sftp.path = t.sftpPath || '.';
-    state.sftp.selected = null;
-    els.sftpPanel.classList.remove('hidden');
-    els.dividerH.classList.remove('hidden');
-    setSftpConnLabel(t.sessionId);
-    loadSftpList();
-  } else {
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-  }
-  syncPanelButtons();
 }
 
 // 断开当前终端连接,但保留标签(显示"已断开",可右键重新连接);不像关闭标签那样移除
@@ -9332,7 +9192,6 @@ function closeTab(sessionId) {
   state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
   updateRecordBtn();
   window.api.sshClose(sessionId);
-  clearSftpTransfers(sessionId); // 只清这个会话的传输记录(其他会话可能还在传)
   kbdCancelSession(sessionId); // 关标签时取消该会话挂起的 keyboard-interactive 认证挑战
   // 批量/AI 面板里残留该标签的勾选与分屏尺寸,一并清掉,避免计数虚高/集合增长
   state.batchHosts.delete(sessionId);
@@ -9350,16 +9209,9 @@ function closeTab(sessionId) {
     state.splitMode = null;
     state.splitZoom = null;
     setStatus('就绪');
-    // 没有标签了:SFTP 面板一并收起
-    state.sftp.visible = false;
-    state.sftp.sessionId = null;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-    syncPanelButtons();
   } else if (state.activeSessionId === sessionId) {
     const keys = [...state.tabs.keys()];
-    activateTab(keys[keys.length - 1]); // 会自动应用新标签自己的 SFTP 状态
+    activateTab(keys[keys.length - 1]);
   }
   renderLayout();
 }
@@ -9728,15 +9580,8 @@ function scrollActiveTabIntoView() {
 }
 
 // =====================================================================
-// SFTP 文件面板
+// SFTP 路径工具(只剩"跟踪终端 cd 目录,给 WinSCP 起始目录用")
 // =====================================================================
-// ---- 工具函数 ----
-
-// 面板当前对应的会话 id(面板跟着活动标签走)
-function sftpSession() {
-  if (state.sftp.sessionId && state.tabs.has(state.sftp.sessionId)) return state.sftp.sessionId;
-  return state.activeSessionId;
-}
 
 // 把路径规范化:合并 . / .. ,去掉结尾 / (根目录保留 /)
 function normPath(p) {
@@ -9753,9 +9598,8 @@ function normPath(p) {
 }
 
 // 跟踪交互 shell 的 cd 命令,更新 tab.shellCwd(终端当前目录)。
-// SFTP 通道没有"当前目录"(每次操作都走绝对路径),它从登录目录开始;
-// 而交互 shell 的 cd 只影响 shell 自己 → 打开 SFTP 面板时若不知道终端在哪,
-// 路径就停在默认目录。这里监听 cd 命令维护每个标签的"当前目录",SFTP 打开时用它定位。
+// 用本机 WinSCP 拉起会话时把绝对路径作为 RemoteDirectory 传过去(避免 WinSCP 自己去探 '.'),
+// 所以这里持续记录每个标签的"当前目录";不知道就交给主进程现探家目录。
 function trackShellCwd(tab, cmdLine) {
   try {
     if (!tab) return;
@@ -9782,60 +9626,7 @@ function trackShellCwd(tab, cmdLine) {
   } catch { /* ignore */ }
 }
 
-// 把名字拼进当前目录,得到完整远程路径。
-// 目录自身以 / 结尾时不再补分隔符 —— 根 "/" 与设备文件系统根 "flash:/" 都属于这种
-// (旧版只特判 "/",flash:/ 会拼成 flash://x,进目录/上传/删除路径全错)
-function sftpJoin(name) {
-  const p = String(state.sftp.path || '/');
-  return p.endsWith('/') ? `${p}${name}` : `${p}/${name}`;
-}
-
-// 多选集合 → 当前目录里真正选中的条目列表(按 remotePath 匹配)
-function sftpSelectedEntries() {
-  return state.sftp.entries.filter((e) => state.sftp.selectedSet.has(sftpJoin(e.name)));
-}
-
-// 刷新选中高亮 + 底部"已选 N 项"提示(不重绘整列,快)
-function updateSftpSelection() {
-  for (const row of els.sftpList.querySelectorAll('.sftp-row')) {
-    row.classList.toggle('selected', state.sftp.selectedSet.has(row.dataset.path));
-  }
-  const n = state.sftp.selectedSet.size;
-  els.sftpFooter.classList.toggle('dim', n === 0);
-  els.sftpFooter.textContent = n > 0
-    ? `已选 ${n} 项(再点可取消) · 点「下载/删除」批量操作 · 点「全选」取消全选`
-    : `双击进入目录 · 单击选中(可多选,再点取消) · 点「全选」一次选完后下载/删除`;
-}
-
-// 「全选」按钮:全部选中 ↔ 全部取消(开关)
-function sftpToggleSelectAll() {
-  if (state.sftp.entries.length === 0) return;
-  const all = state.sftp.entries.map((e) => sftpJoin(e.name));
-  const allSelected = all.every((p) => state.sftp.selectedSet.has(p));
-  if (allSelected) state.sftp.selectedSet.clear();
-  else all.forEach((p) => state.sftp.selectedSet.add(p));
-  state.sftp.selected = null;
-  renderSftpList(); // 重绘会顺带刷新高亮和底部提示
-}
-
-// 计算上一级路径:/a/b/c → /a ; /a → / ; 设备文件系统根(flash:/a/b → flash:/a)也认
-function sftpParent(p) {
-  const clean = String(p || '/').replace(/\/+$/, '');
-  if (!clean) return '/';
-  // H3C Comware 等设备用 flash:/、cfcard:/ 这类文件系统根:路径不是从 / 起算,
-  // 直接按 / 切会算成 "flash:" 这种不存在的路径(点"上一级"后列表读取失败/像没反应)。
-  const m = /^([A-Za-z][A-Za-z0-9_-]*:)(\/.*)?$/.exec(clean);
-  if (m) {
-    const rest = m[2] || '';
-    if (!rest || rest === '/') return `${m[1]}/`; // flash:/ 已是根,再上一级还是它
-    const i = rest.lastIndexOf('/');
-    return i <= 0 ? `${m[1]}/` : m[1] + rest.slice(0, i);
-  }
-  const idx = clean.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return clean.slice(0, idx);
-}
-
+// 字节数 → 人类可读(1024 → 1.0 KB)
 // 字节数 → 人类可读(1024 → 1.0 KB)
 function formatSize(n) {
   if (!n) return '';
@@ -9844,16 +9635,6 @@ function formatSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// 毫秒时间戳 → "YYYY-MM-DD HH:mm"
-function formatTime(ms) {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (x) => String(x).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-// 终端右键菜单粘贴后把焦点还回终端:ctx 菜单是 <div>,点击它会把 textarea 的焦点顶掉
-// (落到 body),用户接着敲的字会全被吞掉直到再次点击终端 —— 表现就是"粘贴后打不出字/空格"。
 // =====================================================================
 // 终端里的链接:Cmd/Ctrl + 点击 → 系统默认浏览器打开
 // 需求来源:用户问「能否支持打开浏览器链接」。此前终端里 URL 只是死文本,
@@ -10018,525 +9799,24 @@ function refocusTerminal(sessionId) {
   if (t) { try { t.term.focus(); } catch { /* ignore */ } }
 }
 
-// SFTP 工具栏按钮操作完,把焦点还给终端:原生 <button> 点击后一直占着焦点,
-// 用户接着敲空格会被按钮当"激活键"吞掉(打不出空格 / 误触发按钮)。先 blur 按钮再聚焦终端。
-function sftpRefocusTerminal() {
-  if (lockOverlayVisible()) { focusLockInput(); return; }
-  const el = document.activeElement;
-  if (el && el.tagName === 'BUTTON') el.blur();
-  const t = state.tabs.get(state.activeSessionId);
-  if (t) { try { t.term.focus(); } catch { /* ignore */ } }
-}
-
-// ---- 加载 & 渲染 ----
-async function loadSftpList() {
-  const sessionId = sftpSession();
-  if (!sessionId) return;
-  const reqPath = state.sftp.path; // 请求时的目录;响应回来若会话/路径已变 → 过期结果丢弃(防快速切换目录串台)
-  // 立刻给反馈:设备慢(某些 H3C 设备 readdir 要几十秒甚至超时)时,列表要等很久才变,
-  // 旧版这段时间界面毫无动静,用户以为"点了没反应"。这里先上状态栏提示,回来再报结果。
-  setStatus(`正在读取 ${reqPath} …`, 'var(--accent)');
-  const res = await window.api.sftpList(sessionId, reqPath);
-  if (state.sftp.sessionId !== sessionId || state.sftp.path !== reqPath) return;
-  if (!res.ok) {
-    els.sftpList.innerHTML = `<div class="sftp-empty">读取失败: ${res.error}</div>`;
-    setStatus(`读取 ${reqPath} 失败: ${res.error}`, 'var(--orange)');
-    return;
-  }
-  // 用 realpath 解析出的绝对路径替换路径栏 —— 仅当请求的是相对路径('.')时。
-  // 请求绝对路径(如家目录探测结果 /root)时保留请求路径:某些堡垒机网关(SFTP 子系统
-  // chroot)会把任意路径的 realpath 返回 '/'或默认目录,覆盖掉会显示错、上传也走错目录。
-  state.sftp.path = (reqPath === '.' || reqPath === '') ? (res.cwd || state.sftp.path) : (reqPath || state.sftp.path);
-  // 第一次拿到登录目录(绝对路径)→ 作为 shell 当前目录的初始值(cd 跟踪的起点)
-  const t0 = state.tabs.get(state.sftp.sessionId);
-  if (t0 && res.cwd && !t0.shellCwd) t0.shellCwd = res.cwd;
-  state.sftp.entries = res.entries;
-  state.sftp.selected = null;
-  state.sftp.selectedSet.clear(); // 换了目录,之前的选中作废
-  // 目录变化记回标签自己的状态(切换标签回来时恢复浏览位置)
-  const t = state.tabs.get(state.sftp.sessionId);
-  if (t) t.sftpPath = state.sftp.path;
-  renderSftpList();
-  // 读取完成:把开头那句"正在读取…"换成结果;期间别的操作占了状态栏就不动它
-  if (els.toolbarStatus && els.toolbarStatus.textContent === `正在读取 ${reqPath} …`) {
-    setStatus(`已读取 ${state.sftp.path}(${(res.entries || []).length} 项)`, 'var(--text-dim)');
-  }
-}
-
-// 渲染路径栏为可点击面包屑:每段一个按钮,点击直接跳到该目录;
-// 完整路径始终可见(横向滚动,不省略),悬停 title 显示完整路径。
-function renderSftpPath(path) {
-  const el = els.sftpPath;
-  el.innerHTML = '';
-  const full = String(path || '/');
-  // 设备文件系统根(H3C Comware 的 flash:/、cfcard:/):"x:/" 整体当根段,后续段按 / 累加。
-  // 旧版按 "/" 盲切,flash:/ 会被渲染成 "/flash:"(点它跳到不存在的路径)。
-  const devRoot = /^([A-Za-z][A-Za-z0-9_-]*:)\//.exec(full);
-  const rootLabel = devRoot ? devRoot[1] + '/' : '/';
-  const rest = devRoot ? full.slice(rootLabel.length) : full.replace(/^\/+/, '');
-  const segs = rest.split('/').filter(Boolean); // 拆段;根目录 = 空
-  // 根段:unix 是 "/",设备是 "flash:/";无子段时它自己就是"当前目录"
-  const root = document.createElement('button');
-  root.className = 'sftp-path-seg root' + (segs.length ? '' : ' active');
-  root.textContent = rootLabel;
-  root.title = `跳转到 ${rootLabel}`;
-  root.addEventListener('click', () => { if (state.sftp.path !== rootLabel) { state.sftp.path = rootLabel; loadSftpList(); } });
-  el.appendChild(root);
-  // 逐段累加(每段都是可直接跳转的完整路径);根段自带结尾 "/",故首个子段前不再插分隔符
-  let acc = rootLabel;
-  let prevEndsSlash = true;
-  for (const seg of segs) {
-    if (!prevEndsSlash) {
-      const sep = document.createElement('span');
-      sep.className = 'sftp-path-sep';
-      sep.textContent = '/';
-      el.appendChild(sep);
-    }
-    acc = acc.endsWith('/') ? acc + seg : acc + '/' + seg;
-    const target = acc;
-    const btn = document.createElement('button');
-    btn.className = 'sftp-path-seg';
-    btn.textContent = seg;
-    btn.title = `跳转到 ${target}`;
-    btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
-    el.appendChild(btn);
-    prevEndsSlash = false;
-  }
-  // 当前完整路径高亮最后一段
-  const last = el.querySelector('.sftp-path-seg:last-of-type');
-  if (last) last.classList.add('active');
-  el.title = `当前目录: ${full}\n(点路径段可直接跳转)`;
-  el.scrollLeft = el.scrollWidth; // 滚动到末尾,总是看到当前所在目录
-}
-
-function renderSftpList() {
-  renderSftpPath(state.sftp.path);
-  els.sftpList.innerHTML = '';
-  if (state.sftp.entries.length === 0) {
-    els.sftpList.innerHTML = '<div class="sftp-empty">(空目录)</div>';
-    return;
-  }
-  // 目录排在前面,各自按名称排序
-  const sorted = [...state.sftp.entries].sort((a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  for (const e of sorted) {
-    const row = document.createElement('div');
-    row.className = 'sftp-row';
-    row.title = e.name;
-    const remotePath = sftpJoin(e.name);
-    row.dataset.path = remotePath; // 记住路径,多选高亮/查找都靠它
-    if (state.sftp.selectedSet.has(remotePath)) row.classList.add('selected');
-    // 刚上传成功的条目:高亮闪烁,让用户一眼看到"传到了哪"(上传目标是路径栏当前目录)
-    if (state.sftpUploadFlash && state.sftpUploadFlash.has(e.name)) {
-      row.classList.add('upload-flash');
-      row.scrollIntoView({ block: 'nearest' });
-    }
-
-    const icon = document.createElement('span');
-    icon.className = `sftp-icon ${e.isDir ? 'dir' : 'file'}`;
-    icon.textContent = e.isDir ? '📁' : '📄';
-
-    const name = document.createElement('span');
-    name.className = 'sftp-name';
-    name.textContent = e.isDir ? `${e.name}/` : e.name;
-
-    const size = document.createElement('span');
-    size.className = 'sftp-size';
-    size.textContent = e.isDir ? '' : formatSize(e.size);
-
-    const mtime = document.createElement('span');
-    mtime.className = 'sftp-mtime';
-    mtime.textContent = formatTime(e.mtime);
-
-    row.append(icon, name, size, mtime);
-
-    // 单击 = 选中/取消选中(多选:点几个选几个,再点一下取消)
-    row.addEventListener('click', () => {
-      const p = remotePath;
-      if (state.sftp.selectedSet.has(p)) state.sftp.selectedSet.delete(p);
-      else state.sftp.selectedSet.add(p);
-      state.sftp.selected = { name: e.name, isDir: e.isDir, remotePath: p };
-      updateSftpSelection(); // 只刷新高亮和底部提示,不用整列重绘
-    });
-    // 双击:目录 → 进入;文件 → 打开远程编辑器(直接改,保存即上传)
-    row.addEventListener('dblclick', () => {
-      if (e.isDir) {
-        state.sftp.path = remotePath;
-        loadSftpList();
-      } else {
-        openRemoteEditor(remotePath);
-      }
-    });
-
-    // 右键:文件/目录操作菜单(下载、编辑、重命名、复制路径、删除等)
-    row.addEventListener('contextmenu', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation(); // 别冒泡到窗口的 contextmenu/click 逻辑
-      const items = [];
-      if (e.isDir) {
-        items.push({ label: `📂 进入「${e.name}」`, action: () => { state.sftp.path = remotePath; loadSftpList(); } });
-        items.push({ separator: true });
-      }
-      items.push({ label: '⬇ 下载', action: () => downloadSftpEntry(remotePath, e.isDir) });
-      if (!e.isDir) items.push({ label: '✏ 编辑', action: () => openRemoteEditor(remotePath) });
-      items.push({ label: '🔐 权限与属性…', action: () => openSftpAttrs(remotePath, e) });
-      items.push({ label: '✂ 重命名', action: () => renameSftpEntry(remotePath, e.name) });
-      items.push({ separator: true });
-      items.push({ label: '📋 复制路径', action: () => { window.api.copyText(remotePath); setStatus(`已复制路径: ${remotePath}`, 'var(--green)'); } });
-      items.push({ label: '🗑 删除', danger: true, action: () => deleteSftpEntry(remotePath, e.name) });
-      showCtxMenu(ev.clientX, ev.clientY, items);
-    });
-
-    els.sftpList.appendChild(row);
-  }
-  updateSftpSelection(); // 渲染完统一刷新选中高亮 + 底部已选数量提示
-}
-
-// ---------- 权限 / 属主 / 修改时间(右键「🔐 权限与属性」) ----------
-// 为什么需要它:SFTP 面板只做"搬文件",而部署脚本/Web 服务最常踩的坑是权限不对
-// (600 的私钥、755 的可执行、上传后属主成了 root)。以前只能开终端敲 chmod/chown。
-// 校验在两端各做一次:渲染层即时给红字提示,主进程 lib/sftp-attrs 再复核(IPC 不是只有对话框能调)。
-let sftpAttrsTarget = null; // { sessionId, remotePath, isDir } —— 当前对话框在改谁
-
-// mode → `ls -l` 风格符号串(与 lib/sftp-attrs.js 的 modeToSymbolic 保持一致,verify-sftp-attrs 会逐值对拍)
-function modeSymbolicPreview(mode, isDir) {
-  const n = Number(mode);
-  if (!Number.isFinite(n) || n < 0) return '';
-  const m = n & 0o7777;
-  const special = (m >> 9) & 7;
-  const bits = m & 0o777;
-  const trio = (shift, bit, chr) => {
-    const r = bits >> shift & 4 ? 'r' : '-';
-    const w = bits >> shift & 2 ? 'w' : '-';
-    const x = bits >> shift & 1;
-    if (special & bit) return r + w + (x ? chr : chr.toUpperCase());
-    return r + w + (x ? 'x' : '-');
-  };
-  return (isDir ? 'd' : '-') + trio(6, 4, 's') + trio(3, 2, 's') + trio(0, 1, 't');
-}
-
-function parseAttrsModeInput(raw) {
-  const s0 = String(raw == null ? '' : raw).trim();
-  if (!s0) return { ok: false, error: '权限不能为空' };
-  const m = /^0o/i.test(s0) ? s0.slice(2) : s0;
-  if (!/^[0-7]{3,4}$/.test(m)) return { ok: false, error: '权限要写成 3~4 位八进制数字(如 644 / 755 / 4755)' };
-  return { ok: true, mode: parseInt(m, 8) };
-}
-
-function updateAttrsModePreview() {
-  if (!els.attrsModePreview) return;
-  const pm = parseAttrsModeInput(els.attrsMode.value);
-  if (!pm.ok) {
-    els.attrsModePreview.textContent = els.attrsMode.value.trim() ? pm.error : '-';
-    els.attrsModePreview.style.color = els.attrsMode.value.trim() ? 'var(--red)' : '';
-    return;
-  }
-  els.attrsModePreview.style.color = '';
-  els.attrsModePreview.textContent = `${modeSymbolicPreview(pm.mode, !!(sftpAttrsTarget && sftpAttrsTarget.isDir))}   (${pm.mode.toString(8)})`;
-}
-
-function setAttrsStatus(text, color) {
-  if (!els.attrsStatus) return;
-  els.attrsStatus.textContent = text || '';
-  els.attrsStatus.style.color = color || '';
-}
-
-function closeSftpAttrs() {
-  sftpAttrsTarget = null;
-  els.attrsModal.classList.add('hidden');
-  setAttrsStatus('');
-}
-
-// 打开对话框:先读远端属性填进去(读不到就说明原因,不允许盲改)
-async function openSftpAttrs(remotePath, entry) {
-  const sid = state.sftp.sessionId;
-  if (!sid) { setStatus('先连接一个会话再改权限', 'var(--yellow)'); return; }
-  sftpAttrsTarget = { sessionId: sid, remotePath, isDir: !!(entry && entry.isDir) };
-  els.attrsPath.textContent = remotePath;
-  els.attrsPath.title = remotePath;
-  els.attrsMode.value = '';
-  els.attrsUid.value = '';
-  els.attrsGid.value = '';
-  els.attrsMtime.value = '';
-  els.attrsRecursive.checked = false;
-  els.attrsRecursiveRow.classList.toggle('hidden', !sftpAttrsTarget.isDir);
-  els.attrsSave.disabled = true; // 读到属性之前不让点保存
-  updateAttrsModePreview();
-  setAttrsStatus('读取远端属性…', 'var(--text-dim)');
-  els.attrsModal.classList.remove('hidden');
-  focusModalInput(els.attrsModal, els.attrsMode);
-
-  try {
-    const res = await window.api.sftpStat(sid, remotePath);
-    if (!sftpAttrsTarget || sftpAttrsTarget.remotePath !== remotePath) return; // 用户已关掉/换了目标
-    if (!res || !res.ok) {
-      setAttrsStatus(`读不到属性: ${(res && res.error) || '未知错误'}`, 'var(--red)');
-      return;
-    }
-    const st = res.stat;
-    els.attrsMode.value = st.modeOctal;
-    els.attrsUid.value = String(st.uid);
-    els.attrsGid.value = String(st.gid);
-    els.attrsMtime.value = st.mtimeLocal || '';
-    els.attrsSave.disabled = false;
-    setAttrsStatus(`${st.symbolic}   大小 ${formatSize(st.size)}   修改 ${formatTime(st.mtime)}`, 'var(--text-dim)');
-    updateAttrsModePreview();
-  } catch (e) {
-    setAttrsStatus(`读不到属性: ${(e && e.message) || e}`, 'var(--red)');
-  }
-}
-
-// 保存:收集"真的改了的"项目 → 下发。没改任何项就不打扰服务器。
-async function saveSftpAttrs() {
-  if (!sftpAttrsTarget) return;
-  const { sessionId, remotePath, isDir } = sftpAttrsTarget;
-  const patch = {};
-  const errs = [];
-
-  const pm = parseAttrsModeInput(els.attrsMode.value);
-  if (!pm.ok) errs.push(pm.error); else patch.mode = pm.mode;
-
-  const uidRaw = els.attrsUid.value.trim();
-  if (uidRaw) {
-    if (!/^\d{1,7}$/.test(uidRaw)) errs.push('属主 UID 只支持数字(0 = root / 1000 等)');
-    else patch.uid = parseInt(uidRaw, 10);
-  }
-  const gidRaw = els.attrsGid.value.trim();
-  if (gidRaw) {
-    if (!/^\d{1,7}$/.test(gidRaw)) errs.push('属组 GID 只支持数字');
-    else patch.gid = parseInt(gidRaw, 10);
-  }
-  const mtRaw = els.attrsMtime.value.trim();
-  if (mtRaw) {
-    const sec = Math.floor(new Date(mtRaw).getTime() / 1000);
-    if (!Number.isFinite(sec)) errs.push('修改时间格式不正确');
-    else patch.mtime = sec;
-  }
-  if (errs.length) { setAttrsStatus(errs.join(';'), 'var(--red)'); return; }
-
-  const recursive = !!(isDir && els.attrsRecursive.checked);
-  els.attrsSave.disabled = true;
-  setAttrsStatus(recursive ? '正在递归修改…(条目多时需要一点时间)' : '正在修改…', 'var(--text-dim)');
-  try {
-    const res = await window.api.sftpSetAttrs(sessionId, remotePath, patch, recursive);
-    if (!res || !res.ok) {
-      // 部分成功也算失败但要分清:失败条目原因在 res.errors 里
-      const detail = (res && res.errors && res.errors.length) ? res.errors[0] : ((res && res.error) || '未知错误');
-      const done = res && res.applied ? `(已改 ${res.applied}/${res.total})` : '';
-      setAttrsStatus(`修改失败${done}: ${detail}`, 'var(--red)');
-      addLog(`🔐 权限修改失败 ${remotePath}: ${detail}`, true);
-      els.attrsSave.disabled = false;
-      return;
-    }
-    const txt = res.text || '';
-    setStatus(`已修改 ${remotePath} ${res.applied > 1 ? `${res.applied} 项` : ''} ${txt}`.trim(), 'var(--green)');
-    addLog(`🔐 已修改 ${remotePath}${recursive ? ` 及其中 ${res.applied - 1} 项` : ''}${txt ? ` (${txt})` : ''}`);
-    closeSftpAttrs();
-    loadSftpList(); // 权限/时间变了,列表里的时间列可能跟着变
-  } catch (e) {
-    setAttrsStatus(`修改失败: ${(e && e.message) || e}`, 'var(--red)');
-    els.attrsSave.disabled = false;
-  }
-}
-
-els.attrsMode.addEventListener('input', updateAttrsModePreview);
-els.attrsSave.addEventListener('click', saveSftpAttrs);
-els.attrsCancel.addEventListener('click', closeSftpAttrs);
-els.attrsModal.addEventListener('click', (ev) => { if (ev.target === els.attrsModal) closeSftpAttrs(); });
-els.attrsModal.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape') { ev.stopPropagation(); closeSftpAttrs(); }
-  else if (ev.key === 'Enter' && !els.attrsSave.disabled) { ev.preventDefault(); saveSftpAttrs(); }
-});
-// 快捷档位(644/755/600/700):点一下填进输入框,不用背八进制
-els.attrsModal.querySelectorAll('[data-attrs-mode]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    els.attrsMode.value = btn.dataset.attrsMode;
-    updateAttrsModePreview();
-    els.attrsMode.focus();
-  });
-});
-
-// ---- 传输记录(第 5 课)----
-// 每次上传/下载/新建/删除都留一行记录,让用户看得见"刚才发生了什么"。
-function addLog(text, isError) {
-  const now = new Date();
-  const p = (x) => String(x).padStart(2, '0');
-  const time = `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
-  state.sftp.log.push({ time, text, isError: !!isError });
-  if (state.sftp.log.length > 50) state.sftp.log.shift(); // 最多留 50 条
-  renderSftpLog();
-}
-
-// ---------- SFTP 远程文件编辑(双击文件 / 点"✏ 编辑") ----------
-let editRemotePath = null; // 正在编辑的远程文件路径
-
-// 打开远程文件到编辑弹窗(读内容 → 显示 → 保存写回)
-async function openRemoteEditor(remotePath) {
-  const sid = state.sftp.sessionId;
-  if (!sid) return;
-  const res = await window.api.sftpReadFile(sid, remotePath);
-  if (!res || !res.ok) { alert(res && res.error ? res.error : '读取失败'); return; }
-  editRemotePath = remotePath;
-  els.editPath.textContent = remotePath;
-  els.editContent.value = res.content;
-  els.editModal.classList.remove('hidden');
-  els.editContent.focus();
-}
-
-function closeEditor() {
-  editRemotePath = null;
-  els.editModal.classList.add('hidden');
-}
-
-// 保存:把编辑框内容写回远程文件 → 刷新 SFTP 列表
-async function saveRemoteFile() {
-  if (!editRemotePath) return;
-  const sid = state.sftp.sessionId;
-  if (!sid) return;
-  const target = editRemotePath; // 先存下路径(closeEditor 会把 editRemotePath 清空,别让提示信息显示成 null)
-  const res = await window.api.sftpWriteFile(sid, target, els.editContent.value);
-  if (res && res.ok) {
-    closeEditor();
-    addLog(`已保存远程文件: ${target}`, false);
-    loadSftpList(); // 文件大小/时间变了,刷新
-    setStatus(`已保存: ${target}`, 'var(--green)');
-  } else {
-    alert(res && res.error ? `保存失败: ${res.error}` : '保存失败');
-  }
-}
-
-// 工具栏"✏ 编辑"按钮:编辑当前选中的那个文件(选了目录/没选则提示)
-function editSelectedFile() {
-  const sel = state.sftp.selected;
-  if (!sel || !sel.remotePath) { alert('先在文件列表里选中一个文件(单击)'); return; }
-  if (sel.isDir) { alert('这是目录,只能编辑文件'); return; }
-  openRemoteEditor(sel.remotePath);
-}
-
-function renderSftpLog() {
-  if (state.sftp.log.length === 0) {
-    els.sftpLog.classList.add('hidden');
-    return;
-  }
-  els.sftpLog.classList.remove('hidden');
-  els.sftpLog.innerHTML = state.sftp.log
-    .map((l) => `<div class="sftp-log-item ${l.isError ? 'err' : ''}"><span class="sftp-log-time">${l.time}</span>${l.text}</div>`)
-    .join('');
-  els.sftpLog.scrollTop = els.sftpLog.scrollHeight; // 滚动到底,看最新一条
-}
-
-// SFTP 工具栏连接标签:显示当前连接的名称 + IP(无连接/面板清空时置空)
-function setSftpConnLabel(sessionId) {
-  const t = sessionId ? state.tabs.get(sessionId) : null;
-  const s = t && t.session;
-  els.sftpConn.textContent = t ? sftpSessionText(t) : '';
-  els.sftpConn.title = s
-    ? (s.displayHost
-      ? `SFTP 浏览: ${s.name} · 经堡垒机 ${s.host}:${s.port} → 目标 ${s.displayHost}`
-      : `SFTP 浏览: ${s.name} · ${s.host}:${s.port}`)
-    : '点击切换浏览哪台已连接主机的文件';
-}
-
-// 会话在 SFTP 面板/下拉里的展示文本。
-// 堡垒机会话的 host/port 是堡垒机网关地址,同堡垒机所有主机都一样 → 必须用真实目标主机(资产地址)区分。
-// 真实目标优先取会话记录的 displayHost;老会话(记录缺失)从 jmsKey(serverId|资产地址|账号)
-// 或 username(用户@协议@账号@资产地址)反推。
-// 目标 IP 放最前:标签/下拉空间不足被截断时,丢掉的是主机名而不是区分用的 IP。
-function sftpSessionText(t) {
-  const s = t && t.session;
-  if (!s) return '';
-  let host = s.displayHost || '';
-  let account = '';
-  const kp = s.jmsKey ? String(s.jmsKey).split('|') : [];
-  if (!host && kp[1]) host = kp[1]; // jmsKey = serverId|资产地址|账号
-  if (kp[2]) account = kp[2];
-  const up = String(s.username).split(/[@#]/).filter(Boolean);
-  if (!account && up.length >= 3) account = up[up.length - 2];
-  if (!host && up.length >= 4) host = up[up.length - 1];
-  if (host) {
-    // H3C 会话 username 就是账号(不含 @)
-    if (!account && !String(s.username).includes('@') && !String(s.username).includes('#')) account = s.username;
-    const port = s.displayPort || 22;
-    return `${host} · ${s.name}${account ? '(' + account + ')' : ''}${port && port !== 22 ? ':' + port : ''}`;
-  }
-  return `${s.name} · ${s.host}:${s.port}`;
-}
-
-// 收起当前标签的 SFTP 面板(并记住它已关闭;别的标签的 SFTP 状态不受影响)
-function closeSftpPanel() {
-  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
-  if (active) active.sftpOpen = false;
-  state.sftp.visible = false;
-  state.sftp.sessionId = null;
-  els.sftpPanel.classList.add('hidden');
-  els.dividerH.classList.add('hidden');
-  els.btnSftpToggle.classList.remove('active');
-  setSftpConnLabel(null);
-  refitAll();
-  syncPanelButtons();
-}
-
 // =====================================================================
 // 用本机 WinSCP 打开会话(SFTP)
 // —— 见 docs/decision-winscp-integration.md:WinSCP 是 Windows-only 原生程序(GPLv3)
 //    无库 API,所以不"集成引擎",只把"主机/账号/密码"拼成一条 SFTP 会话 URL 外链拉起。
-// 前提:本机装了 WinSCP(state.winScp.installed);没装时所有入口都不出现/自动回落内置面板。
+// 前提:本机装了 WinSCP(state.winScp.installed);没装时入口点了给提示(v1.0.25 起没有内置面板)。
 // 安全:密码只交给主进程拼 argv / 会话 URL,不落盘、不写日志(日志里一律 ***)。
 // =====================================================================
-// 默认 = 'button'(点 SFTP 开内置面板,面板工具栏给「🪟 WinSCP」按钮)。
-// v1.0.15 曾把默认设成 'replace'(点 SFTP 直接拉 WinSCP),但很多内网/嵌入式设备上
-// WinSCP 根本进不去(见 docs/winscp-realpath-fix.md),默认不该把用户挡在门外 → v1.0.22 改回内置面板。
-function winScpMode() {
-  const m = state.settings.winscpMode;
-  return (m === 'replace' || m === 'button' || m === 'panel') ? m : 'button';
-}
+// SFTP 只有一个入口:本机 WinSCP(v1.0.25 起内置面板整套删除)。
+// 没装 WinSCP / 非 Windows 时入口点了给提示,不存在"面板回落"这套分支。
 // WinSCP 会话协议:'sftp'(默认) | 'scp'(绕过 SFTP 子系统,给老设备留路)
 function winScpProtocol() {
   return state.settings.winscpProtocol === 'scp' ? 'scp' : 'sftp';
 }
 
-// =====================================================================
-// SFTP 传输限速(设置项 → 主进程 lib/ssh-client 的节流流)
-// 限速对"所有连接"生效:上传/下载/批量/目录递归都走同一对 uploadFile/downloadFile。
-// 0 = 不限速(不插节流流,零开销)。
-// =====================================================================
-function sftpLimitKbps() {
-  const n = Number(state.settings.sftpSpeedLimitKBps);
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
-}
-
-function refreshSftpLimitNote() {
-  if (els.sftpLimitNote) {
-    els.sftpLimitNote.textContent = sftpLimitKbps() > 0
-      ? `当前:每条连接 ${sftpLimitKbps()} KB/s`
-      : '当前:不限速(用带宽上限跑)';
-  }
-}
-
-// 把当前设置的限速推给主进程。启动/改设置/连接前都可以安全重复调用(幂等)。
-async function applySftpLimit() {
-  try {
-    const res = await window.api.sftpSetTransferLimit(sftpLimitKbps());
-    return res;
-  } catch (e) {
-    console.warn('设置传输限速失败', e && e.message);
-    return { ok: false };
-  }
-}
-
-// 面板里的「🪟 WinSCP」按钮:只在"装了 WinSCP + 模式选了带按钮的那个"时出现
-function refreshWinScpButton() {
-  if (!els.btnSftpWinScp) return;
-  els.btnSftpWinScp.classList.toggle('hidden', !(state.winScp.installed && winScpMode() === 'button'));
-}
-
 async function detectWinScp() {
   const r = await window.api.winScpDetect().catch(() => null);
   state.winScp = { installed: !!(r && r.ok && r.installed), path: (r && r.path) || '' };
-  refreshWinScpButton();
+  syncSftpEntryButton();
   return state.winScp;
 }
 
@@ -10564,12 +9844,8 @@ function winScpPayloadFor(sessionId) {
   const s = t && t.session;
   if (!s) return { error: '找不到该会话的连接信息(先连上这台主机再试)' };
   if ((s.protocol || 'ssh') === 'telnet') return { error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
-  // 交给 WinSCP 的起始目录:优先面板当前目录(同一会话),否则标签自己记住的 SFTP 路径,
-  // 再否则交互 shell 里跟踪到的 cd 目录。相对/未知一律不传,让 WinSCP 自己落位。
-  let remotePath = '';
-  if (state.sftp.visible && state.sftp.sessionId === sessionId) remotePath = state.sftp.path || '';
-  if (!remotePath) remotePath = (t.sftpPath && t.sftpPath !== '.') ? t.sftpPath : '';
-  if (!remotePath) remotePath = t.shellCwd || '';
+  // 起始目录:只用终端跟踪到的绝对路径(cd 跟踪);没有就留空,交给主进程现探家目录
+  const remotePath = t.shellCwd || '';
   return {
     sessionId,                       // 起始目录未知时主进程用它现探一次家目录(exec pwd)
     protocol: 'ssh',
@@ -10586,7 +9862,7 @@ function winScpPayloadFor(sessionId) {
 }
 
 async function openSessionInWinScp(sessionId) {
-  const sid = sessionId || state.sftp.sessionId || state.activeSessionId;
+  const sid = sessionId || state.activeSessionId;
   const payload = winScpPayloadFor(sid);
   if (payload.error) { setStatus(payload.error, 'var(--orange)'); return false; }
   if (!state.winScp.installed) {
@@ -10608,261 +9884,33 @@ async function openSessionInWinScp(sessionId) {
   return true;
 }
 
-// ---- 面板开关:只开关"当前激活标签"自己的 SFTP(各标签独立) ----
-function toggleSftpPanel() {
-  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
-  // Telnet 会话没有 SFTP 通道(仅 SSH 协议能力):提醒后不开面板
-  if (active && active.session && (active.session.protocol || 'ssh') === 'telnet') {
-    addLog('📁 SFTP 仅支持 SSH 会话', true);
+// 工具栏按钮 / ⌘⇧S / 菜单「SFTP」的唯一实现:把当前会话交给 WinSCP
+async function openSftpEntry(sessionId) {
+  const t = (sessionId ? state.tabs.get(sessionId) : null)
+    || (state.activeSessionId ? state.tabs.get(state.activeSessionId) : null);
+  if (!t) { setStatus('先连接一台主机,再用 WinSCP 打开 SFTP', 'var(--orange)'); return; }
+  if ((t.session && (t.session.protocol || 'ssh')) === 'telnet') {
+    setStatus('SFTP 仅支持 SSH 会话(Telnet 没有 SFTP)', 'var(--orange)');
     return;
   }
-  if (!active) {
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    syncPanelButtons();
+  if (!state.winScp.installed) {
+    dlog('WINSCP', '本机未检测到 WinSCP,SFTP 入口不可用');
+    setStatus('本机没装 WinSCP,无法打开 SFTP(装好后重开本窗口;自定义安装路径可设 POLARIS_WINSCP_PATH)', 'var(--orange)');
     return;
   }
-  if (active.sftpOpen) {
-    // 关闭:只关当前标签的 SFTP(别的标签开没开互不影响)
-    active.sftpOpen = false;
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-  } else if (winScpMode() === 'replace' && state.winScp.installed) {
-    // 设置里选了"打开 SFTP 时用 WinSCP"→ 拉起 WinSCP,不显示内置面板。
-    // 拉起失败(路径变了/被杀软拦)自动回落内置面板,不让功能"凭空消失"。
-    openSessionInWinScp(active.sessionId).then((ok) => {
-      if (!ok) {
-        dlog('WINSCP', '拉起失败 → 回落内置 SFTP 面板(功能不消失)');
-        openInlineSftp(active); refitAll(); syncPanelButtons();
-      }
-    });
-    refitAll();
-    syncPanelButtons();
-    return;
-  } else {
-    openInlineSftp(active);
-  }
-  refitAll(); // 终端区域高度变了,重新适配
-  syncPanelButtons();
+  await openSessionInWinScp(t.sessionId);
 }
 
-// 打开内置 SFTP 面板(记录到当前标签,浏览它的目录)
-function openInlineSftp(active) {
-  if (!active) return;
-  // 打开:记录到当前标签,浏览它的目录
-  active.sftpOpen = true;
-  state.sftp.visible = true;
-  state.sftp.sessionId = active.sessionId;
-  // 优先定位到终端当前目录(跟踪 cd 的结果);终端目录未知时,探测默认家目录
-  // (规则:当前用户家目录优先,无家目录则 /tmp),再退回上次浏览/默认
-  const sid = active.sessionId;
-  state.sftp.selected = null;
-  els.sftpPanel.classList.remove('hidden');
-  els.dividerH.classList.remove('hidden');
-  setSftpConnLabel(sid);
-  if (active.shellCwd) {
-    state.sftp.path = active.shellCwd;
-    loadSftpList();
-  } else if (active.sftpPath && active.sftpPath !== '.') {
-    state.sftp.path = active.sftpPath;
-    loadSftpList();
-  } else {
-    // 探测默认家目录(主进程:realpath '.' 非根 → 用它;否则找 /root、/home/<user>,都没有 → /tmp)
-    state.sftp.path = '.';
-    window.api.sftpHome(sid).then((r) => {
-      if (state.sftp.sessionId !== sid || !state.sftp.visible) return; // 已切换/关闭
-      if (r && r.ok && r.home) state.sftp.path = r.home;
-      loadSftpList();
-    }).catch(() => loadSftpList());
-  }
-  // 面板每次打开都按当前状态刷一次 WinSCP 按钮(装/没装、模式改过都能立刻反映)
-  refreshWinScpButton();
+// 工具栏 SFTP 按钮:没装 WinSCP 时标灰(点了给提示,不做"假入口")
+function syncSftpEntryButton() {
+  const btn = els.btnSftpToggle;
+  if (!btn) return;
+  const ok = !!state.winScp.installed;
+  btn.classList.toggle('dim', !ok);
+  btn.title = ok
+    ? '用本机 WinSCP 打开当前会话的 SFTP(主机/账号/密码自动带过去) ⌘⇧S'
+    : '本机未检测到 WinSCP —— SFTP 由 WinSCP 打开,装好后重开窗口即可';
 }
-
-// ---- SFTP 连接切换下拉:列出所有已连接的 SSH 会话,点选 = 切到该标签并打开它的 SFTP ----
-function toggleSftpConnMenu() {
-  const menu = els.sftpConnMenu;
-  if (!menu.classList.contains('hidden')) { menu.classList.add('hidden'); return; }
-  menu.textContent = '';
-  const conns = [...state.tabs.values()]
-    .filter((t) => t.status === 'connected' && (t.session.protocol || 'ssh') !== 'telnet')
-    .sort((a, b) => (a.session.name || '').localeCompare(b.session.name || ''));
-  if (!conns.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ctx-item dim';
-    empty.textContent = '没有已连接的 SSH 会话';
-    menu.appendChild(empty);
-  }
-  for (const t of conns) {
-    const item = document.createElement('div');
-    item.className = 'ctx-item' + (t.sessionId === state.sftp.sessionId && state.sftp.visible ? ' active' : '');
-    // 堡垒机会话显示真实目标主机(资产地址),避免同堡垒机的多台主机都显示网关地址分不清
-    item.textContent = sftpSessionText(t);
-    item.title = t.session.displayHost
-      ? `堡垒机 ${t.session.host}:${t.session.port} → 目标 ${t.session.displayHost}`
-      : `${t.session.username}@${t.session.host}:${t.session.port}`;
-    item.addEventListener('click', () => {
-      menu.classList.add('hidden');
-      if (state.activeSessionId !== t.sessionId) activateTab(t.sessionId); // 应用该标签自己的 SFTP 状态
-      if (!t.sftpOpen) toggleSftpPanel(); // 该标签还没开 SFTP → 顺手打开
-      setStatus(`SFTP 已切换到「${t.session.name}」`, 'var(--green)');
-    });
-    menu.appendChild(item);
-  }
-  const rect = els.sftpConn.getBoundingClientRect();
-  menu.style.left = `${Math.max(8, rect.left)}px`;
-  menu.style.top = `${rect.bottom + 4}px`;
-  menu.classList.remove('hidden');
-}
-
-// ---- 工具按钮 ----
-async function sftpGoUp() {
-  const cur = state.sftp.path || '/';
-  const up = sftpParent(cur);
-  // 已经在根目录:再点也不会变(旧版仍去读一次同目录 —— 慢设备上要等 40s 超时,表现为"点了没反应")
-  if (up === cur) {
-    setStatus(`已在根目录 ${cur},无法再上一级`, 'var(--orange)');
-    return;
-  }
-  state.sftp.path = up;
-  loadSftpList();
-}
-
-function sftpMakeDir() {
-  // 用自定义输入弹窗代替 window.prompt(新版 Chromium 不支持 prompt)
-  showPrompt({
-    title: '新建目录',
-    label: '目录名',
-    value: 'new-folder',
-    onOk: async (name) => {
-      if (!name) return;
-      const target = sftpJoin(name);
-      const res = await window.api.sftpMkdir(sftpSession(), target);
-      if (!res.ok) { addLog(`➕ 新建目录失败 ${target}: ${res.error}`, true); alert(`新建失败: ${res.error}`); return; }
-      addLog(`➕ 新建目录 ${target} ✅`);
-      loadSftpList();
-      sftpRefocusTerminal(); // 弹窗确认按钮也别占焦点,还回终端(否则敲空格被吞)
-    },
-  });
-}
-
-// ---- 右键菜单操作:单条目下载 / 重命名 / 删除 ----
-// 下载单个文件/目录:单文件走保存对话框(能看见目标路径),目录走"选文件夹"递归下载
-// 仿 WinSCP:发起即返回,后台跑,完成/进度由事件驱动
-async function downloadSftpEntry(remotePath, isDir) {
-  const sid = sftpSession();
-  const res = isDir
-    ? await window.api.sftpDownloadMany(sid, [{ remotePath, isDir: true }])
-    : await window.api.sftpDownload(sid, remotePath);
-  sftpRefocusTerminal();
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
-    return;
-  }
-  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
-}
-
-// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
-function renameSftpEntry(remotePath, name) {
-  showPrompt({
-    title: '重命名',
-    label: '新名称',
-    value: name,
-    onOk: async (newName) => {
-      if (!newName || newName === name) return;
-      const dir = remotePath.slice(0, remotePath.lastIndexOf('/'));
-      const to = dir === '/' ? `/${newName}` : `${dir}/${newName}`;
-      const res = await window.api.sftpRename(sftpSession(), remotePath, to);
-      if (!res.ok) { alert(`重命名失败: ${res.error}`); addLog(`✂ 重命名失败 ${remotePath} → ${to}: ${res.error}`, true); return; }
-      addLog(`✂ 重命名 ${remotePath} → ${to} ✅`);
-      setStatus(`已重命名 → ${to}`, 'var(--green)');
-      loadSftpList();
-      sftpRefocusTerminal();
-    },
-  });
-}
-
-// 删除单个文件/目录(目录递归删空内容)
-function deleteSftpEntry(remotePath, name) {
-  const isDir = remotePath.endsWith('/') || state.sftp.entries.find((x) => sftpJoin(x.name) === remotePath)?.isDir;
-  const tip = isDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
-  if (!confirm(`确定删除「${remotePath}」吗?${tip}`)) return;
-  (async () => {
-    const sid = sftpSession();
-    const res = await window.api[isDir ? 'sftpRmdir' : 'sftpDelete'](sid, remotePath);
-    if (!res.ok) { addLog(`🗑 删除失败 ${remotePath}: ${res.error}`, true); alert(`删除失败: ${res.error}`); return; }
-    addLog(`🗑 删除 ${remotePath} ✅`);
-    setStatus(`已删除 ${remotePath}`, 'var(--orange)');
-    loadSftpList();
-    sftpRefocusTerminal();
-  })();
-}
-
-async function sftpDeleteSelected() {
-  const list = sftpSelectedEntries();
-  if (list.length === 0) { alert('先选中要删除的文件/目录(可点「全选」一次选完)'); return; }
-  const hasDir = list.some((e) => e.isDir);
-  const tip = hasDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
-  const names = list.map((e) => `${e.isDir ? '📁' : '📄'} ${sftpJoin(e.name)}`).join('\n');
-  if (!confirm(`确定删除以下 ${list.length} 项吗?${tip}\n\n${names}`)) return;
-  for (const e of list) {
-    const path = sftpJoin(e.name); // 条目没有 remotePath,用 sftpJoin(name) 拼出完整路径
-    const res = await window.api[e.isDir ? 'sftpRmdir' : 'sftpDelete'](sftpSession(), path);
-    if (!res.ok) { addLog(`🗑 删除失败 ${path}: ${res.error}`, true); alert(`删除失败 ${path}: ${res.error}`); continue; }
-    addLog(`🗑 删除 ${path} ✅`);
-  }
-  loadSftpList();
-  sftpRefocusTerminal(); // 删除完焦点还给终端(按钮占焦点会吞空格)
-}
-
-async function sftpUpload(mode) {
-  // macOS 对话框 openFile+openDirectory 同开会退化成只能选文件夹 → 先让用户选文件/文件夹,
-  // 各用单一属性打开(mode: 'file' 只选文件 | 'dir' 只选文件夹 | 省略=都允许,兼容旧调用)
-  // 仿 WinSCP:对话框选完后立即返回(job 后台跑),进度/完成/取消由事件驱动
-  const res = await window.api.sftpUpload(sftpSession(), state.sftp.path, mode);
-  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') {
-      addLog(`⬆ 上传失败: ${res.error}`, true);
-      alert(`上传失败: ${res.error}`);
-      // alert 是原生模态框,关闭后焦点/输入法状态可能被打乱(日志:上传失败后终端空格全吞、
-      // 死键刷屏、只剩回车能发)。强制把焦点和 IME 状态还给终端,否则上传失败后终端没法打字。
-      sftpRefocusTerminal();
-      const tt = state.tabs.get(state.activeSessionId);
-      if (tt && tt.__imeReset) try { tt.__imeReset(); } catch { /* ignore */ }
-    }
-    return;
-  }
-  // job 已启动,立即反馈"已开始";完成/失败/取消由 onSftpDone 处理(刷新+标记+状态)
-  setStatus(`上传已开始 → ${state.sftp.path}…`, 'var(--accent)');
-}
-
-async function sftpDownload() {
-  // 文件 + 目录都能选:目录递归下载到本地同名子文件夹
-  // 仿 WinSCP:对话框选完即返回,后台跑,进度/完成/取消由事件驱动
-  const selected = sftpSelectedEntries();
-  if (selected.length === 0) { alert('先选中要下载的文件/目录(可点「全选」一次选完)'); return; }
-  const res = (selected.length === 1 && !selected[0].isDir)
-    ? await window.api.sftpDownload(sftpSession(), sftpJoin(selected[0].name))
-    : await window.api.sftpDownloadMany(sftpSession(), selected.map((f) => ({ remotePath: sftpJoin(f.name), isDir: !!f.isDir })));
-  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') {
-      addLog(`⬇ 下载失败: ${res.error}`, true);
-      const permTip = /EPERM|EACCES|operation not permitted|permission denied/i.test(res.error)
-        ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):换个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 里添加 Polaris(Electron)'
-        : '';
-      alert(`下载失败: ${res.error}${permTip}`);
-    }
-    return;
-  }
-  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
-}
-
-// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
 
 // =====================================================================
 // 窗口尺寸变化 → 所有终端重新适配
@@ -10958,13 +10006,6 @@ makeResizer(els.dividerV, 'x',
   160, 500, false,
   () => { state.settings.sessionPanelWidth = els.sessionPanel.offsetWidth; saveSettings(); });
 
-// 上下分隔条:调 SFTP 面板高度(范围 120~450px),高度持久化
-makeResizer(els.dividerH, 'y',
-  () => els.sftpPanel.offsetHeight,
-  (h) => { els.sftpPanel.style.height = `${h}px`; },
-  120, 450, false,
-  () => { state.settings.sftpPanelHeight = els.sftpPanel.offsetHeight; saveSettings(); });
-
 // 堡垒机 webview 的 guest view 会盖住相邻分隔条,并吞掉进入其矩形内的鼠标事件(宿主 CSS 无法干预):
 // 拖拽期间临时 visibility:hidden(不重载画面),松开恢复 —— 否则横分隔条收不到 mousedown、拖动进入 webview 区域时 mousemove 断流。
 const wvHideWhileDrag = () => { els.bastionWebview.style.visibility = 'hidden'; };
@@ -10973,8 +10014,7 @@ const wvShowAfterDrag = () => { els.bastionWebview.style.visibility = ''; };
 // 堡垒机面板分隔条:拖动左右调面板宽度(范围 300~1200px),宽度持久化
 // reverse=true:面板在分隔条右侧 → 往左拖 = 面板变宽(符合直觉)
 applyBastionDefaultWidth();
-applySessionPanelWidth(); // 会话列表宽度 / SFTP 面板高度持久化恢复
-applySftpPanelHeight();
+applySessionPanelWidth(); // 会话列表宽度持久化恢复
 makeResizer(els.dividerBastion, 'x',
   () => els.bastionPanel.offsetWidth,
   (w) => { els.bastionPanel.style.width = `${w}px`; },
@@ -11221,7 +10261,7 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:check-update') { openAbout(); checkUpdate(); }
   else if (ch === 'menu:split-v') splitActivePane('v');
   else if (ch === 'menu:split-h') splitActivePane('h');
-  else if (ch === 'menu:sftp') toggleSftpPanel();
+  else if (ch === 'menu:sftp') openSftpEntry();
   else if (ch === 'menu:tunnel') openTunnelModal();
   else if (ch === 'menu:batch') toggleBatchPanel();
   else if (ch === 'menu:quick') openQuickModal();
@@ -11282,8 +10322,6 @@ els.vsTree.addEventListener('click', () => setSessionView('tree')); // 树形视
 // 批量操作
 els.batchConnect.addEventListener('click', batchConnect);
 els.batchClose.addEventListener('click', batchClose);
-els.batchUpload.addEventListener('click', batchUpload);
-els.batchDownload.addEventListener('click', batchDownload);
 els.batchDelete.addEventListener('click', batchDelete);
 els.batchClear.addEventListener('click', batchClear);
 
@@ -11868,17 +10906,6 @@ els.setAutoFillPw.addEventListener('change', () => {
   state.settings.autoFillPassword = els.setAutoFillPw.checked;
   saveSettings();
 });
-// 打开 SFTP 时用内置面板还是拉 WinSCP(面板里 WinSCP 按钮的显隐也随之变)
-els.setWinScpMode.addEventListener('change', () => {
-  state.settings.winscpMode = els.setWinScpMode.value || 'button';
-  state.settings.winscpModeMigrated = true; // 用户自己选了,以后不再自动迁移
-  saveSettings();
-  refreshWinScpButton();
-  setStatus(winScpMode() === 'replace'
-    ? (state.winScp.installed ? '以后打开 SFTP 直接用 WinSCP' : '以后打开 SFTP 用内置面板(本机没装 WinSCP)')
-    : (winScpMode() === 'button' ? '打开 SFTP 用内置面板(面板里加了 WinSCP 按钮)' : '打开 SFTP 只用内置面板'),
-  'var(--text-dim)');
-});
 // WinSCP 协议(SFTP / SCP):只影响下次拉起 WinSCP(不用重连)
 if (els.setWinScpProtocol) {
   els.setWinScpProtocol.addEventListener('change', () => {
@@ -11889,15 +10916,6 @@ if (els.setWinScpProtocol) {
       : '以后用 WinSCP 打开走 SFTP(标准协议)', 'var(--text-dim)');
   });
 }
-// 传输限速:改完立刻推给主进程(所有 upload/download 都会用新速率,不必重连)
-els.setSftpLimit.addEventListener('change', () => {
-  const kbps = Math.max(0, parseInt(els.setSftpLimit.value, 10) || 0);
-  els.setSftpLimit.value = String(kbps);
-  state.settings.sftpSpeedLimitKBps = kbps;
-  saveSettings();
-  applySftpLimit();
-  refreshSftpLimitNote();
-});
 els.setLockIdle.addEventListener('change', () => {
   state.settings.lockIdleMin = Math.max(0, parseInt(els.setLockIdle.value, 10) || 0);
   saveSettings();
@@ -12281,79 +11299,12 @@ els.kbAiToggle.addEventListener('change', () => {
 function syncKbToggle() {
   els.kbAiToggle.checked = state.settings.kbEnabled !== false;
 }
-els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
-// 面板里的「🪟 WinSCP」按钮:用当前浏览的那个会话的凭据拉起 WinSCP
-els.btnSftpWinScp.addEventListener('click', () => openSessionInWinScp(state.sftp.sessionId || state.activeSessionId));
+// 工具栏「SFTP」= 用本机 WinSCP 打开当前会话(唯一入口)
+els.btnSftpToggle.addEventListener('click', () => openSftpEntry());
 // 启动时探测一次本机有没有装 WinSCP(决定所有入口显不显示)
 detectWinScp();
 // 启动时探测一次 H3C 客户端(决定非 SSH 资产双击是"交给客户端打开"还是"查看说明")
 detectH3cClient();
-applySftpLimit(); // 启动时把已保存的传输限速推给主进程(设置里改过的值重启后仍生效)
-// SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
-els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
-document.addEventListener('click', (e) => {
-  if (!els.sftpConnMenu.contains(e.target) && !els.sftpConn.contains(e.target)) els.sftpConnMenu.classList.add('hidden');
-});
-els.btnSftpUp.addEventListener('click', sftpGoUp);
-// 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
-els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
-// 路径栏右键:复制完整路径 / 粘贴路径并跳转(SFTP 界面复制粘贴;粘贴任意远程路径直接导航过去)
-els.sftpPath.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  const cur = state.sftp.path || '/';
-  showCtxMenu(e.clientX, e.clientY, [
-    { label: '📋 复制完整路径', action: () => { window.api.copyText(cur); setStatus(`已复制路径: ${cur}`, 'var(--green)'); } },
-    { separator: true },
-    { label: '📥 粘贴路径并跳转…', action: () => showPrompt({
-      title: '跳转到远程目录', label: '远程路径(可直接粘贴)', value: cur, password: false,
-      onOk: (p) => { const np = String(p || '').trim(); if (np) { state.sftp.path = normPath(np); loadSftpList(); } },
-    }) },
-  ]);
-});
-els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
-// 拖拽上传(仿 WinSCP):本地文件/文件夹拖进 SFTP 面板 → 传到当前目录
-els.sftpList.addEventListener('dragover', (e) => {
-  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    els.sftpPanel.classList.add('sftp-drop-over');
-  }
-});
-els.sftpList.addEventListener('dragleave', () => els.sftpPanel.classList.remove('sftp-drop-over'));
-els.sftpList.addEventListener('drop', async (e) => {
-  e.preventDefault();
-  els.sftpPanel.classList.remove('sftp-drop-over');
-  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-  if (!files.length) return;
-  // contextIsolation 下 webUtils.getPathForFile 经 preload 桥拿真实路径
-  const paths = [];
-  for (const f of files) {
-    try { const p = await window.api.getPathForFile(f); if (p) paths.push(p); } catch { /* 忽略单个失败 */ }
-  }
-  if (!paths.length) { setStatus('未能读取拖入文件的路径', 'var(--red)'); return; }
-  const target = state.sftp.path || '/';
-  setStatus(`正在上传 ${paths.length} 个本地项到 ${target}…`, 'var(--accent)');
-  const res = await window.api.sftpUploadPaths(sftpSession(), target, paths);
-  // 上传已改为后台 job:这里只返回 {ok, jobId},完成/失败/刷新由 sftp:done 统一处理。
-  // 旧版按同步返回值读 res.count → 立刻显示"上传完成: undefined 个",而且此时文件还没开始传。
-  if (res && res.ok) setStatus(`上传已开始(${paths.length} 个)→ ${target}`, 'var(--accent)');
-  else setStatus(`上传失败: ${(res && res.error) || '未知错误'}`, 'var(--red)');
-});
-els.btnSftpUpload.addEventListener('click', (e) => {
-  // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
-  showCtxMenu(e.clientX, e.clientY, [
-    { label: '📄 上传文件…', action: () => sftpUpload('file') },
-    { label: '📁 上传文件夹…', action: () => sftpUpload('dir') },
-  ]);
-});
-els.btnSftpDownload.addEventListener('click', sftpDownload);
-els.btnSftpDelete.addEventListener('click', sftpDeleteSelected);
-els.btnSftpSelectAll.addEventListener('click', sftpToggleSelectAll);
-els.btnSftpTransfersClear.addEventListener('click', clearSftpTransfers); // 清空传输历史(本次会话)
-// SFTP 远程编辑
-els.btnSftpEdit.addEventListener('click', editSelectedFile);
-els.editSave.addEventListener('click', saveRemoteFile);
-els.editCancel.addEventListener('click', closeEditor);
 // 批量执行面板
 els.btnBatch.addEventListener('click', toggleBatchPanel);
 els.batchPanelClose.addEventListener('click', () => { els.batchPanel.classList.add('hidden'); syncPanelButtons(); refitAll(); });
@@ -12393,19 +11344,6 @@ els.sessionTree.addEventListener('click', (e) => {
   if (e.target === els.sessionTree && state.activeGroupId != null) {
     state.activeGroupId = null;
     renderSessionList(els.inputSessionSearch.value);
-  }
-});
-// SFTP 面板是浏览操作区,不该抢键盘焦点:点击面板任意处(文件行/空白/工具栏非输入框)
-// 后把焦点还给当前活跃终端。否则点一下文件行 → 焦点落 BODY → 回终端敲 Cmd+A/普通键全被吞。
-// 例外:点击地址/搜索等 INPUT 时保留焦点(用户在输文字);按钮点击由各操作完成后再归还。
-els.sftpPanel.addEventListener('mousedown', (e) => {
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-  const sid = state.activeSessionId;
-  const tab = sid ? state.tabs.get(sid) : null;
-  if (tab && tab.term) {
-    // 让浏览器先完成本次点击的默认聚焦,再归还终端(否则 mousedown 立即 focus 会打断按钮 click)
-    setTimeout(() => { try { tab.term.focus(); } catch { /* ignore */ } }, 0);
   }
 });
 // 密码/私钥口令 显示/隐藏切换(点眼睛按钮)
@@ -12621,201 +11559,6 @@ function filterWrite(text) {
   return filtered + (filtered && last ? '\n' : '') + last;
 }
 
-// ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
-// 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
-const sftpTransfer = { rows: new Map(), jobs: new Map(), jobSession: new Map() };
-// rows: 行键 → { el, fill, meta, setLocal, file, sessionId }。行键 = jobId\0远程路径:
-//   旧版只用远程路径做 key → 同一文件重传/重试时复用上一批的行(取消按钮闭包是旧 jobId、
-//   已完成状态/✓ 累加、方向图标互相覆盖),正是 v1.0.44 想支持的"失败后重试"场景。
-// jobs: jobId → Set<行键>;jobSession: jobId → sessionId(关会话时只清本会话的传输记录)
-const sftpRowKey = (p) => `${p.jobId || ''}\u0000${p.file || ''}`;
-function makeSftpTransferRow(p) {
-  const key = sftpRowKey(p);
-  const el = document.createElement('div');
-  el.className = 'sftp-transfer-row active';
-  // 第一行:方向 / 远程名 / 进度条 / 进度 / 取消 / 删除
-  const main = document.createElement('div'); main.className = 'st-main';
-  const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
-  const name = document.createElement('span'); name.className = 'st-name'; name.textContent = String(p.file || '').split('/').filter(Boolean).pop() || p.file; name.title = p.file || '';
-  const track = document.createElement('div'); track.className = 'st-track';
-  const fill = document.createElement('div'); fill.className = 'st-fill';
-  track.appendChild(fill);
-  const meta = document.createElement('span'); meta.className = 'st-meta'; meta.textContent = '0B';
-  // 取消按钮(仿 WinSCP):传输中显示,点击中止该 job;完成后自动隐藏
-  const cancel = document.createElement('button'); cancel.className = 'st-cancel'; cancel.title = '取消该传输'; cancel.textContent = '⏹';
-  cancel.addEventListener('click', () => { if (p.jobId) { window.api.sftpCancel(p.jobId); cancel.disabled = true; cancel.textContent = '…'; } });
-  const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
-  del.addEventListener('click', () => { sftpTransfer.rows.delete(key); el.remove(); });
-  main.append(dir, name, track, meta, cancel, del);
-  // 第二行:本地保存路径 + 「📂 打开所在文件夹」(仅下载完成后盖上去,上传不显示)
-  const localRow = document.createElement('div'); localRow.className = 'st-local-row hidden';
-  const open = document.createElement('button'); open.className = 'st-open'; open.title = '在文件管理器中显示'; open.textContent = '📂';
-  const local = document.createElement('span'); local.className = 'st-local'; local.textContent = ''; local.title = '';
-  let _localPath = '';
-  open.addEventListener('click', () => { if (_localPath) window.api.revealInFolder(_localPath); });
-  localRow.append(open, local);
-  el.append(main, localRow);
-  const setLocal = (lp) => {
-    _localPath = lp;
-    local.textContent = lp;
-    local.title = lp;
-    localRow.classList.remove('hidden');
-  };
-  return { el, fill, meta, setLocal, cancel, jobId: p.jobId, key, file: p.file, sessionId: p.sessionId || '', op: p.op };
-}
-window.api.onSftpProgress((p) => {
-  if (!p || !els.sftpProgress) return;
-  const list = document.getElementById('sftp-transfers-list');
-  if (!list) return;
-  els.sftpProgress.classList.remove('hidden');
-  const key = sftpRowKey(p);
-  let row = sftpTransfer.rows.get(key);
-  if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(key, row); list.prepend(row.el); } // 新的在最上面
-  // 按 jobId 记录该批次的行键(完成/取消时只标记本批次的行,避免重叠批次误标记)
-  if (p.jobId) {
-    if (!sftpTransfer.jobs.has(p.jobId)) sftpTransfer.jobs.set(p.jobId, new Set());
-    sftpTransfer.jobs.get(p.jobId).add(key);
-    if (p.sessionId) sftpTransfer.jobSession.set(p.jobId, p.sessionId);
-  }
-  const fpct = p.fileTotal > 0 ? Math.min(100, Math.round((p.fileDone / p.fileTotal) * 100)) : 100;
-  row.fill.style.width = fpct + '%';
-  row.meta.textContent = `${formatSize(p.fileDone)}/${formatSize(p.fileTotal)} · ${fpct}%`;
-  const bpct = p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 100;
-  const dir = p.op === 'upload' ? '⬆ 上传' : '⬇ 下载';
-  els.sftpProgressLabel.textContent = `${dir} ${p.filesDone}/${p.filesTotal} 个文件 · ${bpct}%`;
-});
-// 批次结束(仿 WinSCP):后台 job 完成 → 把该批次的行标 完成/失败/已取消,刷新列表
-window.api.onSftpDone((d) => {
-  if (!d || !d.jobId) return;
-  const keys = sftpTransfer.jobs.get(d.jobId) || [];
-  sftpTransfer.jobs.delete(d.jobId);
-  sftpTransfer.jobSession.delete(d.jobId);
-  // ---- 逐文件结果(批次级 ok 只表示"有没有成功的",不能拿来标每一行)----
-  // 旧版:下载部分失败(d.ok=true)会把失败文件的行也标 ✓;上传部分失败(d.ok=false)会把
-  // 所有成功行都标 ✗;取消时已完成的行也被标"已取消"。
-  const okPaths = new Set();
-  const failByPath = new Map(); // 远程路径 → 错误原因
-  const cancelPaths = new Set();
-  const noteResult = (rp, ok, err) => {
-    if (!rp) return;
-    if (ok) okPaths.add(rp);
-    else if (d.cancelled || err === '已取消') cancelPaths.add(rp);
-    else failByPath.set(rp, err || '未知错误');
-  };
-  if (Array.isArray(d.results)) for (const r of d.results) { if (r) noteResult(r.remotePath, r.ok, r.error); }
-  if (Array.isArray(d.uploaded)) for (const rp of d.uploaded) noteResult(rp, true);
-  if (Array.isArray(d.failed)) for (const f of d.failed) { if (f) noteResult(f.remotePath || f.rp, false, f.error); }
-  // 下载成功 → 本地路径:单文件用 d.localPath,批量用 d.results[].localPath
-  const localByPath = new Map();
-  if (d.op === 'download' && Array.isArray(d.results)) {
-    d.results.filter((r) => r && r.ok && r.localPath).forEach((r) => localByPath.set(r.remotePath, r.localPath));
-  }
-  for (const key of keys) {
-    const row = sftpTransfer.rows.get(key);
-    if (!row) continue;
-    const file = row.file;
-    row.el.classList.remove('active', 'done', 'fail');
-    if (row.cancel) row.cancel.style.display = 'none'; // 传输结束,隐藏取消按钮
-    if (failByPath.has(file)) {
-      row.el.classList.add('fail');
-      row.meta.textContent = '✗ 失败';
-      row.el.title = `${file}\n${failByPath.get(file)}`;
-    } else if (cancelPaths.has(file) || (d.cancelled && !okPaths.has(file))) {
-      row.el.classList.add('fail');
-      row.meta.textContent = '已取消';
-    } else if (okPaths.has(file) || (d.ok && !failByPath.size)) {
-      row.el.classList.add('done');
-      // 去掉可能已存在的 ✓ 再加,避免重传/重试后累加成 "✓ ✓"
-      row.meta.textContent = String(row.meta.textContent || '').replace(/\s*✓\s*$/, '') + ' ✓';
-      if (row.setLocal) {
-        const lp = d.localPath && !d.results ? d.localPath : (localByPath.get(file) || '');
-        if (lp) row.setLocal(lp);
-      }
-    } else {
-      row.el.classList.add('fail');
-      row.meta.textContent = '✗ 失败';
-    }
-  }
-  // 失败补行:失败文件若一次进度事件都没产生,就不会有传输行(行是首个 progress 创建的)
-  // → 用户只看到"点了没反应"。上传和下载都要补(旧版只补下载,单文件下载失败也漏)。
-  // 取消项不补行(批量取消会产生成百上千条,状态栏已统一说明)。
-  const list = document.getElementById('sftp-transfers-list');
-  if (list) {
-    for (const [rp, err] of failByPath) {
-      const key = sftpRowKey({ jobId: d.jobId, file: rp });
-      if (sftpTransfer.rows.has(key)) continue; // 已有行(有过进度)交给上面的逐行标记
-      const row = makeSftpTransferRow({ op: d.op, file: rp, jobId: d.jobId, sessionId: d.sessionId });
-      row.el.classList.remove('active');
-      row.el.classList.add('fail');
-      if (row.cancel) row.cancel.style.display = 'none';
-      row.meta.textContent = '✗ 失败';
-      row.el.title = `${rp}\n${err}`;
-      const errEl = document.createElement('div');
-      errEl.className = 'st-local-row';
-      errEl.textContent = '✗ ' + err;
-      errEl.style.color = 'var(--red)';
-      row.el.appendChild(errEl);
-      sftpTransfer.rows.set(key, row);
-      list.prepend(row.el);
-      els.sftpProgress.classList.remove('hidden');
-    }
-  }
-  // 上传有成功项 → 刷新列表 + 高亮定位(部分失败时成功项也要出现/高亮)
-  if (!d.cancelled && d.op === 'upload' && (d.uploaded || []).length) {
-    // 高亮定位:把本次上传的条目名交给列表渲染(刷新后闪烁 + 滚到可见)。
-    const names = (d.uploaded || []).map((rp) => String(rp).split('/').filter(Boolean).pop()).filter(Boolean);
-    if (names.length) {
-      const flash = new Set(names);
-      state.sftpUploadFlash = flash;
-      // 只在"还是这一批"时清除,避免把随后新上传的高亮一起清掉
-      setTimeout(() => { if (state.sftpUploadFlash === flash) state.sftpUploadFlash.clear(); }, 3000);
-    }
-    if (state.sftp.visible) loadSftpList();
-  }
-  // 状态栏:按逐文件结果给准确文案(部分失败不能被"已下载/上传完成"掩盖)
-  const nFail = failByPath.size;
-  const firstFail = nFail ? [...failByPath.values()][0] : '';
-  if (d.cancelled) {
-    // 取消:半成品与续传点都保留(见 lib/ssh-client 的 cancelError),状态栏明确说明可续传
-    setStatus('传输已取消(半成品与续传点已保留,再次传输同一文件将从断点续)', 'var(--orange)');
-  } else if (d.op === 'upload') {
-    const someOk = (d.uploaded || []).length > 0;
-    if (nFail && someOk) setStatus(`上传完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
-    else if (nFail) setStatus(`上传失败: ${firstFail}`, 'var(--red)');
-    else if (d.ok) setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
-    else if (d.error) setStatus(`传输失败: ${d.error}`, 'var(--red)');
-  } else if (d.op === 'download') {
-    if (d.ok && (d.localPath || d.results)) {
-      if (nFail) setStatus(`下载完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
-      else setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r && r.ok)[0] || {}).localPath || d.targetDir || ''}`, 'var(--green)');
-    } else if (nFail) {
-      setStatus(`下载失败: ${firstFail}`, 'var(--red)');
-    } else if (d.error) {
-      setStatus(`传输失败: ${d.error}`, 'var(--red)');
-    }
-  }
-});
-// 清空传输记录。可选 sessionId:只清某个会话的行(job 化后多个会话可能同时在传)。
-// 注意点击「清空」按钮时传入的是 MouseEvent → 统一归为"全部清空"。
-function clearSftpTransfers(sessionId) {
-  const only = typeof sessionId === 'string' ? sessionId : '';
-  for (const [key, row] of [...sftpTransfer.rows]) {
-    if (only && row.sessionId !== only) continue;
-    try { row.el.remove(); } catch { /* ignore */ }
-    sftpTransfer.rows.delete(key);
-  }
-  for (const [jobId, sid] of [...sftpTransfer.jobSession]) {
-    if (!only || sid === only) { sftpTransfer.jobs.delete(jobId); sftpTransfer.jobSession.delete(jobId); }
-  }
-  if (!only) sftpTransfer.jobs.clear();
-  // 只清本会话时,若还剩其他会话的行,列表不整体清空(否则会把别人的进行中记录也抹掉)
-  if (sftpTransfer.rows.size === 0) {
-    const list = document.getElementById('sftp-transfers-list');
-    if (list) list.innerHTML = '';
-    if (els.sftpProgress) els.sftpProgress.classList.add('hidden');
-  }
-}
-
 window.api.onSshStatus((sessionId, status) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
@@ -12873,7 +11616,6 @@ window.api.onSshStatus((sessionId, status) => {
     }
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
     updateRecordBtn();
-    clearSftpTransfers(sessionId); // 连接断开 → 只清本会话的传输记录(其他会话可能还在传)
     // 非用户主动关闭、非手动断开 → 自动重连(nologin 不重连:账号问题重试无意义)
     if (!t.userClosed && !t.manualDisconnect && t.session && !t.noLogin) scheduleReconnect(t);
   } else if (status.status === 'error') {
@@ -12884,7 +11626,6 @@ window.api.onSshStatus((sessionId, status) => {
     if (t.session && t.session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId, bastionKey: t.session.bastionKey, host: t.session.host, port: t.session.port, account: t.session.username, error: status.error });
     state.recording.delete(sessionId);
     updateRecordBtn();
-    clearSftpTransfers(sessionId); // 连接错误 → 同样只清本会话的传输记录
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   }
 });
@@ -12964,7 +11705,7 @@ const COMMANDS = [
   { name: '广播模式', hint: '', run: () => toggleBroadcast() },
   { name: '分屏-垂直', hint: '', run: () => splitActivePane('v') },
   { name: '分屏-横向', hint: '', run: () => splitActivePane('h') },
-  { name: 'SFTP 面板', hint: '⌘⇧S', run: () => toggleSftpPanel() },
+  { name: '用 WinSCP 打开 SFTP', hint: '⌘⇧S', run: () => openSftpEntry() },
   { name: 'SSH 隧道', hint: '⌘⇧T', run: () => openTunnelModal() },
   { name: '批量执行', hint: '⌘⇧B', run: () => toggleBatchPanel() },
   { name: '快速命令', hint: '', run: () => openQuickModal() },

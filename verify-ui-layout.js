@@ -96,9 +96,7 @@ const head = (t) => console.log(`\n— ${t} —`);
       for (let i = 0; i < 60 && !findTabBySessionId(s.id); i++) await new Promise((r) => setTimeout(r, 250));
       return true;
     })()`);
-    await sleep(1500);
-    await ev(c, `(function(){ document.getElementById('btn-sftp-toggle').click(); return true; })()`);
-    await sleep(2000);
+    await sleep(1500); // 等终端 fit 完(v1.0.25 起不再打开 SFTP 面板:SFTP 交给本机 WinSCP)
 
     // 量测器:拿关键元素的字号/尺寸
     const measure = `(function () {
@@ -110,11 +108,9 @@ const head = (t) => console.log(`\n— ${t} —`);
       var caret = document.querySelector('.top-group-container .asset-group-caret');
       var footer = document.querySelector('.asset-footer');
       var title = document.querySelector('.asset-header .asset-title');
-      var sfBtn = document.querySelector('.sftp-toolbar-main .btn-mini');
-      var sfRow = document.querySelector('.sftp-list .sftp-row, .sftp-list .sftp-item, .sftp-list > *');
+      var sfEntry = document.getElementById('btn-sftp-toggle');
+      var tbar = document.querySelector('.toolbar');
       var toolbar = document.querySelector('.toolbar .btn-mini');
-      var sfToolbar = document.querySelector('.sftp-toolbar');
-      var sfMain = document.querySelector('.sftp-toolbar-main');
       return {
         uiFont: getComputedStyle(document.documentElement).getPropertyValue('--ui-font').trim(),
         headFs: px(head, 'fontSize'), headH: head ? Math.round(head.getBoundingClientRect().height) : null,
@@ -126,13 +122,12 @@ const head = (t) => console.log(`\n— ${t} —`);
         footerLines: footer ? Math.round(footer.getBoundingClientRect().height / parseFloat(getComputedStyle(footer).lineHeight || footerFs)) : null,
         titleH: title ? Math.round(title.getBoundingClientRect().height) : null,
         titleFs: px(title, 'fontSize'),
-        sfBtnFs: px(sfBtn, 'fontSize'), sfRowFs: px(sfRow, 'fontSize'),
+        sfEntryFs: px(sfEntry, 'fontSize'),
         toolbarBtnFs: px(toolbar, 'fontSize'),
         treeClientW: tree ? tree.clientWidth : null, treeScrollW: tree ? tree.scrollWidth : null,
-        sfToolbarH: sfToolbar ? Math.round(sfToolbar.getBoundingClientRect().height) : null,
-        sfToolbarClip: !!(sfToolbar && sfToolbar.scrollHeight > sfToolbar.clientHeight + 1),
-        sfMainClip: !!(sfMain && sfMain.scrollHeight > sfMain.clientHeight + 1),
-        sfBtnWrapped: !!(sfBtn && sfBtn.getBoundingClientRect().height > parseFloat(getComputedStyle(sfBtn).fontSize) * 2),
+        toolbarH: tbar ? Math.round(tbar.getBoundingClientRect().height) : null,
+        toolbarClip: !!(tbar && tbar.scrollHeight > tbar.clientHeight + 1),
+        sfEntryWrapped: !!(sfEntry && sfEntry.getBoundingClientRect().height > parseFloat(getComputedStyle(sfEntry).fontSize) * 2),
         panelW: document.getElementById('session-panel') ? Math.round(document.getElementById('session-panel').getBoundingClientRect().width) : null,
         overflowers: (function () {
           if (!tree) return [];
@@ -160,8 +155,10 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('--ui-font 默认值不对', d.uiFont);
     if (d.headFs === 13 && d.hostFs === 13) ok('会话列表分组头/主机名 13px(与旧版一致)');
     else bad('会话列表字号变了', JSON.stringify({ headFs: d.headFs, hostFs: d.hostFs }));
-    if (d.sfBtnFs === 12 && d.toolbarBtnFs === 13) ok('SFTP 按钮 12px / 工具栏按钮 13px(与旧版一致)');
-    else bad('按钮字号变了', JSON.stringify({ sf: d.sfBtnFs, toolbar: d.toolbarBtnFs }));
+    if (d.sfEntryFs === 13 && d.toolbarBtnFs === 13) ok('WinSCP 入口按钮 13px / 工具栏按钮 13px(跟随 --ui-font)');
+    else bad('按钮字号变了', JSON.stringify({ sfEntry: d.sfEntryFs, toolbar: d.toolbarBtnFs }));
+    if (!d.sfEntryWrapped && d.sfEntryFs > 0) ok('WinSCP 入口按钮单行(⌘⇧S 提示不折行)');
+    else bad('WinSCP 入口按钮折行/未渲染', JSON.stringify({ h: d.sfEntryWrapped, fs: d.sfEntryFs }));
     if (d.caretFs === 9) ok('折叠三角 9px(与旧版一致)');
     else bad('三角字号变了', d.caretFs);
     if (d.footerFs === 11) ok('底部提示 11px(与旧版一致)');
@@ -178,7 +175,7 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('面板标题折行', JSON.stringify({ h: d.titleH, fs: d.titleFs }));
     if (!d.hostNameTrunc || d.hostNameW > 80) ok(`240px 面板里长主机名可读(name 宽 ${d.hostNameW}px,截断=${d.hostNameTrunc})`);
     else bad('主机名被压缩得太狠', JSON.stringify({ w: d.hostNameW, panelW: d.panelW }));
-    if (!d.sfToolbarClip && !d.sfMainClip) ok('SFTP 工具栏内容未被裁切');
+    if (!d.toolbarClip) ok('工具栏内容未被裁切');
     else bad('SFTP 工具栏被裁切', JSON.stringify({ toolbarClip: d.sfToolbarClip, mainClip: d.sfMainClip }));
 
     // ③ 界面字号 17px:全 UI 跟着放大
@@ -199,12 +196,12 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('会话列表没跟着放大', JSON.stringify({ headFs: big.headFs, hostFs: big.hostFs }));
     if (big.headH > d.headH && big.hostH > d.hostH) ok(`行高同步增长(分组头 ${d.headH}→${big.headH}px,主机行 ${d.hostH}→${big.hostH}px)`);
     else bad('行高没跟着变', JSON.stringify({ d: [d.headH, d.hostH], big: [big.headH, big.hostH] }));
-    if (big.toolbarBtnFs === 17 && big.sfBtnFs === 16) ok('工具栏 17px / SFTP 按钮 16px(档位按比例放大)');
+    if (big.toolbarBtnFs === 17 && big.sfEntryFs === 17) ok('工具栏 17px / WinSCP 入口按钮 17px(跟随 --ui-font 放大)');
     else bad('按钮字号没同步', JSON.stringify({ toolbar: big.toolbarBtnFs, sf: big.sfBtnFs }));
     if (big.footerFs === 15 && big.caretFs > 9) ok(`底部提示 15px / 三角 ${big.caretFs}px 也跟着放大`);
     else bad('小字号元素没放大', JSON.stringify({ footer: big.footerFs, caret: big.caretFs }));
-    if (big.sfRowFs > d.sfRowFs) ok(`SFTP 文件行 ${d.sfRowFs} → ${big.sfRowFs}px`);
-    else bad('SFTP 文件行没放大', JSON.stringify({ before: d.sfRowFs, after: big.sfRowFs }));
+    if (big.sfEntryFs > d.sfEntryFs) ok(`WinSCP 入口按钮 ${d.sfEntryFs} → ${big.sfEntryFs}px`);
+    else bad('WinSCP 入口按钮没放大', JSON.stringify({ before: d.sfEntryFs, after: big.sfEntryFs }));
 
     // ④ 大字号下仍然不裁字
     head('④ 17px 下布局不崩');
@@ -212,9 +209,9 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('大字号下会话列表横向溢出', JSON.stringify({ scrollW: big.treeScrollW, clientW: big.treeClientW, over: big.overflowers }));
     if (big.titleH <= big.titleFs * 2) ok(`面板标题仍单行(高 ${big.titleH}px / 字号 ${big.titleFs}px)`);
     else bad('大字号下标题折行', JSON.stringify({ h: big.titleH, fs: big.titleFs }));
-    if (!big.sfToolbarClip && !big.sfMainClip) ok(`SFTP 工具栏不裁切(高 ${big.sfToolbarH}px,自动换行)`);
+    if (!big.toolbarClip) ok(`工具栏不裁切(高 ${big.toolbarH}px,横向滚动兜底)`);
     else bad('大字号下 SFTP 工具栏被裁切', JSON.stringify({ clip: big.sfToolbarClip, mainClip: big.sfMainClip, h: big.sfToolbarH }));
-    if (!big.sfBtnWrapped) ok('SFTP 按钮文字不折字(一字一行)');
+    if (!big.sfEntryWrapped) ok('WinSCP 入口按钮不折字');
     else bad('SFTP 按钮文字被折成一字一行');
     if (footerLines(big.footerH) <= 1) ok('大字号下底部提示仍单行(省略号)');
     else bad('大字号下底部提示折行', JSON.stringify({ h: big.footerH, lineH: big.footerLineH, pad: big.footerPad }));

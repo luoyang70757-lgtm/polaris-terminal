@@ -113,8 +113,8 @@ WinSCP.exe sftp://user:pass@host:port/ /rawsettings SFTPRealPath=off [RemoteDire
 | 失败在 | 判定 | 绕过 |
 |---|---|---|
 | `REALPATH` | `off` 没生效（检查 argv 里是否真有 `/rawsettings SFTPRealPath=off`） | 命令行手工加同一个开关验证 |
-| `LSTAT` / `OPENDIR` | 服务器不认这个请求（嵌入式/非标准 SFTP） | 用 `POLARIS_WINSCP_RAWSETTINGS` 试开关；或改用 Polaris 内置面板 |
-| `OPEN` / `READ` | 目标路径在 chroot 外 / 权限不足 | 换 `RemoteDirectory` 或改用内置面板 |
+| `LSTAT` / `OPENDIR` | 服务器不认这个请求（嵌入式/非标准 SFTP） | 用 `POLARIS_WINSCP_RAWSETTINGS` 试开关；或改用协议 SCP / 系统 scp |
+| `OPEN` / `READ` | 目标路径在 chroot 外 / 权限不足 | 换 `RemoteDirectory`（或用系统 `sftp` 命令行验证同一路径） |
 
 ### 逃生阀：自己下发 WinSCP 开关
 
@@ -128,9 +128,11 @@ set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
 
 ### 交叉验证（判断是 WinSCP 的问题还是服务器的问题）
 
-同一台主机在 Polaris 里切到 **设置 → SFTP → 「内置面板」**（或用另一台机器的 WinSCP 图形界面手动连）：
-- 内置面板能列出目录 → 服务器 SFTP 正常，问题在 WinSCP 的请求序列（看日志定位到具体请求）；
-- 内置面板也列不出来 → 服务器 SFTP 子系统本身有问题（WinSCP 报 4 只是它的说法）。
+同一台主机换一条路径试（v1.0.25 起内置面板已删，用下面任一）：
+- **设置 → 协议改成 SCP** 再点 SFTP：`scp://` 会话完全绕开 SFTP 子系统；
+- 系统终端里手动 `sftp 用户@主机` / `ssh 用户@主机` 后 `ls`：能列 → 服务器 SFTP 正常，
+  问题在 WinSCP 的请求序列（看日志定位到具体请求）；也列不出来 → 服务器 SFTP 子系统本身有问题
+  （WinSCP 报 4 只是它的说法）。
 
 ### 变更
 
@@ -152,10 +154,11 @@ set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
 - 命令形态:`WinSCP.exe scp://user:pw@host:2222/ /log=… /loglevel=1`(不再带 `SFTPRealPath=off`);
 - 代价:SCP 只有 `scp` 命令的能力——没有远端复制/改名、不保留时间戳、单文件不能断点续传、列目录走
   `ls -l` 解析(特殊文件名可能出偏差);大目录明显慢。**能用 SFTP 就别用 SCP**。
-- 服务器上没有 `scp` 命令(纯 sftp-server 的精简系统)→ SCP 也进不去,那就只剩内置面板/或让设备侧开 SFTP。
+- 服务器上没有 `scp` 命令(纯 sftp-server 的精简系统)→ SCP 也进不去,只能用系统自带的 `sftp`/`scp`
+  命令行,或让设备侧把 SFTP 子系统修好。
 
-同时默认档兜底:点 SFTP 现在默认开**内置面板**(`button`),WinSCP 变成按需按钮——
-再怎么折腾 WinSCP 也挡不住日常传文件。
+v1.0.22 以及 v1.0.24 期间**点 SFTP 默认开内置面板**(`button`),WinSCP 只是面板上的按需按钮;
+**v1.0.25 起面板整套删除**,默认重新变成"直接交给 WinSCP",上面这些排障开关就是唯一的退路。
 
 ## 八、v1.0.24：真机日志把两件事同时钉死了
 
@@ -185,7 +188,7 @@ set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
 
 - **"独立 SFTP 探测失败(General failure) → 回退主连接成功"** 说明这类网关对**新建连接的 SFTP 子系统**和
   **已登录会话里的 SFTP 通道**宽容度不一样；WinSCP 永远是新建连接，所以它在"相对路径/不支持的请求"上比内置面板脆弱得多。
-  内置面板能用不代表 WinSCP 一定能用，反之亦然。
+  Polaris 内置面板（v1.0.25 已删除）当初能用不代表 WinSCP 一定能用，反之亦然。
 - 现场若仍失败，`SCP`（设置 → SFTP → WinSCP 协议 = SCP）是最后一条不改代码的路（第七节），
   它连 `OPENDIR` 都不发。
 

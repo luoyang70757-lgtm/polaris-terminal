@@ -16,8 +16,6 @@ const os = require('os'); // 数据目录回退路径(POLARIS_LOCK_DIR 未设时
 const { spawn, execFile } = require('child_process'); // 拉起外部程序(WinSCP 外链 / H3C 客户端探测)
 const winScp = require('./lib/winscp-open'); // WinSCP 外链(纯函数:探测安装位置/拼会话 URL 与参数)
 const h3cClient = require('./lib/h3c-client'); // H3C AccessClient 透传(纯函数:accessclient:// 校验/注册表探测)
-const sftpAttrs = require('./lib/sftp-attrs'); // SFTP 权限/属主/时间戳(纯函数:八进制校验、符号串、时间串)
-const sftpThrottle = require('./lib/sftp-throttle'); // 传输限速(纯函数速率换算 + 节流 Transform)
 
 // 执行一个外部命令并拿 {code, stdout}(探测注册表之类的一次性短命令,超时兜底)
 function execFileP(file, args) {
@@ -129,12 +127,10 @@ var h3cApi = __req('./lib/h3c-api', 'h3c-api'); // H3C shterm 原生客户端(se
 // xlsx / tar 不在这里 require:只在"导入模板 / 目录打包上传"时才用,
 // 启动时解析会拖慢 Windows 冷启动(尤其叠加 Defender 扫描)。按需加载见使用处。
 var appLog = __req('./lib/app-log', 'app-log');
-var sftpSizes = __req('./lib/sftp-sizes', 'sftp-sizes'); // H3C 等设备上传文件真实大小持久化(覆盖显示 0)
+var fsUtil = __req('./lib/fs-util', 'fs-util'); // 原子写(Windows 杀软占用重试)
 var connectOpts = __req('./lib/connect-opts', 'connect-opts'); // 共享:makeHostVerifier/resolvePrivateKey/withHostVerify
 var sessionGroups = __req('./lib/session-groups', 'session-groups'); // 分组/命令历史归档/快速命令/导入模板 IPC
 var sessionIpc = __req('./lib/session-ipc', 'session-ipc'); // 会话管理/导入导出/系统探测 IPC
-var fsUtil = __req('./lib/fs-util', 'fs-util'); // 原子写(Windows 杀软占用重试)
-var { safeLocalName } = __req('./lib/local-name', 'local-name'); // 远程文件名 → 本地安全名(Windows 保留名/非法字符)
 __mark('模块加载完成');
 
 // ---------- 安全日志 ----------
@@ -194,6 +190,17 @@ process.on('unhandledRejection', (reason) => {
 app.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
   event.preventDefault();
   callback(true);
+});
+
+// 堡垒机 webview 每完成一次导航,Electron 会在它内部的 WebContents 上重新 attach 一批
+// 监听(did-stop-loading / did-fail-load / ipc-message 等)。同一个 webview 反复导航后
+// 监听数会到 11+,触发 MaxListenersExceededWarning(日志里刷"Possible EventEmitter memory
+// leak detected")。这不是真泄漏(导航结束会解绑),但会污染 app 日志、也让人误判。
+// 这里只给 webview 类型的 WebContents 放宽上限,主窗口不动(主窗口若有泄漏仍会报出来)。
+app.on('web-contents-created', (_e, contents) => {
+  try {
+    if (contents.getType() === 'webview') contents.setMaxListeners(50);
+  } catch { /* ignore */ }
 });
 
 // ---------- 数据目录已在上方确定(便携版/安装版) ----------
@@ -828,82 +835,6 @@ ipcMain.handle('bastion:deleteFavGroup', (_e, id) => {
   try { sessionStore.deleteBastionFavGroup(id); schedulePersist(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
 });
 
-// 批量上传:选一个本地文件,上传到每个选中主机的远程目录。
-// 走与单机上传完全相同的**加固管线**(sshClient.uploadFile):statSize 对账 + 读回核对,
-// 而不是 fastPut 的"ACK 即成功"(中继截断/设备撒谎时不报错,是唯一没跟上 v1.0.35+ 加固的路径)。
-// localPaths 可直传(测试/拖拽场景),不传则弹文件选择框。
-ipcMain.handle('sftp:batchUpload', async (_e, { sessions, remoteDir, localPaths }) => {
-  try {
-    let localPath = (Array.isArray(localPaths) ? localPaths : []).filter(Boolean)[0] || '';
-    if (!localPath) {
-      const pick = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], title: '选择要批量上传的文件' });
-      if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
-      localPath = pick.filePaths[0];
-    }
-    const total = fs.statSync(localPath).size;
-    const remotePath = joinRemote(remoteDir || '/', path.basename(localPath));
-    const results = [];
-    for (const s of sessions) {
-      try {
-        const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
-        try {
-          const sftp = await sshClient.openSftp(conn);
-          await sshClient.uploadFile(sftp, localPath, remotePath, null, 0, null);
-          try { sftp.end(); } catch { /* ignore */ }
-          results.push({ ok: true, name: s.name, host: s.host, path: remotePath, bytes: total });
-        } finally {
-          try { conn.end(); } catch { /* ignore */ }
-        }
-      } catch (err) {
-        results.push({ ok: false, name: s.name, host: s.host, error: err.message });
-      }
-    }
-    return { ok: true, results };
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-
-// 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名区分文件名)
-ipcMain.handle('sftp:batchDownload', async (_e, { sessions, remotePath }) => {
-  try {
-    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答"选文件夹"对话框(与 sftp:download 一致)
-    const pick = process.env.POLARIS_AUTO_DL_DIR
-      ? { canceled: false, filePaths: [process.env.POLARIS_AUTO_DL_DIR] }
-      : await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: '选择保存到哪个文件夹' });
-    if (pick.canceled || !pick.filePaths[0]) return { ok: false, canceled: true };
-    const localDir = pick.filePaths[0];
-    // 远程路径按 / 取最后一段(Windows 的 path.basename 会把文件名里的 \ 当分隔符)
-    const base = safeLocalName(String(remotePath).split(/[\\/]/).filter(Boolean).pop() || 'download');
-    const results = [];
-    const usedNames = new Set(); // 会话重名(导入文件常见)时不能互相覆盖;Windows 还不区分大小写
-    for (const s of sessions) {
-      // 会话名可能来自导入文件(如 iTerm2 的 Name 字段),含 ../ 或 / 会让 path.join
-      // 穿越出保存目录 → 本地任意路径写文件。远程文件名同样可能含 Windows 非法字符/保留名。
-      // 两端都按 Windows 规则净化后再拼。base 用显式 split('/') 取最后一段,
-      // 避免 Windows 上 path.basename 把远程文件名里的反斜杠误当分隔符。
-      const safeName = safeLocalName(s.name || 'host').slice(0, 60) || 'host';
-      let fileName = `${safeName}_${base}`;
-      for (let n = 2; usedNames.has(fileName.toLowerCase()); n++) fileName = `${safeName}(${n})_${base}`;
-      usedNames.add(fileName.toLowerCase());
-      const localPath = path.join(localDir, fileName);
-      try {
-        const conn = await sshClient.connectRaw(connectOpts.withHostVerify(connectOpts.resolvePrivateKey(s)));
-        try {
-          const sftp = await sshClient.openSftp(conn);
-          // 加固管线:落盘后按远端大小对账,截断则删残留 + 明确报错(不再 fastGet 的"传完即成功")
-          await sshClient.downloadFile(sftp, remotePath, localPath, null, 0, null);
-          try { sftp.end(); } catch { /* ignore */ }
-          results.push({ ok: true, name: s.name, host: s.host, path: localPath, bytes: fs.statSync(localPath).size });
-        } finally {
-          try { conn.end(); } catch { /* ignore */ }
-        }
-      } catch (err) {
-        results.push({ ok: false, name: s.name, host: s.host, error: err.message });
-      }
-    }
-    return { ok: true, results };
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-
 // ---------- IPC:AI 运维助手(参考 Netcatty 的 Catty Agent) ----------
 // 执行 AI 的一条命令并返回输出;同时同步到可见终端(让用户实时看到 AI 在干嘛)
 // 在"一台或多台"主机上执行命令,输出按 [主机名] 标注,方便 AI 区分;
@@ -1455,8 +1386,8 @@ ipcMain.handle('rec:replay', (_e, id) => {
 // 目标 SSH 连接把这条隧道当 sock 用,目标机的认证仍由用户自己的账号完成(跳板只转发字节)。
 // 失败时清理已建的跳板连接并抛出,调用方会走 ssh:connect 的失败分支。
 // register=true:跳板连接登记到 jumpConns[sessionId],随主会话关闭(ssh:close/断开)一起收。
-// register=false:调用方自己持有(用于 SFTP 独立连接 —— 它有自己的生命周期,若也登记到
-// 同一个 sessionId 槽位,会把主会话的跳板连接覆盖掉,主连接那条从此没人关 = 泄漏)。
+// register=false:调用方自己持有(用于家目录探测这类"临时开一条连接"的独立连接 —— 它有自己的
+// 生命周期,若也登记到同一个 sessionId 槽位,会把主会话的跳板连接覆盖掉,主连接那条从此没人关 = 泄漏)。
 async function openJumpTunnel(sessionId, finalOpts, register = true) {
   const j = finalOpts.jump;
   const jport = j.port || 22;
@@ -1555,7 +1486,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       conn, stream, encoding: enc,
       sessionUser: uname.split('@').pop(),
       hostId: `${uname ? uname + '@' : ''}${finalOpts.host || ''}:${finalOpts.port || 22}`,
-      connOpts: finalOpts, // 存完整连接参数:SFTP 走独立连接重连用(含 KoKo 复合用户名/跳板)
+      connOpts: finalOpts, // 存完整连接参数(含 KoKo 复合用户名/跳板):WinSCP 起始目录探测要用
     });
     // 会话日志:设置里开着(默认开)就为这次连接建日志文件
     if (finalOpts.sessionLog !== false) {
@@ -1580,8 +1511,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
         closedBroadcast.add(sessionId);
         broadcast('ssh:status', sessionId, { status: 'closed' });
       }
-      closeSftpConn(sessionId); // 先关独立的 SFTP 连接(记录还在)
-      sshSessions.delete(sessionId);
+          sshSessions.delete(sessionId);
     });
     conn.on('close', () => {
       if (!sshSessions.has(sessionId)) return; // 流 close / ssh:close 已收尾并广播,这里只兜底
@@ -1591,8 +1521,7 @@ ipcMain.handle('ssh:connect', async (_e, { sessionId, opts }) => {
       finalizeSessionLog(sessionId); // 幂等:已收尾则空操作
       stopTunnelsForSession(sessionId); // 幂等:已停的隧道这里也是空操作
       closeJump(sessionId); // 幂等:已收的跳板连接这里也是空操作
-      closeSftpConn(sessionId); // 先关独立的 SFTP 连接(记录还在)
-      if (!closedBroadcast.has(sessionId)) {
+          if (!closedBroadcast.has(sessionId)) {
         closedBroadcast.add(sessionId);
         broadcast('ssh:status', sessionId, { status: 'closed' });
       }
@@ -1767,259 +1696,6 @@ ipcMain.on('ssh:close', (_e, sessionId) => {
   }
 });
 
-// ---------- IPC:SFTP 文件传输 ----------
-// SFTP 对象按 sessionId 缓存:同一 SSH 连接只开一次 sftp 通道
-// ---- SFTP 调试日志:记录每次 SFTP 操作(耗时/结果/错误),协助排查偶发"目录读取超时"、大文件传输失败 ----
-// 日志写到 app-*.log(调试面板 ⬇ 下载日志可导出),带 [SFTP] 前缀便于 grep。
-function __sftpLog(msg, extra) {
-  try {
-    const line = '[SFTP] ' + msg + (extra ? ' | ' + JSON.stringify(extra).slice(0, 600) : '');
-    // console.log 在 main.js 里被重写:转发到调试面板(🧾) + 落盘 app-*.log
-    try { console.log(line); } catch { /* ignore */ }
-  } catch { /* ignore */ }
-}
-async function getSftp(sessionId) {
-  const s = sshSessions.get(sessionId);
-  if (!s) throw new Error('SSH 连接不存在或已断开');
-  if (s.sftp) return s.sftp;
-  // 并发去重:SFTP 首次打开要走"独立连接 → 探测 → 回退主连接",H3C 等慢设备可达数秒~20s。
-  // 这期间列表刷新、上传、家目录探测等都可能同时调用 getSftp;旧版各自开一条独立连接,
-  // 后完成的那条覆盖 s.sftp/s.sftpConn,先完成的那条再没人关(连接泄漏;H3C 单通道还会互相顶掉)。
-  // 现在共享同一个打开中的 Promise,失败后清除,下次调用重新尝试。
-  if (s._sftpOpening) return s._sftpOpening;
-  const p = openSftpChannel(sessionId);
-  s._sftpOpening = p;
-  try {
-    return await p;
-  } finally {
-    if (s._sftpOpening === p) s._sftpOpening = null;
-  }
-}
-
-// 真正的打开逻辑(调用方统一走 getSftp,由它做并发去重)
-async function openSftpChannel(sessionId) {
-  const s = sshSessions.get(sessionId);
-  if (!s) throw new Error('SSH 连接不存在或已断开');
-  if (!s.sftp) {
-    const t0 = Date.now();
-    // 优先独立 SFTP 连接:H3C 等单通道设备在 shell 同连接开 SFTP 会顶掉 shell(终端失效)。
-    // 但 H3C 用一次性 OTP,独立连接复用 OTP 可能失败/顶掉主连接 → 失败时回退主连接 SFTP。
-    // 回退后的行为 = v1.0.20 前:SFTP 走主连接,保证功能可用。
-    __sftpLog('打开 SFTP(优先独立连接)', { sessionId, t0 });
-    const openOnMain = async () => {
-      // 主连接开 SFTP 子系统同样可能被通道限流(too offen,H3C 单通道设备)→ 等 1s 重试一次
-      const openOnce = () => Promise.race([
-        sshClient.openSftp(s.conn),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 通道打开超时(15s),堡垒机网关可能未响应 SFTP 子系统')), 15000)),
-      ]);
-      let raw;
-      try {
-        raw = await openOnce();
-      } catch (e) {
-        const msg = String((e && e.message) || e);
-        if (/channel open|too offen|too often|Channel open failure/i.test(msg)) {
-          __sftpLog('主连接 SFTP 通道被限流,1s 后重试', { sessionId, error: msg });
-          await new Promise((r) => setTimeout(r, 1000));
-          raw = await openOnce();
-        } else { throw e; }
-      }
-      s.sftp = raw; // 主连接上的 SFTP:不加 sftpConn(随主连接一起关)
-      return raw;
-    };
-    const openSeparate = async () => {
-      const opts = { ...s.connOpts };
-      delete opts.sock; // 旧连接的跳板隧道 socket 不能复用
-      delete opts.hostVerifier; // 指纹校验按需重建
-      if (opts.verifyHostKey !== false) {
-        opts.hostVerifier = connectOpts.makeHostVerifier(opts.host, opts.port || 22, opts.autoTrustHostKey === true);
-      }
-      const connectOnce = async () => {
-        // 跳板连接由这条独立 SFTP 连接自己持有(register=false):不占用主会话的
-        // jumpConns[sessionId] 槽位,否则主连接的跳板连接会被覆盖、再也关不掉。
-        let jumpConn = null;
-        let raw = null;
-        try {
-          if (opts.jump && opts.jump.host) {
-            const j = await openJumpTunnel(sessionId, opts, false);
-            jumpConn = j.conn;
-            opts.sock = j.stream;
-          }
-          raw = await sshClient.connectRaw(opts);
-          const sftp = await sshClient.openSftp(raw);
-          s.sftpConn = raw;
-          s.sftpJumpConn = jumpConn; // 随 SFTP 连接一起关(closeSftpConn/resetSftp)
-          s.sftp = sftp;
-          return sftp;
-        } catch (e) {
-          // 任一步失败:连接与跳板隧道都要收掉,否则每次重试泄漏一条 SSH 连接
-          try { if (raw) raw.end(); } catch { /* ignore */ }
-          try { if (jumpConn) jumpConn.end(); } catch { /* ignore */ }
-          throw e;
-        }
-      };
-      try {
-        return await connectOnce();
-      } catch (e) {
-        const msg = String((e && e.message) || e);
-        // 通道打开被限流(too offen):等 1s 重试一次
-        if (/channel open|too offen|too often|Channel open failure/i.test(msg)) {
-          __sftpLog('SFTP 通道被限流,1s 后重试', { sessionId, error: msg });
-          await new Promise((r) => setTimeout(r, 1000));
-          return connectOnce();
-        }
-        throw e;
-      }
-    };
-    // 探测独立 SFTP 是否真能用:某些设备(H3C OTP 复用)独立连接能认证通过,但该连接上
-    // SFTP 操作全被拒(General failure)——连接打开成功不代表可用。readdir('.') 探测一次,
-    // 报 General failure 即判定独立连接不可用,回退主连接。超时按可用处理(慢设备不误判)。
-    const probeSftp = (sftp) => new Promise((resolve) => {
-      let done = false;
-      const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
-      const timer = setTimeout(() => finish(true), 5000);
-      try {
-        sftp.readdir('.', (err) => { clearTimeout(timer); finish(!err || !String((err && err.message) || err).includes('General failure')); });
-      } catch { clearTimeout(timer); finish(true); }
-    });
-    try {
-      try {
-        const sep = await Promise.race([
-          openSeparate(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('SFTP 独立连接超时(20s)')), 20000)),
-        ]);
-        const usable = await probeSftp(sep);
-        if (!usable) {
-          // 独立连接认证通过但 SFTP 不可用(H3C OTP 复用)→ 关闭它,回退主连接 SFTP
-          __sftpLog('独立 SFTP 探测失败(General failure),回退主连接', { sessionId, ms: Date.now() - t0 });
-          closeSftpConn(sessionId); // 关掉不可用的独立连接
-          await openOnMain();
-          __sftpLog('SFTP 回退主连接成功', { sessionId, ms: Date.now() - t0 });
-        } else {
-          __sftpLog('SFTP 独立连接成功', { sessionId, ms: Date.now() - t0 });
-        }
-      } catch (e) {
-        // 独立连接失败(OTP 复用被拒/设备限制/超时)→ 回退主连接 SFTP,不阻断功能
-        __sftpLog('SFTP 独立连接失败,回退主连接', { sessionId, error: e && e.message, ms: Date.now() - t0 });
-        s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null; // 清掉独立连接残留(如有)
-        await openOnMain();
-        __sftpLog('SFTP 回退主连接成功', { sessionId, ms: Date.now() - t0 });
-      }
-    } catch (e) {
-      __sftpLog('SFTP 连接失败', { sessionId, ms: Date.now() - t0, error: e && e.message });
-      throw e;
-    }
-  }
-  return s.sftp;
-}
-
-// 关掉会话的独立 SFTP 连接 + 它自己的跳板连接(会话断开/关标签时调用,幂等)
-function closeSftpConn(sessionId) {
-  const s = sshSessions.get(sessionId);
-  if (s) {
-    try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
-    try { if (s.sftpJumpConn) { s.sftpJumpConn.end(); } } catch { /* ignore */ }
-    s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null;
-  }
-}
-
-// SFTP 操作失败(General failure 等设备级拒绝)时重置连接:清掉坏 sftp/sftpConn,
-// 下次 getSftp 会重走「独立连接→探测→回退」逻辑重新建一个可用的。
-function resetSftp(sessionId) {
-  const s = sshSessions.get(sessionId);
-  if (s) {
-    try { if (s.sftpConn) { s.sftpConn.end(); } } catch { /* ignore */ }
-    try { if (s.sftpJumpConn) { s.sftpJumpConn.end(); } } catch { /* ignore */ }
-    s.sftpConn = null; s.sftpJumpConn = null; s.sftp = null;
-  }
-}
-
-// 条件重置:错误是"连接已坏"类(General failure/通道关闭/连接丢失)才重置,其余不动
-function resetSftpIfBroken(sessionId, err) {
-  const msg = String((err && (err.message || err)) || '');
-  if (/General failure|not connected|channel.{0,12}close|connection lost/i.test(msg)) {
-    resetSftp(sessionId);
-  }
-}
-
-// 该会话是否有正在跑的 SFTP 传输任务:超时要重置连接时用它挡一下(重置会掐断在传的文件)
-function hasActiveTransfer(sessionId) {
-  for (const j of sftpJobs.values()) { if (j && j.sessionId === sessionId && !j.cancelled) return true; }
-  return false;
-}
-
-// 本地文件名安全化见 lib/local-name.js(Windows 非法字符/保留设备名/结尾点空格/.. 穿越)。
-
-// 把目录和文件名拼成远程路径(统一用 / 分隔,处理 root 边界)
-function joinRemote(dir, name) {
-  if (dir === '/' || dir === '') return `/${name}`;
-  return `${dir.replace(/\/$/, '')}/${name}`;
-}
-
-// ---- 断点续传(磁盘持久化)----
-// 只续传"我们自己中断过"的传输:失败时记真实已写字节(+本地 mtime),重试同一路径时
-// 由 ssh-client 的 resolve*Offset 纯函数判定偏移。绝不按 size 猜同名既有文件(那会拼脏文件)。
-// 记录落在 lib/sftp-partials.js 管理的 sftp-partials.json(每次变更同步落盘),app 重启/
-// 崩溃后中断点仍在 —— 跨会话续传不再退化为全量重传。
-// 键用稳定主机身份 hostId:kind:path(hostId 由 ssh:connect 存进 sshSessions):
-//   sessionId 每次启动从 sess-1 重计,不能单独做键(否则会把 A 主机的断点续传到 B 主机);
-//   kind=u(上传远端路径)/d(下载本地路径)区分同一路径的两种记录。
-const sftpPartials = require('./lib/sftp-partials');
-const ptKey = (sessionId, kind, p) => {
-  const s = sshSessions.get(sessionId);
-  const hostId = (s && s.hostId) || sessionId; // 取不到 hostId 时回退 sessionId(至少会话内隔离)
-  return `${hostId}:${kind}:${p}`;
-};
-
-// 查上传续传偏移:返回 >0 表示应从该偏移续传;状态已失效则清记录并返回 0
-async function resolveUploadResume(sessionId, sftp, remotePath, localPath) {
-  const key = ptKey(sessionId, 'u', remotePath);
-  const p = sftpPartials.get(key);
-  if (!p) return 0;
-  const cur = await sshClient.statSize(sftp, remotePath); // 远端真实已写字节(以实际落盘为准)
-  const off = sshClient.resolveUploadOffset(p, fs.statSync(localPath).mtimeMs, cur);
-  if (off === 0) sftpPartials.remove(key);
-  return off;
-}
-
-// 上传失败时记下中断点:远端已写字节 + 本地 mtime(本地 mtime 变过就不续,前缀可能已失效)
-async function recordUploadPartial(sessionId, sftp, remotePath, localPath) {
-  try {
-    const cur = await sshClient.statSize(sftp, remotePath);
-    if (cur > 0) sftpPartials.set(ptKey(sessionId, 'u', remotePath), { bytes: cur, mtimeMs: fs.statSync(localPath).mtimeMs });
-  } catch { /* 记不下来就放弃续传,不影响主流程 */ }
-}
-
-// 查下载续传偏移:本地残留必须恰好等于中断点(说明那份残留是我们传的)
-function resolveDownloadResume(sessionId, localPath) {
-  const key = ptKey(sessionId, 'd', localPath);
-  const p = sftpPartials.get(key);
-  if (!p) return 0;
-  const localSize = fs.existsSync(localPath) ? fs.statSync(localPath).size : 0;
-  const off = sshClient.resolveDownloadOffset(p, localSize);
-  if (off === 0) sftpPartials.remove(key);
-  return off;
-}
-
-// 下载失败时记下本地中断点(真实落盘大小)
-function recordDownloadPartial(sessionId, localPath) {
-  try { if (fs.existsSync(localPath)) sftpPartials.set(ptKey(sessionId, 'd', localPath), { bytes: fs.statSync(localPath).size }); } catch { /* ignore */ }
-}
-
-// 本地写失败的原因里挑出最常见的坑(路径过长/磁盘满/被占用),直接告诉用户怎么办
-function friendlyDownloadError(msg, localPath) {
-  const m = String(msg || '');
-  if (!m) return '未知错误';
-  if (/ENAMETOOLONG|path too long/i.test(m)) {
-    return `${m}\n提示:本地路径过长(Windows 默认 260 字符限制),把下载目录换短一点(如 D:\\dl)后重试`;
-  }
-  if (/ENOSPC|no space/i.test(m)) return `${m}\n提示:本地磁盘空间不足`;
-  if (/EISDIR/i.test(m)) return `${m}\n提示:本地同名位置已经是一个文件夹,请删掉它或者换个保存目录`;
-  if (/EPERM|EACCES|EBUSY|read.?only|只读/i.test(m)) {
-    return `${m}\n提示:本地文件被占用或无写权限(只读属性 / 杀软扫描 / 正被其它程序打开)`;
-  }
-  return m;
-}
-
 // 远程 shell 输出的家目录 → 绝对路径。
 // Unix 是 /root;/Windows OpenSSH(PowerShell)是 C:\Users\x —— Windows 上 SFTP 统一用
 // 正斜杠(C:/Users/x),否则后续 readdir/拼接会被反斜杠搞坏。客户端在 Windows 上连
@@ -2120,7 +1796,7 @@ ipcMain.handle('winScp:open', async (_e, payload) => {
     if (!remotePath && p.sessionId) {
       const r = await resolveSftpHome(p.sessionId).catch(() => null);
       remotePath = winScp.normalizeRemotePath(r && r.ok ? r.home : '');
-      if (remotePath) __sftpLog('WinSCP 起始目录:探到家目录', { sessionId: p.sessionId, remotePath });
+      if (remotePath) console.log('[WinSCP] 起始目录:探到家目录 ' + remotePath);
     }
     if (remotePath) rawSettings.RemoteDirectory = remotePath;
     const args = winScp.buildArgs({
@@ -2146,15 +1822,14 @@ ipcMain.handle('winScp:open', async (_e, payload) => {
   }
 });
 
-// 探测 SFTP 默认家目录:
+// 探测 SFTP 默认家目录(v1.0.25 起只有一处调用方:WinSCP 起始目录):
 //   规则(用户要求):优先当前用户家目录;家目录在 SFTP 里不可访问(堡垒机 SFTP 被 chroot)
-//   或不存在时用 /tmp。显示路径与上传路径都用这里的结果,保证一致。
+//   或不存在时用 /tmp。WinSCP 打开就落在这个目录。
 //   实现:
 //     1. exec 通道执行 pwd / $HOME 拿 shell 视角的真实家目录(如 /root)——SFTP 是
 //        chroot 的,用 SFTP stat 看不到 /root,必须用 exec。
 //     2. 用 SFTP readdir 验证该家目录可访问;能列出 → 用它。
 //     3. 不能(SFTP chroot 看不到家目录,如 KoKo 网关 SFTP 根 = 系统 /tmp)→ 回退 /tmp。
-// 家目录探测(两端共用:SFTP 面板默认路径 + WinSCP 起始目录)
 async function resolveSftpHome(sessionId) {
   try {
     const s = sshSessions.get(sessionId);
@@ -2165,17 +1840,17 @@ async function resolveSftpHome(sessionId) {
     if (!home) home = await execProbePath(s.conn, 'echo %USERPROFILE%');
     // 2. 用 SFTP 验证家目录可访问(readdir 能列出才算可用;chroot 下 /root 不可访问)
     if (home) {
-      const sftp = await getSftp(sessionId).catch(() => null);
-      if (sftp) {
-        // 验证 readdir 必须有超时:慢/串行设备上这个请求可能一直不回调,旧版会让
-        // sftp:home 的 invoke 永久挂起(打开 SFTP 面板一直空白、没有任何反馈)。
-        // 超时按"可用"处理(沿用 exec pwd 的结果):随后 sftp:list 有 40s 超时 + 状态反馈,
-        // 若家目录真不可访问,会在列表处明确报错,而不是在这里无限等。
+      const sftp = await sshClient.openSftp(s.conn).catch(() => null);
+      try {
+        if (sftp) {
+        // 验证 readdir 必须有超时:慢/串行设备上这个请求可能一直不回调,主进程会一直挂着
+        // (WinSCP 也就拉不起来,用户只看到"点了没反应")。
+        // 超时按"可用"处理(沿用 exec pwd 的结果):宁可让 WinSCP 自己报错,也别无限等。
         const verifyDir = (dir) => new Promise((res2) => {
           let done = false;
           const finish = (v) => { if (!done) { done = true; clearTimeout(to); res2(v); } };
           const to = setTimeout(() => {
-            __sftpLog('家目录校验 readdir 超时(按可用处理)', { sessionId, dir });
+            console.log('[WinSCP] 家目录校验 readdir 超时(按可用处理) ' + dir);
             finish(true);
           }, 8000);
           try { sftp.readdir(dir, (e) => finish(!e)); } catch { finish(true); }
@@ -2189,7 +1864,8 @@ async function resolveSftpHome(sessionId) {
           if (await verifyDir(alt)) { ok = true; finalHome = alt; }
         }
         if (ok) return { ok: true, home: finalHome };
-      }
+        }
+      } finally { try { if (sftp) sftp.end(); } catch { /* ignore */ } }
     }
     // 3. 家目录不可访问/拿不到 → 回退 /tmp(SFTP 可访问的常用目录)
     return { ok: true, home: '/tmp' };
@@ -2197,774 +1873,6 @@ async function resolveSftpHome(sessionId) {
     return { ok: false, error: err.message };
   }
 }
-ipcMain.handle('sftp:home', (_e, { sessionId }) => resolveSftpHome(sessionId));
-
-// 列出目录内容 → 返回 { entries: [{ name, isDir, size, mtime }], cwd: 绝对路径 }
-// 某些设备(H3C 网络设备等)SFTP 对刚写入的文件 readdir/stat 恒报 size 0,但数据已落盘。
-// 上传成功后把真实大小持久化(lib/sftp-sizes.js,键=稳定 hostId|路径,仿 sftp-partials),
-// 面板列目录读到 0 就用真实值覆盖 —— 重连/重启后仍正确(H3C 是主要目标,这是关键)。
-// hostId 由 ssh:connect 存进 sshSessions(如 admin@ssh@root@pve.example@jms.example:2222),
-// 同资产重连 hostId 不变,尺寸记录跨会话稳定;取不到时回退 sessionId(至少本会话内覆盖)。
-const knownSizeKey = (sessionId, remotePath) => {
-  const s = sshSessions.get(sessionId);
-  const hostId = (s && s.hostId) || sessionId;
-  return `${hostId}|${remotePath}`;
-};
-
-ipcMain.handle('sftp:list', async (_e, { sessionId, remotePath }) => {
-  const _t0 = Date.now();
-  try {
-    const sftp = await getSftp(sessionId);
-    const [items, cwd] = await Promise.all([
-      new Promise((resolve, reject) => {
-        let done = false;
-        // 慢设备(H3C 网络设备)readdir 可能很慢;stat 探测若挂住通道也会拖到 readdir。
-        // 放宽到 40s + 超时留痕(旧版 20s 偏紧,慢设备常误报"目录读取超时")
-        const to = setTimeout(() => {
-          if (!done) {
-            done = true;
-            __sftpLog('readdir 超时', { sessionId, path: remotePath, ms: Date.now() - _t0 });
-            try { if (typeof __startupLog === 'function') __startupLog('sftp:list readdir 超时: ' + remotePath + ' (40s)'); } catch { /* ignore */ }
-            // 挂死的请求会把整条 SFTP 通道堵住(设备串行处理),不重置则后续每次点击都得再等 40s
-            // —— 用户看到的就是"点了没反应"。有传输在跑时不动它(重置会掐断在传的文件)。
-            const reset = !hasActiveTransfer(sessionId);
-            if (reset) resetSftp(sessionId);
-            reject(new Error('目录读取超时(40s)' + (reset ? ',已重置 SFTP 连接,请重试' : '')));
-          }
-        }, 40000);
-        sftp.readdir(remotePath, (err, list) => {
-          if (done) return;
-          done = true; clearTimeout(to);
-          err ? reject(err) : resolve(list || []);
-        });
-      }),
-      // realpath 把 '.' / 相对路径 解析成绝对路径,这样面板路径栏显示的是真路径
-      new Promise((resolve) => {
-        sftp.realpath(remotePath, (err, p) => resolve(err ? remotePath : p));
-      }),
-    ]);
-    __sftpLog('readdir 完成', { sessionId, path: remotePath, count: (items || []).length, ms: Date.now() - _t0 });
-    // 设备 stat 骗人(读目录属性报 0,数据其实在):用已知上传大小覆盖显示。
-    // 不做 stat 兜底探测 —— H3C 等设备 SFTP 服务器串行处理请求,挂住的 stat 会阻塞
-    // 后续 readdir → 面板"目录读取超时";且撒谎设备 stat 也报 0,探测无收益。
-    const entries = [];
-    for (const it of items) {
-      const isDir = !!it.attrs.isDirectory();
-      let size = it.attrs.size || 0;
-      const fullPath = joinRemote(remotePath, it.filename);
-      // 已知上传大小覆盖:H3C 等设备 readdir 报 0 或错误的非零大小,上传记录的真实大小
-      // 是权威 —— 只要已知存在且设备报的 ≠ 已知(含 0),就用已知覆盖显示。
-      if (!isDir) {
-        const known = sftpSizes.get(knownSizeKey(sessionId, fullPath));
-        if (known && known.size && (size === 0 || size !== known.size)) size = known.size;
-        else if (size === 0) __sftpLog('列表 size=0 无已知大小(诊断键)', { sessionId, path: fullPath });
-      }
-      entries.push({ name: it.filename, isDir, size, mtime: it.attrs.mtime ? it.attrs.mtime * 1000 : null });
-    }
-    return { ok: true, entries, cwd };
-  } catch (err) {
-    __sftpLog('readdir 失败', { sessionId, path: remotePath, ms: Date.now() - _t0, error: err && err.message });
-    // 设备级拒绝(General failure/H3C OTP 复用等)→ SFTP 连接已坏,重置让它下次自动重建
-    resetSftpIfBroken(sessionId, err);
-    return { ok: false, error: err.message };
-  }
-});
-
-// 读取远程文本文件内容(给"SFTP 远程编辑"用)。限制大小,避免误读大二进制。
-const EDIT_MAX_BYTES = 512 * 1024; // 512KB 以内才能编辑
-ipcMain.handle('sftp:readFile', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    // 先看文件大小:目录/超大文件拒绝
-    const stat = await new Promise((resolve, reject) => sftp.stat(remotePath, (err, a) => (err ? reject(err) : resolve(a))));
-    if (stat.isDirectory()) return { ok: false, error: '这是目录,不是文件' };
-    if (stat.size > EDIT_MAX_BYTES) return { ok: false, error: `文件太大(${(stat.size / 1024).toFixed(0)}KB),超过 512KB 不支持在线编辑` };
-    const buf = await new Promise((resolve, reject) => sftp.readFile(remotePath, (err, d) => (err ? reject(err) : resolve(d))));
-    // 按会话编码解码(GBK 会话读 GBK 文件,否则编辑器里直接乱码)
-    const enc = (sshSessions.get(sessionId) && sshSessions.get(sessionId).encoding) || 'utf8';
-    let content;
-    try { content = enc === 'utf8' ? buf.toString('utf8') : iconv.decode(buf, enc); } catch { content = buf.toString('utf8'); }
-    return { ok: true, content, size: stat.size };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 把编辑后的内容写回远程文件
-ipcMain.handle('sftp:writeFile', async (_e, { sessionId, remotePath, content }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    // 按会话编码写回(GBK 会话写回 GBK 字节,避免 UTF-8 覆盖损坏原文件)
-    const enc = (sshSessions.get(sessionId) && sshSessions.get(sessionId).encoding) || 'utf8';
-    let data;
-    try { data = enc === 'utf8' ? Buffer.from(String(content ?? ''), 'utf8') : iconv.encode(String(content ?? ''), enc); } catch { data = Buffer.from(String(content ?? ''), 'utf8'); }
-    await new Promise((resolve, reject) =>
-      sftp.writeFile(remotePath, data, (err) => (err ? reject(err) : resolve()))
-    );
-    return { ok: true };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 新建目录
-ipcMain.handle('sftp:mkdir', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    await new Promise((resolve, reject) => sftp.mkdir(remotePath, (err) => (err ? reject(err) : resolve())));
-    return { ok: true };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 删除目录:递归删空内容后删目录本身(ssh2 的 sftp.rmdir 只能删空目录,非空返回 "Failure")
-ipcMain.handle('sftp:rmdir', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    await sshClient.rmdirRecursive(sftp, remotePath);
-    return { ok: true };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 删除文件
-ipcMain.handle('sftp:delete', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    await new Promise((resolve, reject) => sftp.unlink(remotePath, (err) => (err ? reject(err) : resolve())));
-    return { ok: true };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 重命名/移动(文件或目录;目标可以是新名字或新路径)
-ipcMain.handle('sftp:rename', async (_e, { sessionId, from, to }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    await new Promise((resolve, reject) => sftp.rename(from, to, (err) => (err ? reject(err) : resolve())));
-    return { ok: true };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// ---- SFTP 权限 / 属主 / 时间戳 ----
-// 读单个远端条目的完整属性(面板列表只给了 size/mtime,改权限要先知道 mode/uid/gid)
-const SFTP_STAT_TIMEOUT = 20000;
-ipcMain.handle('sftp:stat', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    const st = await new Promise((resolve, reject) => {
-      let done = false;
-      const to = setTimeout(() => {
-        if (done) return;
-        done = true;
-        reject(new Error('读取属性超时(20s)'));
-      }, SFTP_STAT_TIMEOUT);
-      sftp.stat(remotePath, (err, a) => {
-        if (done) return;
-        done = true; clearTimeout(to);
-        err ? reject(err) : resolve(a);
-      });
-    });
-    const isDir = typeof st.isDirectory === 'function' ? st.isDirectory() : (st.mode & 0o170000) === 0o040000;
-    const mode = typeof st.mode === 'number' ? st.mode : 0;
-    return {
-      ok: true,
-      stat: {
-        mode, modeOctal: sftpAttrs.formatMode(mode), symbolic: sftpAttrs.modeToSymbolic(mode, isDir),
-        uid: typeof st.uid === 'number' ? st.uid : 0,
-        gid: typeof st.gid === 'number' ? st.gid : 0,
-        size: st.size || 0,
-        isDir,
-        atime: st.atime || 0,
-        mtime: st.mtime || 0,
-        mtimeLocal: sftpAttrs.toDatetimeLocal(st.mtime || 0),
-      },
-    };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    return { ok: false, error: err.message };
-  }
-});
-
-// 递归列出 root 下所有条目(只用于"递归改权限";路径串,不碰本地目录)
-const SFTP_ATTRS_RECURSE_MAX = 20000; // 上限:防止误点递归把几万条一起 chmod,把通道拖死
-function walkRemotePaths(sftp, root) {
-  return new Promise((resolve) => {
-    const out = [];
-    let truncated = false;
-    const readdir = (dir) => new Promise((res, rej) => sftp.readdir(dir, (e, l) => (e ? rej(e) : res(l || []))));
-    (async () => {
-      const stack = [root];
-      while (stack.length) {
-        const dir = stack.pop();
-        let items;
-        try { items = await readdir(dir); } catch { continue; } // 读不进的子目录跳过,不影响其它
-        for (const it of items) {
-          if (out.length >= SFTP_ATTRS_RECURSE_MAX) { truncated = true; stack.length = 0; break; }
-          const p = joinRemote(dir, it.filename);
-          const isDir = !!it.attrs.isDirectory();
-          out.push({ path: p, isDir });
-          // 符号链接不当目录递归(否则可能绕成环)
-          if (isDir && !(it.attrs.isSymbolicLink && it.attrs.isSymbolicLink())) stack.push(p);
-        }
-      }
-    })().then(() => resolve({ paths: out, truncated }));
-  });
-}
-
-// 改权限 / 属主 / 修改时间。patch 由渲染层的对话框收集,这里用 lib/sftp-attrs 复核一遍
-// (对话框不是唯一的调用入口,主进程不能信"前端已经校验过")。
-// 顺序:chown → chmod → utimes。chown 会清掉 setuid/setgid 位,先 chown 再 chmod 才不会白改。
-ipcMain.handle('sftp:setAttrs', async (_e, { sessionId, remotePath, patch, recursive }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    // 复核数值范围(渲染层传的是数字,但 IPC 不是只有对话框能调):lib 是唯一校验源
-    const v = sftpAttrs.validatePatch(patch);
-    if (!v.ok) return { ok: false, error: v.errors.join(';') };
-    if (v.empty) return { ok: false, error: '没有要修改的项目' };
-    const p = v.patch;
-    const statP = (rp) => new Promise((res) => sftp.stat(rp, (e, a) => res(e ? null : a)));
-    const chmodP = (rp, mode) => new Promise((res, rej) => sftp.chmod(rp, mode, (e) => (e ? rej(e) : res())));
-    const chownP = (rp, uid, gid) => new Promise((res, rej) => sftp.chown(rp, uid, gid, (e) => (e ? rej(e) : res())));
-    const utimesP = (rp, at, mt) => new Promise((res, rej) => sftp.utimes(rp, at, mt, (e) => (e ? rej(e) : res())));
-
-    // 目标清单:递归时先列子项(根自己也算一条)
-    const targets = [{ path: remotePath, isDir: true }];
-    let truncated = false;
-    let rootIsDir = true;
-    const rootStat = await statP(remotePath);
-    if (rootStat) rootIsDir = typeof rootStat.isDirectory === 'function' ? rootStat.isDirectory() : true;
-    targets[0].isDir = rootIsDir;
-    if (recursive && rootIsDir) {
-      const w = await walkRemotePaths(sftp, remotePath);
-      targets.push(...w.paths);
-      truncated = w.truncated;
-    }
-    if (recursive && !rootIsDir) {
-      // 单文件勾了递归:忽略(调用方界面里已经禁用了这个勾,这里再兜一层)
-      recursive = false;
-    }
-
-    const errors = [];
-    let applied = 0;
-    for (const t of targets) {
-      try {
-        let st = null;
-        if (typeof p.uid === 'number' || typeof p.gid === 'number') {
-          st = t.path === remotePath ? rootStat : await statP(t.path);
-          // ssh2 的 chown 要求同时给 uid 与 gid:只改一个时,另一个用当前值回填
-          const uid = typeof p.uid === 'number' ? p.uid : (st && typeof st.uid === 'number' ? st.uid : 0);
-          const gid = typeof p.gid === 'number' ? p.gid : (st && typeof st.gid === 'number' ? st.gid : 0);
-          await chownP(t.path, uid, gid);
-        }
-        if (typeof p.mode === 'number') await chmodP(t.path, p.mode);
-        if (typeof p.mtime === 'number') {
-          // atime 没让用户改 → 跟 mtime 一致(多数场景就是"保持访问时间和修改时间同步")
-          st = st || (t.path === remotePath ? rootStat : await statP(t.path));
-          const atime = typeof p.atime === 'number' ? p.atime : (st && typeof st.atime === 'number' && st.atime > 0 ? st.atime : p.mtime);
-          await utimesP(t.path, atime, p.mtime);
-        }
-        applied++;
-      } catch (err) {
-        errors.push(`${t.path}: ${err.message}`);
-        if (errors.length >= 10) break; // 报前 10 条,后面都是同一个原因(权限不足等)
-      }
-    }
-    if (errors.length) {
-      try { __sftpLog('setAttrs 部分失败', { sessionId, path: remotePath, applied, failed: errors.length, first: errors[0] }); } catch { /* ignore */ }
-    }
-    return { ok: errors.length === 0, applied, total: targets.length, errors, truncated, text: sftpAttrs.describePatch(p) };
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err);
-    return { ok: false, error: err.message };
-  }
-});
-
-// 传输限速(设置项 → 全部 upload/download 生效)。入参是 KB/s,0 = 不限。
-ipcMain.handle('sftp:setTransferLimit', (_e, kbps) => {
-  const bytesPerSec = sftpThrottle.normalizeRate(kbps);
-  const eff = sshClient.setTransferRate(bytesPerSec);
-  try { console.log(`[SFTP] 传输限速 = ${sftpThrottle.describeRate(eff)}`); } catch { /* ignore */ }
-  return { ok: true, bytesPerSec: eff, text: sftpThrottle.describeRate(eff) };
-});
-
-// 上传:弹出系统对话框选本地文件 → fastPut 到远程
-// 传输进度 → 渲染进程进度条(sftp:progress 事件)
-//
-// 大文件进度节流:底层流按 64KB 块回调,若全量 IPC 会把渲染层主线程打满(高速链路下
-// 每秒上千次 DOM 更新 → 界面卡死、进度条定格,sftp:done 还会被排在几千条 progress
-// 后面、传输早完成却迟迟不刷新)。节流器每 100ms 最多发一条,窗口内新事件只记 pending;
-// 传输完成时 sftpJobDone → flushSftpProgress 补发最后一条,进度条既平滑又能走到真实终态。
-// 实现见 lib/sftp-progress-throttle.js(不依赖 electron,可单测)。
-const { createProgressThrottle } = require('./lib/sftp-progress-throttle');
-const sftpProgress = createProgressThrottle({
-  send: (p) => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:progress', p); } catch { /* ignore */ } },
-  intervalMs: 100,
-});
-function emitSftpProgress(payload) { sftpProgress.emit(payload); }
-// job 完成/失败/取消时补发最后一条被节流的进度,然后删掉节流条目(防 Map 泄漏)
-function flushSftpProgress(jobId) { sftpProgress.flush(jobId); }
-
-// ---- SFTP 传输 job(仿 WinSCP:发起即返回 jobId,后台跑,进度/完成事件驱动,可取消) ----
-const sftpJobs = new Map(); // jobId → { cancelled }
-let sftpJobSeq = 0;
-function sftpJobDone(jobId, payload) {
-  flushSftpProgress(jobId); // 先补发最后的进度(节流期间积压的最新一条),再发完成事件,保证进度条走完/停在真实位置
-  sftpJobs.delete(jobId);
-  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sftp:done', { jobId, ...payload }); } catch { /* ignore */ }
-}
-function makeShouldCancel(jobId) {
-  return () => { const j = sftpJobs.get(jobId); return !!(j && j.cancelled); };
-}
-ipcMain.handle('sftp:cancel', (_e, jobId) => {
-  const j = sftpJobs.get(jobId);
-  if (j) j.cancelled = true;
-  return { ok: true };
-});
-
-// ---- 目录上传:打包为主(Linux)+ 递归兜底(H3C) ----
-// Linux 目录上传走打包:本地 tar.gz → 单文件上传 → 远端 exec 解压 → 清理,省掉逐文件 mkdir/OPEN/CLOSE 的
-// N 次 RTT。H3C 是主要目标,但 Comware 无 GNU tar/gzip/exec 解压能力 → 探测不过时回退逐文件递归上传,
-// 保证文件夹上传在 H3C 上照常可用(不是冗余,是 H3C 的唯一路径)。
-// 打包用纯 JS 的 npm tar(不 spawn 系统 tar):macOS/Windows 行为一致,Windows 上无系统 tar。
-let packSeq = 0; // 打包临时文件序号(防同批多目录/重名冲突)
-const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"; // POSIX 单引号转义,防 shell 注入
-// 在会话主连接上 exec 一条命令,等退出码返回(参考 sftp:home 的 exec 用法)。超时/通道异常都兜底。
-function execOnSession(sessionId, command, timeoutMs) {
-  return new Promise((resolve) => {
-    const s = sshSessions.get(sessionId);
-    if (!s || !s.conn) return resolve({ ok: false, error: '连接不存在' });
-    let settled = false;
-    let timer = null;
-    const done = (r) => { if (!settled) { settled = true; if (timer) clearTimeout(timer); resolve(r); } };
-    timer = setTimeout(() => done({ ok: false, timedOut: true, error: '远端命令超时' }), timeoutMs || 60000);
-    try {
-      s.conn.exec(command, (err, stream) => {
-        if (err || !stream) return done({ ok: false, error: (err && err.message) || '远端命令通道失败' });
-        let out = '', errOut = '';
-        let exitCode = null;
-        // 注意:ssh2 的 'exit' 事件**先于**尚未读完的 data/close 到达(实测 mock 的
-        // `POLARIS_PACK_OK` 在 exit 里读到的 stdout 是空串 → 打包上传探测误判为不支持)。
-        // 所以 exit 只记退出码,真正 resolve 放到 close(或 exit 后短暂兜底)。
-        const finish = (why) => {
-          const ok = exitCode === 0;
-          done({ ok, code: exitCode == null ? -1 : exitCode, stdout: out, stderr: errOut, error: ok ? undefined : (why || `exit ${exitCode}`) });
-        };
-        stream.on('data', (d) => { out += d; });
-        stream.stderr.on('data', (d) => { errOut += d; });
-        stream.on('exit', (code) => {
-          exitCode = code;
-          setTimeout(() => finish(), 300); // 个别实现不发 close:exit 后 300ms 兜底
-        });
-        stream.on('close', () => finish());
-        stream.on('error', (e) => done({ ok: false, error: e && e.message }));
-      });
-    } catch (e) { done({ ok: false, error: e && e.message }); }
-  });
-}
-// 探测当前会话能否走打包上传(exec 可用 + 远端有 tar 和 gzip)。结果按会话缓存,断开随对象释放。
-async function probeRemotePack(sessionId) {
-  const s = sshSessions.get(sessionId);
-  if (!s) return false;
-  if (s._packProbed !== undefined) return s._packProbed;
-  const r = await execOnSession(sessionId, 'command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 && echo POLARIS_PACK_OK', 10000);
-  // 精确匹配整行:真实 Linux 只输出 POLARIS_PACK_OK 一行;回显/噪声(如 mock 的 "(mock) exec:...")不误判
-  const ok = !!(r.ok && String(r.stdout || '').trim() === 'POLARIS_PACK_OK');
-  s._packProbed = ok;
-  __sftpLog('打包上传探测', { sessionId, canPack: ok, code: r.code, stderr: (r.stderr || '').slice(0, 120) });
-  return ok;
-}
-// 逐文件递归上传目录(H3C/无打包能力主机的兜底):并发池 + 每文件断点续传 + 单文件失败隔离。
-// H3C 是主要目标:Comware 无 GNU tar/gzip,打包路径探测不过,文件夹上传靠这条保证可用。
-async function uploadDirRecursive(sessionId, sftp, localPath, target, prog, shouldCancel) {
-  const { uploaded, failed } = await sshClient.uploadDir(
-    sftp, localPath, target, prog,
-    (lp, rp) => resolveUploadResume(sessionId, sftp, rp, lp),
-    (lp, rp) => recordUploadPartial(sessionId, sftp, rp, lp),
-    shouldCancel
-  );
-  for (const u of uploaded) sftpSizes.set(knownSizeKey(sessionId, u.rp), u.size);
-  __sftpLog('上传结束(目录,递归)', { sessionId, target, ok: uploaded.length, failed: (failed || []).length });
-  if (failed && failed.length) __sftpLog('上传失败文件', { sessionId, failed: failed.slice(0, 10).map((f) => ({ rp: f.rp, error: f.error })) });
-  // uploadedPaths:逐文件成功清单(协议里 remotePath 只是目录)。渲染层用它逐行标 ✓,
-  // 否则部分失败时成功的文件行会被整批的 ok=false 误标成"✗ 失败"。
-  return { ok: true, remotePath: target, isDir: true, count: uploaded.length, uploadedPaths: uploaded.map((u) => u.rp), failed };
-}
-// 打包上传目录(Linux 主路径):本地 tar.gz → 单文件上传(不续传,每次重打)→ 远端解压 + 清理压缩包。
-// 打包/远端解压环节失败返回 null(调用方回退逐文件递归,保证 H3C 之外的目录上传不因单点失败挂掉);
-// 压缩包上传失败直接报错(连接/传输问题,递归也会失败,不回退)。
-async function uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, target, prog, shouldCancel, jobId) {
-  const remoteArchive = joinRemote(remoteDir, baseName + '.tar.gz');
-  const tmpFile = path.join(app.getPath('temp'), `polaris-pack-${jobId}-${++packSeq}.tar.gz`);
-  const _t0 = Date.now();
-  // 惰性加载:tar 只在"目录打包上传"时用。加载失败按打包失败处理 → 回退逐文件递归上传。
-  let tar = null;
-  try { tar = require('tar'); } catch { /* 回退递归 */ }
-  let created = false;
-  try {
-    if (shouldCancel && shouldCancel()) return { ok: false, error: '已取消' };
-    // 1. 本地打包(纯 JS tar,流式写临时文件;空目录/符号链接/权限位由 tar 保真)
-    try {
-      await tar.c({ gzip: true, cwd: path.dirname(localPath), file: tmpFile }, [baseName]);
-      created = true;
-    } catch (err) {
-      // 打包失败(Windows 路径/权限/临时盘等)→ 回退递归上传
-      __sftpLog('本地打包失败,回退递归上传', { sessionId, localPath, error: err && err.message });
-      return null;
-    }
-    const size = fs.statSync(tmpFile).size;
-    __sftpLog('打包完成', { sessionId, localPath, tmpFile, size });
-    // 2. 上传单文件(进度文件=目标目录,面板显示目录名而不是压缩包名)
-    prog({ done: 0, total: size, file: target, fileDone: 0, fileTotal: size, filesDone: 0, filesTotal: 1 });
-    try {
-      await sshClient.uploadFile(sftp, tmpFile, remoteArchive, (done) => prog({ done, total: size, file: target, fileDone: done, fileTotal: size, filesDone: 0, filesTotal: 1 }), 0, shouldCancel);
-    } catch (err) {
-      // 压缩包上传失败:连接/传输问题,递归也会失败,直接报错(不回退,也别记续传——临时文件马上删)
-      resetSftpIfBroken(sessionId, err);
-      __sftpLog('压缩包上传失败', { sessionId, remoteArchive, ms: Date.now() - _t0, error: err && err.message });
-      // remotePath(面板进度行用的目标路径)随失败返回:渲染层才能补出可见的失败行
-      return { ok: false, remotePath: target, error: '压缩包上传失败: ' + ((err && err.message) || err) };
-    }
-    sftpSizes.set(knownSizeKey(sessionId, remoteArchive), size);
-    // 3. 远端解压 + 清理压缩包(一条命令;失败命令已结束 → 清压缩包后回退递归;
-    //    超时可能仍在解压 → 不动压缩包,提示用户手动处理)
-    const cmd = `mkdir -p ${shq(remoteDir)} && tar -xzf ${shq(remoteArchive)} -C ${shq(remoteDir)} && rm -f ${shq(remoteArchive)}`;
-    const ex = await execOnSession(sessionId, cmd, 180000);
-    if (!ex.ok) {
-      __sftpLog('远端解压失败', { sessionId, remoteArchive, code: ex.code, timedOut: ex.timedOut, stderr: (ex.stderr || '').slice(0, 200) });
-      if (!ex.timedOut) {
-        await execOnSession(sessionId, `rm -f ${shq(remoteArchive)}`, 15000).catch(() => {});
-        return null; // 命令已结束(确实失败),清掉压缩包后回退递归上传
-      }
-      return { ok: false, remotePath: target, error: `远端解压超时,压缩包留在 ${remoteArchive}(可能仍在解压,可稍后手动 tar -xzf)` };
-    }
-    __sftpLog('打包上传完成', { sessionId, target, archive: remoteArchive, ms: Date.now() - _t0 });
-    return { ok: true, remotePath: target, isDir: true, packed: true, count: 1 };
-  } finally {
-    // 清理本地临时压缩包;Windows 上文件被占用/杀软扫描会删不掉 → 重试一次,再失败就容忍(不阻断)
-    if (created) {
-      try { fs.unlinkSync(tmpFile); }
-      catch { setTimeout(() => { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }, 500); }
-    }
-  }
-}
-
-// 上传单个本地路径(文件或目录)到 remoteDir;对话框/拖拽共用。返回结果对象。
-// jobId: 传输 job 标识(进度事件带它,便于渲染层按 job 管理行 + 取消)
-async function runUpload(sessionId, remoteDir, localPath, jobId) {
-  const _t0 = Date.now();
-  const sftp = await getSftp(sessionId);
-  const isDir = fs.statSync(localPath).isDirectory();
-  __sftpLog('上传开始', { sessionId, remoteDir, localPath, isDir });
-  const prog = (p) => emitSftpProgress(Object.assign({ op: 'upload', jobId, sessionId }, p));
-  const shouldCancel = makeShouldCancel(jobId);
-  if (isDir) {
-    const baseName = path.basename(localPath);
-    const target = joinRemote(remoteDir, baseName);
-    // 目录上传:Linux 走打包(方案 B,不分大小一律打包),H3C 等无 tar/gzip/exec 的主机回退逐文件递归。
-    // 打包环节失败(null)同样回退递归——文件夹上传必须尽量成功,H3C 是主要目标。
-    if (await probeRemotePack(sessionId)) {
-      const r = await uploadDirPacked(sessionId, sftp, localPath, baseName, remoteDir, target, prog, shouldCancel, jobId);
-      if (r) return r; // 打包路径给出结论(成功或压缩包上传失败)就返回;r===null → 回退递归
-      __sftpLog('打包路径失败,回退递归上传', { sessionId, remoteDir, localPath });
-    } else {
-      __sftpLog('主机不支持打包上传,改用逐文件递归', { sessionId, remoteDir, localPath });
-    }
-    return uploadDirRecursive(sessionId, sftp, localPath, target, prog, shouldCancel);
-  }
-  const remotePath = joinRemote(remoteDir, path.basename(localPath));
-  const resumeFrom = await resolveUploadResume(sessionId, sftp, remotePath, localPath);
-  if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'u', remotePath)); // 这次从偏移续传,旧的记录作废
-  try {
-    __sftpLog('上传文件开始', { sessionId, remotePath, size: fs.statSync(localPath).size, resumeFrom });
-    await sshClient.uploadFile(sftp, localPath, remotePath, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
-    sftpSizes.set(knownSizeKey(sessionId, remotePath), fs.statSync(localPath).size); // 同上:记录真实大小
-    __sftpLog('上传文件完成', { sessionId, remotePath, ms: Date.now() - _t0 });
-    return { ok: true, remotePath, resumedFrom: resumeFrom };
-  } catch (err) {
-    const cancelled = !!(err && err.code === 'CANCELLED');
-    recordUploadPartial(sessionId, sftp, remotePath, localPath); // 失败/取消:用真实已写字节更新中断点(远端半成品已保留)
-    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
-    __sftpLog(cancelled ? '上传已取消(远端半成品已保留,可续传)' : '上传文件失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-    // remotePath 随失败结果返回:渲染层据此为"首个进度事件之前就失败"的文件补出可见行
-    // (否则单文件上传失败在传输面板里完全没有痕迹)。
-    return { ok: false, cancelled, error: err.message, remotePath };
-  }
-}
-
-// 在后台执行一批上传(不阻塞调用方),完成时发 sftp:done
-function startUploadJob(sessionId, remoteDir, localPaths) {
-  const jobId = 'u' + (++sftpJobSeq);
-  sftpJobs.set(jobId, { cancelled: false, sessionId });
-  setImmediate(async () => {
-    try {
-      const results = [];
-      for (const p of localPaths) {
-        if (makeShouldCancel(jobId)()) break;
-        results.push(await runUpload(sessionId, remoteDir, p, jobId));
-        flushSftpProgress(jobId); // 该文件已完成:补发被节流的最后一条进度再传下一个,避免行停在 <100%
-      }
-      const ok = results.filter((r) => r.ok);
-      // 目录递归上传的"逐文件失败"藏在结果的 failed 数组里(顶层仍是 ok:true),
-      // 旧版只取 !r.ok → 文件失败被吞掉,界面报"上传完成"。这里展开合并。
-      const failed = [
-        ...results.filter((r) => !r.ok),
-        ...results.flatMap((r) => (Array.isArray(r.failed)
-          ? r.failed.map((f) => ({ remotePath: f.rp, error: f.error }))
-          : [])),
-      ];
-      // error 带出首个失败原因:渲染层状态栏能显示具体错误(否则逐路径失败只有面板"✗ 失败",看不见原因)
-      const firstErr = (failed[0] && failed[0].error) || undefined;
-      // uploaded:本次成功上传的远端路径(渲染层据此高亮定位"传到了哪"+逐行标 ✓)。
-      // 目录递归上传的成功项在 uploadedPaths(每个文件)里;打包/单文件用 remotePath。
-      const uploaded = ok.flatMap((r) => (Array.isArray(r.uploadedPaths) ? r.uploadedPaths : [r.remotePath])).filter(Boolean);
-      sftpJobDone(jobId, { sessionId, op: 'upload', ok: failed.length === 0, count: ok.length, uploaded, failed, error: firstErr, cancelled: makeShouldCancel(jobId)(), packed: results.some((r) => r.packed) });
-    } catch (err) {
-      sftpJobDone(jobId, { sessionId, op: 'upload', ok: false, error: err && err.message, cancelled: makeShouldCancel(jobId)() });
-    }
-  });
-  return { ok: true, jobId };
-}
-
-// 在后台执行下载(不阻塞调用方),完成时发 sftp:done;kind='single' 下载单文件,'many' 批量
-function startDownloadJob(sessionId, kind, args) {
-  const jobId = 'd' + (++sftpJobSeq);
-  sftpJobs.set(jobId, { cancelled: false, sessionId });
-  setImmediate(async () => {
-    const shouldCancel = makeShouldCancel(jobId);
-    const prog = (p) => emitSftpProgress(Object.assign({ op: 'download', jobId, sessionId }, p));
-    try {
-      let ok = false, failed, localPath;
-      let sftp = await getSftp(sessionId);
-      if (kind === 'single') {
-        const { remotePath, localPath: lp, resumeFrom } = args;
-        if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', lp));
-        const _t0 = Date.now();
-        __sftpLog('下载开始', { sessionId, remotePath, localPath: lp, resumeFrom });
-        __sftpLog('下载开始(单文件)', { sessionId, remotePath, localPath: lp, resumeFrom });
-        try {
-          await sshClient.downloadFile(sftp, remotePath, lp, (done, total) => prog({ done, total, file: remotePath, fileDone: done, fileTotal: total, filesDone: 0, filesTotal: 1 }), resumeFrom, shouldCancel);
-          __sftpLog('下载完成', { sessionId, remotePath, ms: Date.now() - _t0 });
-          ok = true; localPath = lp;
-        } catch (err) {
-          // 取消:本地半成品保留(见 lib/ssh-client cancelError)→ 记下残留大小,下次同路径从断点续
-          recordDownloadPartial(sessionId, lp);
-          __sftpLog(err && err.code === 'CANCELLED' ? '下载已取消(本地半成品已保留,可续传)' : '下载失败', { sessionId, remotePath, ms: Date.now() - _t0, error: err && err.message });
-          throw err;
-        }
-      } else {
-        const { plans, targetDir, walkFails } = args;
-        // 总字节用单独变量:旧版在回调参数里写 `(d, total)` 把外层 total 遮蔽了,
-        // 进度事件里的 total 变成了“当前文件大小” → 总进度恒 100%(多文件下载看着像已完成)
-        const batchTotal = plans.reduce((s, p) => s + (p.size || 0), 0);
-        let done = 0, finished = 0;
-        const results = await sshClient.mapConcurrent(plans, sshClient.SFTP_CONCURRENCY, async (p) => {
-          if (shouldCancel()) return { ok: false, remotePath: p.rp, error: '已取消' };
-          const resumeFrom = resolveDownloadResume(sessionId, p.lp);
-          if (resumeFrom > 0) sftpPartials.remove(ptKey(sessionId, 'd', p.lp));
-          let fDone = resumeFrom;
-          try {
-            fs.mkdirSync(path.dirname(p.lp), { recursive: true });
-            await sshClient.downloadFile(sftp, p.rp, p.lp, (d, dtotal) => { done += (d - fDone); fDone = d; prog({ done, total: batchTotal, file: p.rp, fileDone: d, fileTotal: dtotal, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
-            return { ok: true, remotePath: p.rp, localPath: p.lp };
-          } catch (err) {
-            recordDownloadPartial(sessionId, p.lp);
-            __sftpLog('下载失败(单文件)', { sessionId, remotePath: p.rp, localPath: p.lp, error: err && err.message });
-            return { ok: false, remotePath: p.rp, error: friendlyDownloadError(err && err.message, p.lp) };
-          } finally { finished++; }
-        });
-        // 失败项再逐个串行重试一次:批量并发(2 路)在 H3C/KoKo 类“SFTP 串行处理”的设备上
-        // 会让部分文件失败,而单文件/串行能成 —— 这类设备上「多文件下载失败、单文件正常」就是这个原因。
-        const fails = results.filter((r) => r && !r.ok && r.error !== '已取消');
-        if (fails.length && !shouldCancel()) {
-          try { sftp = await getSftp(sessionId); } catch { /* 重连不上就保留原失败 */ }
-          __sftpLog('批量下载失败项串行重试', { sessionId, count: fails.length });
-          for (const f of fails) {
-            if (shouldCancel()) break;
-            const plan = plans.find((p) => p.rp === f.remotePath);
-            if (!plan) continue;
-            const resumeFrom = resolveDownloadResume(sessionId, plan.lp);
-            let fDone = resumeFrom;
-            try {
-              fs.mkdirSync(path.dirname(plan.lp), { recursive: true });
-              await sshClient.downloadFile(sftp, plan.rp, plan.lp, (d, dtotal) => { done += (d - fDone); fDone = d; prog({ done, total: batchTotal, file: plan.rp, fileDone: d, fileTotal: dtotal, filesDone: finished, filesTotal: plans.length }); }, resumeFrom, shouldCancel);
-              f.ok = true; f.error = undefined; f.localPath = plan.lp; f.retried = true;
-              __sftpLog('下载重试成功', { sessionId, remotePath: plan.rp });
-            } catch (err) {
-              recordDownloadPartial(sessionId, plan.lp);
-              f.error = friendlyDownloadError(err && err.message, plan.lp);
-              __sftpLog('下载重试仍失败', { sessionId, remotePath: plan.rp, error: err && err.message });
-            }
-          }
-        }
-        // 目录展开阶段就失败的条目(子目录无权限等)也算失败项,一并回给渲染层建「✗ 失败」行
-        for (const w of (walkFails || [])) {
-          if (w && w.remotePath) results.push({ ok: false, remotePath: w.remotePath, error: friendlyDownloadError(w.error, '') });
-        }
-        // 空目录(plans 为空)不是失败:没有任何文件要传 = 成功(旧版 some([])=false → 静默无反馈)
-        ok = results.length ? results.some((r) => r.ok) : true;
-        failed = results.filter((r) => !r.ok);
-        // 把每个文件的本地路径带回,渲染层盖到传输行(📂 打开所在文件夹用);targetDir 供空目录/状态栏用
-        sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath: undefined, targetDir, results, failed, cancelled: shouldCancel() });
-        return;
-      }
-      sftpJobDone(jobId, { sessionId, op: 'download', ok, localPath, failed, cancelled: shouldCancel() });
-    } catch (err) {
-      resetSftpIfBroken(sessionId, err);
-      // 单文件下载在"首个进度事件之前"失败(stat/读失败)时没有传输行;把失败条目带回去,
-      // 渲染层据此补出「✗ 失败」行(与批量下载一致,避免又变成"点了没反应")。
-      const failed = (kind === 'single' && args && args.remotePath)
-        ? [{ remotePath: args.remotePath, error: friendlyDownloadError((err && err.message) || String(err), args.localPath) }]
-        : undefined;
-      sftpJobDone(jobId, { sessionId, op: 'download', ok: false, error: err && err.message, cancelled: shouldCancel(), failed });
-    }
-  });
-  return { ok: true, jobId };
-}
-
-ipcMain.handle('sftp:upload', async (_e, { sessionId, remoteDir, mode }) => {
-  try {
-    // 文件 + 文件夹都能选;选到目录时递归上传(mkdir 建目录 + 流式传文件)。
-    // mode='file'/'dir' 时分开只选对应类型(macOS 上 openFile+openDirectory 混开会退化成只能选文件夹)。
-    const properties = mode === 'file' ? ['openFile'] : (mode === 'dir' ? ['openDirectory'] : ['openFile', 'openDirectory']);
-    const pick = await dialog.showOpenDialog(mainWindow, {
-      title: mode === 'file' ? '选择要上传的本地文件' : (mode === 'dir' ? '选择要上传的本地文件夹' : '选择要上传的本地文件或文件夹'),
-      properties,
-    });
-    if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
-    // 后台跑传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动)
-    return startUploadJob(sessionId, remoteDir, [pick.filePaths[0]]);
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err);
-    __sftpLog('上传异常', { sessionId, remoteDir, error: err && err.message });
-    return { ok: false, error: err.message };
-  }
-});
-
-// 拖拽上传:直接给本地路径列表,跳过文件对话框(拖进 SFTP 面板 → 传当前目录);后台 job 执行
-ipcMain.handle('sftp:uploadPaths', async (_e, { sessionId, remoteDir, localPaths }) => {
-  const paths = (Array.isArray(localPaths) ? localPaths : []).filter(Boolean);
-  if (!paths.length) return { ok: false, error: '没有可上传的文件' };
-  return startUploadJob(sessionId, remoteDir, paths);
-});
-
-// 下载:弹出保存对话框 → 流式下载到本地(带进度),再次存到同一路径时断点续传
-ipcMain.handle('sftp:download', async (_e, { sessionId, remotePath }) => {
-  try {
-    const sftp = await getSftp(sessionId);
-    // 文件名取自远程路径,按 Windows 规则净化(非法字符/保留设备名/结尾点空格/.. 穿越)
-    const name = safeLocalName(remotePath.split(/[\\/]/).filter(Boolean).pop() || 'download');
-    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答保存对话框,不弹原生窗口
-    const save = process.env.POLARIS_AUTO_DL_DIR
-      ? { canceled: false, filePath: path.join(process.env.POLARIS_AUTO_DL_DIR, name) }
-      : await dialog.showSaveDialog(mainWindow, { title: '保存到本地', defaultPath: name });
-    if (save.canceled || !save.filePath) return { ok: false, error: '已取消' };
-    const localPath = save.filePath;
-    // 预检可写性(macOS TCC 保护目录 / Windows 只读位置):先试写再下载,失败立刻提示换目录。
-    // 删除探测文件失败不算"不可写"(Windows 杀软可能短暂占用新建文件),残留 0 字节无妨。
-    const probe = localPath + '.wt';
-    try { fs.writeFileSync(probe, ''); }
-    catch (err) {
-      const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
-        ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
-        : `保存位置不可写: ${err.message}`;
-      return { ok: false, error: hint };
-    }
-    try { fs.unlinkSync(probe); } catch { /* Windows:杀软占用导致删不掉,不影响下载 */ }
-    const resumeFrom = resolveDownloadResume(sessionId, localPath);
-    // 后台跑传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
-    return startDownloadJob(sessionId, 'single', { remotePath, localPath, resumeFrom });
-  } catch (err) {
-    resetSftpIfBroken(sessionId, err);
-    return { ok: false, error: err.message };
-  }
-});
-
-// 批量下载(第 6 课·全选下载):只弹一次"选文件夹",统一字节进度。
-// entries = [{ remotePath, isDir }] —— 目录会递归下载到本地同名子文件夹,文件按原名保存。
-ipcMain.handle('sftp:downloadMany', async (_e, { sessionId, entries }) => {
-  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && e.remotePath);
-  if (list.length === 0) return { ok: false, error: '没有要下载的内容' };
-  try {
-    const sftp = await getSftp(sessionId);
-    // 测试钩子(POLARIS_AUTO_DL_DIR):自动应答"选文件夹"对话框,不弹原生窗口
-    const pick = process.env.POLARIS_AUTO_DL_DIR
-      ? { canceled: false, filePaths: [process.env.POLARIS_AUTO_DL_DIR] }
-      : await dialog.showOpenDialog(mainWindow, {
-          title: `选择把 ${list.length} 个条目保存到哪个文件夹`,
-          properties: ['openDirectory'],
-        });
-    if (pick.canceled || !pick.filePaths[0]) return { ok: false, error: '已取消' };
-    const dir = pick.filePaths[0];
-    // 预检可写性:macOS 桌面/文稿/下载等受 TCC 保护,未授权时写入会 EPERM;Windows 只读目录同理。
-    // 先试写一个临时文件,失败立刻返回明确提示 —— 避免"全部文件下载完才发现失败"。
-    const probe = path.join(dir, `.polaris-wt-${Date.now()}`);
-    try { fs.writeFileSync(probe, ''); }
-    catch (err) {
-      const hint = (process.platform === 'darwin' && /EPERM|EACCES/i.test(err.message))
-        ? '保存位置无写入权限(macOS 系统保护)。请换一个普通文件夹(如 ~/sftp),或在 系统设置→隐私与安全性→完全磁盘访问权限 中授权 Polaris 后重启应用。'
-        : `保存位置不可写: ${err.message}`;
-      return { ok: false, error: hint };
-    }
-    try { fs.unlinkSync(probe); } catch { /* Windows:杀软占用导致删不掉,不影响下载 */ }
-    // 先把目录展开成文件清单,算总字节 → 统一进度
-    const plans = [];
-    const walkFails = []; // 目录展开阶段的失败(某子目录列不出来等),与传输失败一起回给渲染层
-    const usedLeaves = new Set(); // 净化后重名(a:b / a*b)或 Windows 大小写冲突时避免互相覆盖
-    for (const e of list) {
-      const rawLeaf = safeLocalName(e.remotePath.split(/[\\/]/).filter(Boolean).pop() || 'download');
-      let leaf = rawLeaf;
-      for (let n = 2; usedLeaves.has(leaf.toLowerCase()); n++) {
-        const dot = rawLeaf.lastIndexOf('.');
-        leaf = dot > 0 ? `${rawLeaf.slice(0, dot)} (${n})${rawLeaf.slice(dot)}` : `${rawLeaf} (${n})`;
-      }
-      usedLeaves.add(leaf.toLowerCase());
-      // 兜底:调用方标成文件但远端其实是目录(例如旧版列表缺 isDir / 从缓存恢复的条目)
-      // → 单独 stat 一次,是目录就按目录递归,避免「把目录当文件下 → 逐文件失败」
-      let isDir = !!e.isDir;
-      if (!isDir) {
-        const st = await new Promise((res) => {
-          let done = false;
-          const to = setTimeout(() => { if (!done) { done = true; res(null); } }, 10000);
-          try { sftp.stat(e.remotePath, (err2, s2) => { if (done) return; done = true; clearTimeout(to); res(err2 ? null : s2 || null); }); } catch { if (!done) { done = true; clearTimeout(to); res(null); } }
-        });
-        isDir = !!(st && (typeof st.isDirectory === 'function' ? st.isDirectory() : ((st.mode & 0o170000) === 0o040000)));
-      }
-      if (isDir) {
-        const localTarget = path.join(dir, leaf);
-        // 空目录也要在本地建出来(否则勾选一个空文件夹下载,本地什么都没出现)
-        try { fs.mkdirSync(localTarget, { recursive: true }); } catch { /* 后续单文件写入会报具体错误 */ }
-        try {
-          plans.push(...(await sshClient.walkRemote(sftp, e.remotePath, localTarget, {
-            visited: new Set(),
-            onError: (msg, rp) => walkFails.push({ remotePath: rp || e.remotePath, error: msg }),
-          })));
-        } catch (err) {
-          // 整个目录都打不开(无权限/不存在):只把这个条目标失败,其它勾选的条目照常下载
-          walkFails.push({ remotePath: e.remotePath, error: err && err.message ? err.message : String(err) });
-        }
-      } else {
-        plans.push({ rp: e.remotePath, lp: path.join(dir, leaf), size: 0 });
-      }
-    }
-    // 后台跑批量传输,立即返回 jobId(仿 WinSCP:发起即继续操作,进度/完成事件驱动,可取消)
-    return startDownloadJob(sessionId, 'many', { plans, targetDir: dir, walkFails });
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
 // ---------- 全量日志 IPC ----------
 // 必须只注册一次:createWindow() 可能被重复调用(macOS activate / 重复解锁),而
 // ipcMain.handle 对同一 channel 二次注册会抛"Attempted to register a second handler",
@@ -3246,7 +2154,7 @@ function buildMenu() {
     {
       label: '工具',
       submenu: [
-        { label: 'SFTP 文件面板', click: send('menu:sftp') },
+        { label: '用 WinSCP 打开 SFTP', click: send('menu:sftp') },
         { label: 'SSH 隧道…', click: send('menu:tunnel') },
         { type: 'separator' },
         { label: '批量执行', click: send('menu:batch') },
@@ -3529,8 +2437,6 @@ app.whenReady().then(() => {
   setImmediate(() => {
     __mark('后台维护开始');
     migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
-    sftpPartials.prune(); // 加载续传记录 + 裁剪过期中断点(7 天前的丢弃,防磁盘表无限增长)
-    sftpSizes.prune(); // 加载上传真实大小记录 + 裁剪过期条目(30 天前的丢弃,H3C 列表跨会话仍能覆盖显示 0)
     if (DEV_MODE) {
       try {
         require('./mock/mock-server').start();
@@ -3556,7 +2462,6 @@ app.on('before-quit', () => {
   finalizeAllSessionLogs(); // 退出前把没关的会话日志收尾(冲刷残留字符)
   try { appLog.flush(); } catch { /* ignore */ } // 应用日志批量写盘:退出前落完最后一批
   persistDb();             // 再确保数据库落盘
-  sftpPartials.save();     // 续传记录兜底落盘(正常路径每次变更已同步写盘,这里无害防漏)
   // 退出前清除堡垒机浏览器的登录态(cookie)+ 缓存,但**保留 localStorage**:
   // H3C 网页的收藏分组存在 localStorage,全清会把它一起丢掉(用户重登后收藏消失)。
   // 异步执行,不阻塞退出;成功与否都放行。

@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.24**（2026-11-13；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP（v1.0.25 起交给本机 WinSCP）、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.25**（2026-11-14；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -57,6 +57,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 - JumpServer API（登录/资产/复合用户名 KoKo 网关）+ H3C Web（accessclient:// token 解码、自动登录、资产捕获）
 - 堡垒机入口整合：头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单；堡垒机连接 CRUD（type=jms|h3c）、编辑入口、双击资产直连 SSH（`bastionConnectAsset`，未登录自动用保存账号登录）；右侧浏览器面板保留
 - 堡垒机收藏分组（按收藏分组展示 + 自动获取 + 上下级缩进）；分组计数与网页一致（多业务目录去重）；收藏分组脏 favGroup 清洗
+- **SFTP 只留「交给本机 WinSCP」一个入口（v1.0.25）**：内置面板在堡垒机网关上反复踩坑（`OPENDIR(".")` 错误码 4、独立 SFTP 通道被限流、维护成本高），**整个删掉不做双轨**——面板/列表/进度/传输记录/远程编辑器/权限属性弹窗/三档模式设置/限速设置/18 个 `sftp:*` IPC/`lib/sftp-*` 五个模块/`lib/ssh-client.js` 的上传下载实现全部移除（`ssh-client.js` 208 行，导出只剩 `connect/connectRaw/openSftp/execCommand/warmup`）。入口统一收敛到 `openSftpEntry(sessionId)`；`syncSftpEntryButton()` 只做 dim/title；`trackShellCwd()` + `resolveSftpHome()` 保留（只为 WinSCP 起始目录）；顺手修 `MaxListenersExceededWarning: 11 did-stop-loading listeners`（webview 型 contents `setMaxListeners(50)`，主窗口不动）。
 - **WinSCP 起始目录必须绝对 + 日志默认关（v1.0.24）**：现场日志证明 `SFTPRealPath=off` 之后唯一翻车点是 WinSCP 拿 `"."` 去 `OPENDIR`（服务器回 4）；所以起始目录未知时主进程现探家目录（`resolveSftpHome`）；WinSCP 日志的 `Parameter:` 行是明文口令，故默认不写日志，`POLARIS_WINSCP_LOG=1`/`POLARIS_WINSCP_DEBUG=1` 才开。见 `docs/winscp-realpath-fix.md` 第八节、`docs/release-v1.0.24.md`
 - **对外可见文字去 IP 化（v1.0.23）**：界面占位符/文档/注释/测试/Release 正文不再出现真实 IP 与凭据串，占位符 `h3c-bastion.example`/`jms.example`/`pve.example`/`storage.example`；HAR 用例按后缀扫 `*.har`；规则写进 `AGENTS.md` 安全约定。见 `docs/release-v1.0.23.md`
 - **SFTP 默认与 WinSCP 协议（v1.0.22）**：点 SFTP **默认开内置面板**（`button` 档，WinSCP 只是面板上的按需按钮）；老配置里没自己选过的 `replace` 一次性迁移到 `button`（`settingsVersion` 4 + `winscpModeMigrated`）。新增「WinSCP 协议 SFTP/SCP」：`scp://` 走服务器 `scp` 命令、绕过 SFTP 子系统（给 `LSTAT/OPENDIR` 回 4 的老设备），SCP 会话不下发 `SFTPRealPath=off`。见 `docs/release-v1.0.22.md` / `docs/winscp-realpath-fix.md` 第七节
@@ -65,7 +66,9 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 - **协议识别（v1.0.18）+ 客户端透传（v1.0.19）**：`dev.services.services` 的键=协议名，RDP/存储 Web 资产不再当 SSH 连（不请求 accessUrl、加橙色徽标）；去掉「RDP 在终端里跑」的错误预期，改为把堡垒机签发的 `accessclient://` **原样交给本机 `AccessClient.exe`**（`lib/h3c-client.js` 纯函数 + `h3cClient:detect` + `app:openExternal` 的 `accessclient:` 分支，**分支提前且不过 `new URL()`**）。没装客户端 → 提示缺 AccessClient + 浏览器直达，不发无效请求。见 `docs/decision-rdp-support.md`、`docs/release-v1.0.19.md`
 - 左侧列表显示未登录的 JMS 服务器；默认折叠分组；webview 焦点不抢占终端
 
-### SFTP
+> **v1.0.25 起内置 SFTP 面板整套删除**（SFTP 只保留「用本机 WinSCP 打开这个会话」）。以下三条为历史记录，保留作背景。
+
+### SFTP（历史，已删除）
 - 面板（浏览/上传下载断点续传/编辑/重命名/删除/多选）、按标签独立状态、连接名下拉、真实目标主机区分、路径面包屑、文件右键菜单、默认家目录探测
 - 上传/下载远端大小对账（三态校验 + 读回核对），中继截断不再误报成功、0 字节不再被静默放过、设备 stat 骗人不再误删文件
 - **断点续传磁盘化**（lib/sftp-partials.js）：中断点落盘，app 重启/崩溃后跨会话续传，不再退化为全量重传；大批量压测通过（verify-sftp-stress.js / verify-sftp-partials.js）

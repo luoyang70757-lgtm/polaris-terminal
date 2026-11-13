@@ -72,7 +72,7 @@ set POLARIS_LOCK_DIR=%CD%\.polaris-data && npm run dev
 ## 3. e2e（CDP 验证脚本）
 
 ```bash
-node verify-<功能>.js        # 例：node verify-sftp-panel.js
+node verify-<功能>.js        # 例：node verify-winscp-open.js
 ```
 
 约定：

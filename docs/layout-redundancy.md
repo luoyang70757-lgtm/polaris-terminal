@@ -60,7 +60,7 @@
 **修复方案 A（推荐）**：保留 `sftp-transfers-list`（信息更全、可清空、可点开所在文件夹），`sftp-log` 只记**非传输**操作（新建目录/删除/重命名/编辑/错误）。即删掉 `addLog` 中成功上传/下载的调用（`renderer.js:8384-8385`、`8415`），仅传输失败/取消时才落 log（保留诊断能力）。
 **修复方案 B**：直接删 `sftp-log` 及其渲染逻辑与 `state.sftp.log`，面板少一块。
 
-**回归**：`node verify-sftp-panel.js`、`node verify-sftp-stress.js`、`node verify-sftp-partials.js`。
+**回归**：`node verify-ui-layout.js`、`node verify-sftp-entry.js`（v1.0.25 起面板已删，原 `verify-sftp-panel/stress/partials` 随功能移除）。
 
 ### A2. 堡垒机面板：三重「选堡垒机」控件
 

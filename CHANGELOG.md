@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.0.25（2026-11-14）
+
+**SFTP 只剩一个入口：用本机 WinSCP 打开当前会话** —— 内置 SFTP 面板整套删除。
+面板在堡垒机网关上反复踩坑（REALPATH/OPENDIR 错误码 4、独立 SFTP 通道被限流），
+而日常要的双窗格、同步、权限对话框、限速，WinSCP 本来就更强。
+
+1. **入口收敛到一个函数**：工具栏「🪟 WinSCP」、⌘⇧S、菜单「用 WinSCP 打开 SFTP」、标签右键、
+   堡垒机资产连上后，全部走 `openSftpEntry(sessionId)`。没连接主机 → 「先连接一台主机」；
+   Telnet 会话 → 「SFTP 仅支持 SSH 会话」；本机没装 WinSCP → 说明原因并给出自定义路径的办法。
+   **不再有「拉开 WinSCP 失败就回落内置面板」这条分支**（面板没了）。
+2. **删掉的**：`#sftp-panel`（文件列表、路径栏、传输进度、传输记录、批量上传/下载）、
+   远程文件编辑器、权限与属性弹窗、三档模式设置（`replace`/`button`/`panel`）、传输限速设置、
+   全部 18 个 `sftp:*` IPC、`lib/sftp-attrs.js`、`lib/sftp-partials.js`、`lib/sftp-progress-throttle.js`、
+   `lib/sftp-sizes.js`、`lib/sftp-throttle.js`，以及 `lib/ssh-client.js` 里的上传/下载/递归/断点续传实现
+   （该文件 208 行，导出只剩 `connect`/`connectRaw`/`openSftp`/`execCommand`/`warmup`）。
+3. **留下的**：`lib/winscp-open.js` + `winScp:detect|open`、`trackShellCwd()`（跟踪终端 `cd`
+   作为 WinSCP 起始目录）、`resolveSftpHome()`（起始目录未知时现探家目录，现在只有 `winScp:open` 一个调用方）、
+   「WinSCP 协议 SFTP/SCP」设置项。
+4. **修 `MaxListenersExceededWarning: 11 did-stop-loading listeners`**：webview 每次加载完成都会挂一个
+   一次性监听，累计超过 10 就告警；现在 `app.on('web-contents-created')` 里对 webview 型 contents
+   `setMaxListeners(50)`，主窗口不动（真的有泄漏仍会报出来）。
+5. **回归**：新增 `verify-sftp-entry.js`（纯 Node 26 条结构断言：面板残留=0、入口唯一、
+   WinSCP 链路完整、监听器上限）；`verify-winscp-open.js` 第 ④ 段重写成「SFTP 入口 = WinSCP」（41 条）；
+   `verify-ui-layout.js` 的 SFTP 面板测点换成工具栏 WinSCP 按钮（22 条）；删掉 30 个随面板失效的 `verify-*`；
+   `run-verify --pure` 9/9 脚本 199 断言全绿。
+
 ## v1.0.24（2026-11-13）
 
 **WinSCP 两处硬伤** —— 用 Windows 现场日志（三份 WinSCP 会话日志）定位：`SFTPRealPath=off` 之后，

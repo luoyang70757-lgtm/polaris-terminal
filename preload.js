@@ -77,23 +77,6 @@ contextBridge.exposeInMainWorld('api', {
     }
   },
 
-  // ---- SFTP 文件传输 ----
-  sftpList: (sessionId, remotePath) => ipcRenderer.invoke('sftp:list', { sessionId, remotePath }),
-  sftpHome: (sessionId) => ipcRenderer.invoke('sftp:home', { sessionId }),
-  sftpMkdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
-  sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
-  sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),
-  sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', { sessionId, from, to }),
-  sftpStat: (sessionId, remotePath) => ipcRenderer.invoke('sftp:stat', { sessionId, remotePath }), // 权限/属主/时间戳对话框
-  sftpSetAttrs: (sessionId, remotePath, patch, recursive) => ipcRenderer.invoke('sftp:setAttrs', { sessionId, remotePath, patch, recursive }),
-  sftpSetTransferLimit: (kbps) => ipcRenderer.invoke('sftp:setTransferLimit', kbps), // 传输限速(KB/s,0=不限)
-  sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
-  sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
-  sftpUpload: (sessionId, remoteDir, mode) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir, mode }),
-  sftpUploadPaths: (sessionId, remoteDir, localPaths) => ipcRenderer.invoke('sftp:uploadPaths', { sessionId, remoteDir, localPaths }),
-  sftpDownload: (sessionId, remotePath) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath }),
-  // entries = [{ remotePath, isDir }] —— 支持文件+目录混合下载(目录递归)
-  sftpDownloadMany: (sessionId, entries) => ipcRenderer.invoke('sftp:downloadMany', { sessionId, entries }),
   addCmdHistory: (host, command) => ipcRenderer.invoke('cmd:add', host, command),
   listCmdHistory: () => ipcRenderer.invoke('cmd:list'),
   clearCmdHistoryDb: () => ipcRenderer.invoke('cmd:clear'),
@@ -106,14 +89,6 @@ contextBridge.exposeInMainWorld('api', {
   listArchiveFiles: () => ipcRenderer.invoke('cmd:listArchiveFiles'),
   downloadArchive: (filePath) => ipcRenderer.invoke('cmd:downloadArchive', filePath),
   deleteArchive: (archiveId, filePath) => ipcRenderer.invoke('cmd:deleteArchive', archiveId, filePath),
-  sftpBatchUpload: (sessions, remoteDir, localPaths) => ipcRenderer.invoke('sftp:batchUpload', { sessions, remoteDir, localPaths }),
-  sftpBatchDownload: (sessions, remotePath) => ipcRenderer.invoke('sftp:batchDownload', { sessions, remotePath }),
-  // 上传/下载进度事件(主进程推送,驱动进度条)
-  onSftpProgress: (cb) => ipcRenderer.on('sftp:progress', (_e, p) => cb(p)),
-  // 传输 job 完成/取消事件(仿 WinSCP:后台传输完成时刷新)
-  onSftpDone: (cb) => ipcRenderer.on('sftp:done', (_e, d) => cb(d)),
-  // 取消某个传输 job
-  sftpCancel: (jobId) => ipcRenderer.invoke('sftp:cancel', jobId),
 
   // ---- 批量执行结果面板 ----
   batchExec: (data) => ipcRenderer.invoke('batch:exec', data),

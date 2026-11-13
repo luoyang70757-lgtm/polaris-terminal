@@ -27,9 +27,7 @@ const ROOT = __dirname;
 
 // 需要真实主机/真实凭据(环境变量)的脚本:默认不跑,避免整套回归被环境卡住。
 const NEEDS_REAL = new Set([
-  'verify-pack-real.js', // REAL_PASS/REAL_HOST 真实 Linux 主机
   'verify-realjms.js',   // 真实 JumpServer(脚本本身 gitignore,存在才被发现)
-  'verify-realsfthome.js',
   'verify-realdl.js',
   'verify-ui-dl.js',
   'verify-tcc.js',       // macOS TCC 权限实测

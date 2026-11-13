@@ -170,15 +170,15 @@ curl -s https://raw.githubusercontent.com/winscp/winscp/master/source/core/CoreP
 | `main.js` | `ipcMain.handle('winScp:detect')`、`ipcMain.handle('winScp:open')`：telnet 拒绝、未装提示、`spawn(exe, args, {detached:true, stdio:'ignore'})` + `unref()`（Polaris 退出后 WinSCP 继续可用） |
 | `preload.js` | `winScpDetect()` / `winScpOpen(payload)` |
 | `src/index.html` | 设置项 `#set-winscp-mode`（三档）+ SFTP 工具栏 `#btn-sftp-winscp` |
-| `src/renderer.js` | `winScpMode()` / `refreshWinScpButton()` / `detectWinScp()` / `winScpPayloadFor()` / `openSessionInWinScp()`；`toggleSftpPanel` 在 `replace` 档改为「先试 WinSCP，失败/未装即回落内置面板」；标签右键菜单加「🪟 用 WinSCP 打开 SFTP」 |
+| `src/renderer.js`（v1.0.25 现状） | `openSftpEntry()` / `syncSftpEntryButton()` / `detectWinScp()` / `winScpPayloadFor()` / `openSessionInWinScp()`（`winScpMode()`/`refreshWinScpButton()` 已随面板删除；以下三档为历史）——enSessionInWinScp()`；`toggleSftpPanel` 在 `replace` 档改为「先试 WinSCP，失败/未装即回落内置面板」；标签右键菜单加「🪟 用 WinSCP 打开 SFTP」 |
 
 ### 三档语义（设置 → SFTP）
 
 | 值 | 行为 |
 |---|---|
-| `replace`（默认） | 点「SFTP」→ 直接拉起本机 WinSCP；**没装/拉起失败自动回落内置面板**（功能一定不消失） |
-| `button` | 点「SFTP」→ 内置面板；面板工具栏多一个「🪟 WinSCP」按钮，另可从标签右键菜单走 |
-| `panel` | 只用内置面板，WinSCP 入口完全不出现 |
+| `replace`（v1.0.15~21 默认） | 点「SFTP」→ 直接拉起本机 WinSCP；没装/拉起失败自动回落内置面板（**内置面板 v1.0.25 已删除，这条回落不再存在**） |
+| `button`（v1.0.22~24 默认） | 点「SFTP」→ 内置面板；面板工具栏多一个「🪟 WinSCP」按钮，另可从标签右键菜单走（面板已删） |
+| `panel` | 只用内置面板，WinSCP 入口完全不出现（面板已删；v1.0.25 起三档模式整体取消） |
 
 入口显隐**只依赖 `state.winScp.installed`**（探测不到就什么都没有），避免"按钮在、点了必报错"。
 

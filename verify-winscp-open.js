@@ -10,9 +10,9 @@
  *      + `/rawsettings SFTPRealPath=off`(chroot 服务器不发 REALPATH("."),否则 WinSCP 报错误码 4)
  *      + 已知起始目录时附带 `RemoteDirectory=/x`
  *   ③ 日志/状态栏里不出现明文密码(只有 ***)
- *   ④ 设置项 winscpMode=replace/button/panel 三种模式行为(替代/加按钮/只用内置面板)
- *   ⑤ replace 模式下拉起失败或没装 → 自动回落内置面板(功能不消失)
- *   ⑥ telnet 会话拒绝、缺主机报错
+ *   ④ SFTP 入口只有「WinSCP」一个:内置面板/编辑器/权限弹窗/三档模式都已删除,
+ *      没连接 / Telnet / 没装 WinSCP 三种情况在入口处统一提示(不出现假入口)
+ *   ⑤ telnet 会话拒绝、缺主机报错
  *   ⑦ 标签右键菜单里有「🪟 用 WinSCP 打开 SFTP」
  * 运行: node verify-winscp-open.js(需 9403/2233/2333 空闲)
  */
@@ -183,73 +183,63 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     if (!sid || sid === 'NOTCONNECTED' || sid === 'TIMEOUT') throw new Error('mock 会话连接失败');
     ok(`mock 会话已连接(sid=${sid})`);
 
-    // ---------- ④ 三种模式 ----------
-    // 默认 = button(v1.0.22 起):点 SFTP 开内置面板,不默认把用户交给 WinSCP
-    await evaluate(c, `state.settings.winscpMode = undefined; state.settings.winscpModeMigrated = true; true`);
-    const modeDefault = await evaluate(c, `winScpMode()`);
-    if (modeDefault === 'button') ok('默认模式 = button(点 SFTP 开内置面板,面板里有 WinSCP 按钮)');
-    else bad('默认模式 = button', modeDefault);
-    const opts = JSON.parse(await evaluate(c, `(function(){ var s=document.getElementById('set-winscp-mode'); return JSON.stringify({ n: s.options.length, vals: [].map.call(s.options, function(o){return o.value;}), first: s.options[0].value }); })()`));
-    if (opts.n === 3 && opts.first === 'button' && ['replace', 'button', 'panel'].every((v) => opts.vals.includes(v))) ok('设置项有三种模式且默认档排在第一位(button/replace/panel)');
-    else bad('设置项有三种模式且默认档排第一', JSON.stringify(opts));
-    // v4 迁移:老配置里仍是 replace(= 当年我们给的默认值)且用户没自己选过 → 变 button
-    await evaluate(c, `state.settings.winscpMode = 'replace'; state.settings.winscpModeMigrated = false; state.settings.settingsVersion = 3; saveSettings(); loadSettings(); true`);
-    const afterMigrate = await evaluate(c, `({ mode: winScpMode(), migrated: state.settings.winscpModeMigrated, ver: state.settings.settingsVersion, raw: state.settings.winscpMode })`);
-    if (afterMigrate.mode === 'button' && afterMigrate.raw === 'button' && afterMigrate.migrated === true && afterMigrate.ver === 4) ok('v4 迁移:没自己选过的 replace 老配置 → button(并写回)');
-    else bad('v4 迁移 replace→button', JSON.stringify(afterMigrate));
-    // 用户自己选过 replace(迁移标记为 true)→ 绝不再改
-    await evaluate(c, `state.settings.winscpMode = 'replace'; state.settings.winscpModeMigrated = true; state.settings.settingsVersion = 3; saveSettings(); loadSettings(); true`);
-    if ((await evaluate(c, `winScpMode()`)) === 'replace') ok('v4 迁移:用户自己选过的 replace 保持不动');
-    else bad('v4 迁移:用户自己选的 replace 被改了');
-    // WinSCP 协议下拉:默认 sftp,可切 scp
-    const proto = await evaluate(c, `(function(){ var s=document.getElementById('set-winscp-protocol'); return JSON.stringify({ n: s.options.length, vals: [].map.call(s.options, function(o){return o.value;}), cur: s.value, fn: winScpProtocol() }); })()`);
-    const prot = JSON.parse(proto);
-    if (prot.n === 2 && prot.vals.join(',') === 'sftp,scp' && prot.fn === 'sftp') ok('WinSCP 协议下拉(SFTP/SCP),默认 sftp');
-    else bad('WinSCP 协议下拉', proto);
-    await evaluate(c, `state.settings.winscpProtocol = 'scp'; true`);
-    if ((await evaluate(c, `winScpProtocol()`)) === 'scp') ok('切 SCP 后 winScpProtocol() 生效');
-    else bad('切 SCP 后 winScpProtocol()');
-    await evaluate(c, `state.settings.winscpProtocol = 'sftp'; true`);
+    // ---------- ④ SFTP 入口 = WinSCP(内置面板已整套删除) ----------
+    // 设置里不再有「打开 SFTP 时」三档模式/限速项,页面上也没有内置面板/编辑器/权限弹窗
+    const gone = await evaluate(c, `(function(){ return JSON.stringify({
+      mode: !!document.getElementById('set-winscp-mode'),
+      limit: !!document.getElementById('set-sftp-limit'),
+      panel: !!document.getElementById('sftp-panel'),
+      list: !!document.getElementById('sftp-list'),
+      editor: !!document.getElementById('edit-modal'),
+      attrs: !!document.getElementById('attrs-modal'),
+      fnMode: typeof winScpMode,
+      fnRefresh: typeof refreshWinScpButton,
+      btn: !!document.getElementById('btn-sftp-toggle'),
+    }); })()`);
+    const g = JSON.parse(gone === 'TIMEOUT' ? '{}' : gone);
+    if (!g.mode && !g.limit && !g.panel && !g.list && !g.editor && !g.attrs) ok('内置面板整套删除(面板/列表/编辑器/权限弹窗/三档模式/限速 都没了)');
+    else bad('内置面板已整套删除', gone);
+    if (g.btn && g.fnMode === 'undefined' && g.fnRefresh === 'undefined') ok('工具栏只留一个 SFTP 入口按钮,旧的模式函数已删');
+    else bad('只留一个 SFTP 入口按钮', gone);
 
-    // replace:点 SFTP → 拉起 WinSCP,内置面板不显示
-    const nBefore = argvFrames().length;
-    await evaluate(c, `state.winScp.installed = true; state.settings.winscpMode='replace'; document.getElementById('set-winscp-mode').value='replace'; toggleSftpPanel(); true`);
+    // 按钮状态:装了 → 可用;没装 → dim + 说明(不隐藏,不出现"点了必报错"的假入口)
+    await evaluate(c, `state.winScp.installed = true; syncSftpEntryButton(); true`);
+    const btnOn = JSON.parse(await evaluate(c, `(function(){ var b=document.getElementById('btn-sftp-toggle'); return JSON.stringify({ dim: b.classList.contains('dim'), title: b.title, text: b.textContent }); })()`));
+    if (!btnOn.dim && /WinSCP/.test(btnOn.title)) ok('装了 WinSCP:工具栏按钮可用 + 提示「用 WinSCP 打开」');
+    else bad('装了 WinSCP:按钮可用', JSON.stringify(btnOn));
+    await evaluate(c, `state.winScp.installed = false; syncSftpEntryButton(); true`);
+    const btnOff = JSON.parse(await evaluate(c, `(function(){ var b=document.getElementById('btn-sftp-toggle'); return JSON.stringify({ dim: b.classList.contains('dim'), title: b.title }); })()`));
+    if (btnOff.dim && /未检测到 WinSCP/.test(btnOff.title)) ok('没装 WinSCP:按钮变暗并说明原因(仍然可见)');
+    else bad('没装 WinSCP:按钮变暗并说明原因', JSON.stringify(btnOff));
+
+    // openSftpEntry 的三条提示分支:没连接 / Telnet / 没装 WinSCP
+    const savedActive = await evaluate(c, `state.activeSessionId`);
+    const eNone = await evaluate(c, `(async()=>{ const keep = state.activeSessionId; state.activeSessionId = null; await openSftpEntry('no-such-session'); state.activeSessionId = keep; return (document.getElementById('toolbar-status')||{}).textContent || ''; })()`);
+    if (/先连接一台主机/.test(String(eNone))) ok('没连接时:提示「先连接一台主机」(不静默失败)');
+    else bad('没连接时的提示', String(eNone).slice(0, 120));
+    const eTel = await evaluate(c, `(async()=>{ state.tabs.set('t-telnet', { sessionId:'t-telnet', session:{ protocol:'telnet' } }); await openSftpEntry('t-telnet'); state.tabs.delete('t-telnet'); return (document.getElementById('toolbar-status')||{}).textContent || ''; })()`);
+    if (/仅支持 SSH/.test(String(eTel))) ok('Telnet 会话:状态栏提示只支持 SSH');
+    else bad('Telnet 会话的提示', String(eTel).slice(0, 120));
+    const eNoWin = await evaluate(c, `(async()=>{ state.winScp.installed = false; state.activeSessionId = ${JSON.stringify(savedActive)}; await openSftpEntry('${sid}'); return (document.getElementById('toolbar-status')||{}).textContent || ''; })()`);
+    if (/没装 WinSCP/.test(String(eNoWin))) ok('没装 WinSCP 时点入口:状态栏给明确提示(不假装成功)');
+    else bad('没装 WinSCP 时的提示', String(eNoWin).slice(0, 120));
+
+    // 装了 WinSCP:入口成功 → argv 里是这条会话自己的账号密码 + 绝对起始目录
+    await evaluate(c, `state.winScp.installed = true; state.settings.winscpProtocol='sftp'; state.tabs.get('${sid}').shellCwd = '/root/www'; true`);
+    const nEntry = argvFrames().length;
+    const eOk = await evaluate(c, `(async()=>{ await openSftpEntry('${sid}'); return (document.getElementById('toolbar-status')||{}).textContent || ''; })()`);
     await sleep(500);
-    const openCnt = argvFrames().length - nBefore;
-    if (openCnt >= 1) ok('replace 模式:点 SFTP 拉起了 WinSCP');
-    else bad('replace 模式:点 SFTP 拉起了 WinSCP', String(openCnt));
-    if (await evaluate(c, `document.getElementById('sftp-panel').classList.contains('hidden')`)) ok('replace 模式:内置面板不显示');
-    else bad('replace 模式:内置面板不显示');
-    const lastArgs = argvFrames().slice(-1)[0];
-    if (lastArgs && lastArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('replace 模式:用的是这条会话自己的账号密码(不是别的会话)');
-    else bad('replace 模式:用的是这条会话的账号密码', JSON.stringify(lastArgs));
-    // 渲染层也记一行“交给谁 / 落在哪”(排查起始目录优先级问题时有据可查)
-    const rlog = await evaluate(c, `(function(){ return termDebug.lines.slice(-40).join('\\n'); })()`);
-    if (/WINSCP 交给 WinSCP: admin@127.0.0.1/.test(rlog) && rlog.includes('起始目录=')) ok('渲染层调试日志记了“交给 WinSCP + 起始目录”');
-    else bad('渲染层调试日志记了交给 WinSCP', String(rlog).slice(-200));
-    if (!rlog.includes('admin123')) ok('这行日志不含密码');
-    else bad('这行日志不含密码');
-
-    // replace + 没装(探测结果 false) → 回落内置面板
-    await evaluate(c, `state.winScp.installed = false; toggleSftpPanel(); true`);
-    await sleep(600);
-    if (!(await evaluate(c, `document.getElementById('sftp-panel').classList.contains('hidden')`))) ok('没装 WinSCP 时:自动回落内置面板(功能不消失)');
-    else bad('没装 WinSCP 时:自动回落内置面板');
-    if (await evaluate(c, `document.getElementById('btn-sftp-winscp').classList.contains('hidden')`)) ok('没装 WinSCP 时:面板里不显示 WinSCP 按钮');
-    else bad('没装 WinSCP 时:面板里不显示 WinSCP 按钮');
-
-    // button 模式:面板照开 + 按钮出现
-    await evaluate(c, `state.winScp.installed = true; state.settings.winscpMode='button'; refreshWinScpButton(); true`);
-    if (!(await evaluate(c, `document.getElementById('btn-sftp-winscp').classList.contains('hidden')`))) ok('button 模式:面板里出现「🪟 WinSCP」按钮');
-    else bad('button 模式:面板里出现 WinSCP 按钮');
-    // panel 模式:按钮隐藏
-    await evaluate(c, `state.settings.winscpMode='panel'; refreshWinScpButton(); true`);
-    if (await evaluate(c, `document.getElementById('btn-sftp-winscp').classList.contains('hidden')`)) ok('panel 模式:按钮隐藏(只用内置面板)');
-    else bad('panel 模式:按钮隐藏');
+    const entryArgs = argvFrames().slice(nEntry).pop() || [];
+    if (/已用 WinSCP 打开/.test(String(eOk))) ok('入口成功:状态栏「已用 WinSCP 打开…」');
+    else bad('入口成功的状态栏反馈', String(eOk).slice(0, 120));
+    if (entryArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('入口拉起的是这条会话自己的账号密码');
+    else bad('入口使用的账号密码', JSON.stringify(entryArgs));
+    if (entryArgs.some((a) => a === 'RemoteDirectory=/root/www')) ok('入口把跟踪到的绝对 cd 目录作为起始目录');
+    else bad('入口带起始目录', JSON.stringify(entryArgs));
 
     // 协议=scp:URL 换成 scp://,且不再下发 SFTPRealPath(SCP 会话没有这个概念)
     const nScp = argvFrames().length;
-    await evaluate(c, `state.settings.winscpProtocol = 'scp'; state.settings.winscpMode = 'replace'; openSessionInWinScp('${sid}'); true`);
+    await evaluate(c, `state.settings.winscpProtocol = 'scp'; openSessionInWinScp('${sid}'); true`);
     await sleep(400);
     const scpArgs = argvFrames().slice(nScp).pop() || [];
     if (scpArgs[0] === 'scp://admin:admin123@127.0.0.1:' + SSH + '/') ok('设置 SCP 协议后 WinSCP 收到 scp:// 会话 URL');
@@ -258,10 +248,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     else bad('SCP 协议仍下发 SFTPRealPath', JSON.stringify(scpArgs));
     if (!scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样不写日志(默认关)');
     else bad('SCP 会话不该有 /log=', JSON.stringify(scpArgs));
-    await evaluate(c, `state.settings.winscpProtocol = 'sftp'; state.settings.winscpMode = 'replace'; true`);
+    await evaluate(c, `state.settings.winscpProtocol = 'sftp'; true`);
 
     // ---------- ⑦ 标签右键菜单 ----------
-    await evaluate(c, `state.settings.winscpMode='button'; state.winScp.installed = true; true`);
+    await evaluate(c, `state.winScp.installed = true; true`);
     await evaluate(c, `showTabMenu({ preventDefault: function(){}, clientX: 20, clientY: 20 }, '${sid}'); true`);
     await sleep(200);
     const menuTxt = await evaluate(c, `document.getElementById('ctx-menu').textContent`);
@@ -300,10 +290,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     if (fPath.includes('SFTPRealPath=off')) ok('起始目录与 SFTPRealPath=off 同在一个 /rawsettings 里');
     else bad('SFTPRealPath=off 仍在', JSON.stringify(fPath));
     // 渲染层组装 payload:面板/标签/跟踪的 cwd 都能被用作起始目录,相对路径丢弃
-    const payload = JSON.parse(await ev(c, `(function(){ state.sftp.visible=false; var t=state.tabs.get('${sid}'); if (!t) return '{}'; t.sftpPath='/root/www'; t.shellCwd=null; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
-    if (payload.remotePath === '/root/www') ok('winScpPayloadFor 用标签自己的 SFTP 路径作起始目录');
+    const payload = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); if (!t) return '{}'; t.shellCwd='/root/www'; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
+    if (payload.remotePath === '/root/www') ok('winScpPayloadFor 用跟踪到的 cd 目录作起始目录');
     else bad('winScpPayloadFor 起始目录', JSON.stringify(payload));
-    const payloadRel = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); t.sftpPath='.'; t.shellCwd=null; state.sftp.visible=false; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
+    const payloadRel = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); t.shellCwd='.'; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
     if (payloadRel.remotePath === '') ok('相对路径 / 未知目录不传给 WinSCP(避免它报目录不存在)');
     else bad('相对路径不传', JSON.stringify(payloadRel));
     // 起始目录未知时主进程用它现探家目录(exec pwd + readdir 校验),所以 payload 必须带 sessionId
