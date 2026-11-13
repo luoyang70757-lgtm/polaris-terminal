@@ -1,5 +1,23 @@
 # 更新日志
 
+## v1.0.23（2026-11-13）
+
+**对外可见文字去 IP 化** —— 界面里的示例地址、文档、注释、测试用例、发布说明一律不再出现真实 IP / 内网地址 / 凭据串。
+
+1. **界面占位符**：新建会话 / 快速连接的「主机」、探测主机、跳板机、隧道远程主机、批量导入示例，
+   全部换成文字占位符（`主机地址` / `跳板机地址` / `<主机地址>`），不再拿某个 192.168.x.x 当例子。
+2. **文档 / 代码注释**：堡垒机用 `h3c-bastion.example`、JumpServer 用 `jms.example`、PVE 用 `pve.example`、
+   存储用 `storage.example`；真实 HAR 里截出来的 OTP 会话串写 `XXXX-XXXX OTP:YYYY-YYYY`。
+3. **测试脚本**：HAR 相关用例改为**按后缀匹配**仓库根目录里的 `*.har`（不再写死带 IP 的文件名），
+   行为不变（`-5` 小样本优先、其次 `-11` 全量）。
+4. **已发布的 Release 正文**（v1.0.17 / 1.0.18 / 1.0.21 / 1.0.22）已就地清理，页面上看不到任何内网地址。
+5. `AGENTS.md` 安全约定新增一条硬规则，后续改动一律遵守（Release 说明 / CHANGELOG / docs / 注释 /
+   placeholder / 提交信息都算“对外可见”）。
+
+回归：`run-verify --pure` **17/17 脚本 343 断言**；`verify-bastion-proto` 35/35、`verify-bastion-har` 13/13、
+`verify-h3c-client` 30/30、`verify-bastion-ui` 11/11、`verify-bastion-clear` 16/16、`verify-bastion-panel-fix` 7/7、
+`verify-bastion-multisite` 5/5、`verify-bastion-pull-move` 5/5、`verify-sftp-pin` 24/24、`verify-sftp-sizes` 5/5、`verify-ui-layout` 21/21。
+
 ## v1.0.22（2026-11-13）
 
 **「打开 SFTP 时」默认改成内置面板(不再默认拉 WinSCP)+ 新增「WinSCP 协议 SFTP/SCP」。**

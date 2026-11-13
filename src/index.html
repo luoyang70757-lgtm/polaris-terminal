@@ -105,7 +105,7 @@
         <!-- 快捷连接条(点会话列表 ⚡ 开关):临时直连,不保存会话 -->
         <div id="quick-connect" class="quick-connect hidden">
           <span class="qc-icon" title="快捷连接(不保存会话)">🔗</span>
-          <input id="qc-input" class="qc-input" placeholder="user@host[:port],如 root@10.0.0.5:2222,回车直连" spellcheck="false" />
+          <input id="qc-input" class="qc-input" placeholder="user@host[:port],如 root@主机地址:2222,回车直连" spellcheck="false" />
           <button id="qc-go" class="btn-mini" title="连接">连接</button>
           <button id="qc-close" class="btn-mini" title="关闭">✕</button>
         </div>
@@ -407,7 +407,7 @@
       </label>
       <div class="field-row">
         <label class="field"><span>主机(IP 或域名)</span>
-          <input id="f-host" type="text" placeholder="192.168.1.10" />
+          <input id="f-host" type="text" placeholder="主机地址" />
         </label>
         <label class="field port-field"><span id="f-port-label">端口(默认 22)</span>
           <input id="f-port" type="number" value="22" />
@@ -464,7 +464,7 @@
               <summary>跳板机(SSH 代理,可选)</summary>
               <div class="jump-inner">
                 <label class="field"><span>跳板主机(IP/域名)</span>
-                  <input id="f-jump-host" type="text" placeholder="如 10.0.0.1(留空 = 直连)" />
+                  <input id="f-jump-host" type="text" placeholder="如 跳板机地址(留空 = 直连)" />
                 </label>
                 <div class="field-row">
                   <label class="field"><span>端口(默认 22)</span>
@@ -514,7 +514,7 @@
     <div class="modal-card">
       <h3>🔎 端口探测</h3>
       <label class="field"><span>主机(IP 或域名)</span>
-        <input id="probe-host" type="text" placeholder="192.168.1.10" />
+        <input id="probe-host" type="text" placeholder="主机地址" />
       </label>
       <label class="field"><span>端口(逗号分隔,支持范围,如 22,23,80,1000-1010)</span>
         <input id="probe-ports" type="text" placeholder="22,23,80,443,3389" />
@@ -549,7 +549,7 @@
       </div>
       <p class="import-hint dim">Excel 列顺序: <code>名称,主机,端口,用户名,密码,分组</code>(首行表头会自动识别跳过);加密备份是"导出"生成的 .polaris 文件,导入时需输入当时设置的密码。</p>
       <p class="import-or dim">———————— 或者手动粘贴文本 ————————</p>
-      <textarea id="import-text" class="import-text" placeholder="web01,192.168.1.10,22,root,123456,生产&#10;,192.168.1.11,22,ubuntu,,测试"></textarea>
+      <textarea id="import-text" class="import-text" placeholder="web01,&lt;主机地址&gt;,22,root,123456,生产&#10;,&lt;主机地址&gt;,22,ubuntu,,测试"></textarea>
       <label class="field field-check"><span>覆盖更新已存在的会话(同名时用文件里的数据更新,而不是跳过)</span>
         <input type="checkbox" id="import-overwrite" />
       </label>
@@ -1029,7 +1029,7 @@
           <label class="field"><span>名称(可选)</span><input id="tunnel-name" placeholder="如:内网数据库" /></label>
         </div>
         <div id="tunnel-remote-row" class="field-row">
-          <label class="field"><span>远程主机</span><input id="tunnel-remotehost" placeholder="如 192.168.1.50" /></label>
+          <label class="field"><span>远程主机</span><input id="tunnel-remotehost" placeholder="如 内网主机地址" /></label>
           <label class="field"><span>远程端口</span><input id="tunnel-remoteport" type="number" value="3306" /></label>
         </div>
         <div class="modal-actions">

@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.22**（2026-11-13；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.23**（2026-11-13；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -57,6 +57,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 - JumpServer API（登录/资产/复合用户名 KoKo 网关）+ H3C Web（accessclient:// token 解码、自动登录、资产捕获）
 - 堡垒机入口整合：头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单；堡垒机连接 CRUD（type=jms|h3c）、编辑入口、双击资产直连 SSH（`bastionConnectAsset`，未登录自动用保存账号登录）；右侧浏览器面板保留
 - 堡垒机收藏分组（按收藏分组展示 + 自动获取 + 上下级缩进）；分组计数与网页一致（多业务目录去重）；收藏分组脏 favGroup 清洗
+- **对外可见文字去 IP 化（v1.0.23）**：界面占位符/文档/注释/测试/Release 正文不再出现真实 IP 与凭据串，占位符 `h3c-bastion.example`/`jms.example`/`pve.example`/`storage.example`；HAR 用例按后缀扫 `*.har`；规则写进 `AGENTS.md` 安全约定。见 `docs/release-v1.0.23.md`
 - **SFTP 默认与 WinSCP 协议（v1.0.22）**：点 SFTP **默认开内置面板**（`button` 档，WinSCP 只是面板上的按需按钮）；老配置里没自己选过的 `replace` 一次性迁移到 `button`（`settingsVersion` 4 + `winscpModeMigrated`）。新增「WinSCP 协议 SFTP/SCP」：`scp://` 走服务器 `scp` 命令、绕过 SFTP 子系统（给 `LSTAT/OPENDIR` 回 4 的老设备），SCP 会话不下发 `SFTPRealPath=off`。见 `docs/release-v1.0.22.md` / `docs/winscp-realpath-fix.md` 第七节
 - **WinSCP 排障（v1.0.21）**：WinSCP 会话日志**默认就写** `<数据目录>/logs/winscp-<时间戳>.log`（`/loglevel=1` 请求级，无口令/文件内容；`POLARIS_WINSCP_DEBUG=1` → `*` 全协议包），拉起日志带 `日志=<path>`；`POLARIS_WINSCP_RAWSETTINGS`（`名=值;名=值`）叠加覆盖默认 rawsettings，出问题现场试开关不用发版。`buildArgs()` 的 `logPath` 不再依赖 `debug`。见 `docs/winscp-realpath-fix.md` 第六节 / `docs/release-v1.0.21.md`
 - **SFTP 权限与限速（v1.0.20）**：面板右键「🔐 权限与属性…」先 `sftp:stat` 读远端真实属性再允许保存，mode/uid/gid/mtime 一起改，目录可递归（上限 20000 条、软链不递归），**下发顺序 chown→chmod→utimes**；设置里「传输限速(每条连接,KB/s;0=不限)」用节流 Transform 插在 `rs.pipe→mid→ws`，0 档不插流零开销，取消/出错分支都销毁流。纯函数在 `lib/sftp-attrs.js` / `lib/sftp-throttle.js`，回归 `verify-sftp-attrs`(100)/`verify-sftp-throttle`(37)/`verify-sftp-attrs-dialog`(16)。见 `docs/release-v1.0.20.md`
