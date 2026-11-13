@@ -1,17 +1,17 @@
 # Polaris v1.0.18 — H3C 堡坉机：分得清 RDP / Web 资产，不再当 SSH 连
 
-## 背景（用户提供真实流量 `10.204.240.4-5.har`）
+## 背景（用户提供真实流量 `bastion-5.har`）
 
 用户拿 H3C 堡坉机的真实 HAR 让助手「参考下」。对照后发现旧实现有一处**语义错误**：
 
 - H3C 资产接口里 `dev.services.services` 的**键就是协议名**，实测出现三类：
   - `{ ssh: { port: 22, proto: 'ssh', state: 1 } }` → 可接终端
   - `{ rdp: { … } }` → Windows 图形会话（`accessclient` token 里是 `app:"mstsc"`、`fa:"网关:3389"`、`as:"…OTP:…"`）
-  - `{ Device_Storage_web: { url: "https://10.204.253.79:8088" } }` → 存储 Web 控制台
+  - `{ Device_Storage_web: { url: "https://storage.example:8088" } }` → 存储 Web 控制台
 - 旧代码只认 `srv.ssh` / `srv.sftp`，**其余一律当 `ssh`**：
   1. 双击 RDP/存储资产时拿 `proto='ssh'` 去 `POST /shterm/api/deviceAccess/accessUrl`（堡坉机侧协议不匹配，还留一条失败访问记录）；
   2. 真拿到图形 token 时没有 `pw`/`hn`/`pn` 字段，前端落到"堡垒机连接信息不完整"——**用户完全不知道是资产类型不支持**。
-- 规模影响（`10.204.240.4-11.har` 全量复算）：854 台资产里 **180 台（约 21%）不是 SSH**，在旧实现下全是"点了没反应/连不上"。
+- 规模影响（`bastion-11.har` 全量复算）：854 台资产里 **180 台（约 21%）不是 SSH**，在旧实现下全是"点了没反应/连不上"。
 
 ## 改动
 

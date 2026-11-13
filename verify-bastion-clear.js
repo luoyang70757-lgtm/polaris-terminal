@@ -97,7 +97,7 @@ async function check(c, name, expr, expect = true) {
 
     // ---- H3C 已保存连接:展开不得调 JMS API(否则 H3C 地址拼出 JMS 登录接口 → 401) ----
     await ev(c, `(function(){
-      state.settings.bastionServers = [{ id: 'h3c2', name: 'H3C生产', url: 'https://10.204.240.4/shterm', account: 'admin', password: 'enc:v1:fake', type: 'h3c', assetsExpanded: true }];
+      state.settings.bastionServers = [{ id: 'h3c2', name: 'H3C生产', url: 'https://h3c-bastion.example/shterm', account: 'admin', password: 'enc:v1:fake', type: 'h3c', assetsExpanded: true }];
       saveSettings(); renderSessionList('');
       return true;
     })()`);

@@ -23,7 +23,7 @@ const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e : '')); };
 
 (async () => {
-  const key = 'admin@ssh@root@192.168.1.254@192.168.1.250:2222|flash:/test/a.bin';
+  const key = 'admin@ssh@root@pve.example@jms.example:2222|flash:/test/a.bin';
 
   // ① set → 重新加载(模拟 app 重启)→ get 拿到完整记录(键稳定,重连后仍能取到)
   sizes.set(key, 10240);

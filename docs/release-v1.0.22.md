@@ -37,7 +37,7 @@
 
 SFTP 面板每次打开都重刷一次 WinSCP 按钮显隐（装/没装、模式刚改过都能立刻反映）。
 
-## 现场建议（那台 `root@10.204.240.4`）
+## 现场建议（那台 `root@h3c-bastion.example`）
 
 1. 先按新默认点 SFTP → 内置面板能列目录就说明服务器 SFTP 正常，问题只在 WinSCP 的请求序列；
 2. 想让 WinSCP 也进得去：设置 → SFTP → **WinSCP 协议 = SCP**，再点面板里的「🪟 WinSCP」；

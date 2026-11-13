@@ -2,7 +2,7 @@
 /**
  * verify-bastion-proto.js — H3C 资产「协议识别」纯 Node 回归(不启 Electron)
  *
- * 背景(真实 HAR 10.204.240.4-5.har):
+ * 背景(真实 HAR bastion-5.har):
  *   H3C 资产的服务键就是 proto 名 —— `services.services` 可能是
  *     { ssh: {port:22} }                    → 可接终端
  *     { rdp: {...} }                        → mstsc 图形会话
@@ -139,10 +139,10 @@ const devOf = (services, extra) => Object.assign({
 
 // ⑧ accessclient token 类型判定(真实 HAR 的 RDP token 字段)
 {
-  // 真实 token(10.204.240.4-5.har):app=mstsc + fa=网关:3389 + as=凭据串,没有 pw/pn
+  // 真实 token(bastion-5.har):app=mstsc + fa=网关:3389 + as=凭据串,没有 pw/pn
   const rdp = accessClientSessionKind({
-    app: 'mstsc', st: 'super@OceanStor Pacific 9520', sa: 'super', sh: '10.204.253.79',
-    fa: '10.204.240.4:3389', as: 's:S2J2XC13N0CTKR OTP:oEdvH5XRq9IV', use_host: '0', shterm_ver: '2',
+    app: 'mstsc', st: 'super@OceanStor Pacific 9520', sa: 'super', sh: 'storage.example',
+    fa: 'h3c-bastion.example:3389', as: 's:XXXX-XXXX OTP:YYYY-YYYY', use_host: '0', shterm_ver: '2',
   });
   if (rdp.kind === 'graphic' && rdp.app === 'mstsc') ok('⑧ RDP token(真实 HAR 形状) → graphic/mstsc');
   else bad('⑧ RDP token 判定错误', JSON.stringify(rdp));
@@ -162,11 +162,13 @@ const devOf = (services, extra) => Object.assign({
 
 // ⑨ 真实 HAR(存在时):每台资产的「可连 SSH」判定必须与 services 里有无 ssh 一一对应
 {
-  const cands = [process.env.POLARIS_HAR, path.join(__dirname, '10.204.240.4-5.har'),
-    path.join(__dirname, '10.204.240.4-11.har'), path.join(__dirname, '10.204.240.4-10.har')].filter(Boolean);
+  // 后缀匹配仓库根目录里的 *.har(文件名里可能带内网地址,不写进仓库)
+  const harFiles = (() => { try { return fs.readdirSync(__dirname).filter((f) => /\.har$/i.test(f)).map((f) => path.join(__dirname, f)); } catch { return []; } })();
+  const cands = [process.env.POLARIS_HAR,
+    harFiles.find((p) => /-5\.har$/i.test(p)) || harFiles.find((p) => /-11\.har$/i.test(p))].filter(Boolean);
   const har = cands.find((p) => fs.existsSync(p));
   if (!har) {
-    console.log('  (没找到 10.204.240.4-*.har,跳过真实数据断言 ⑨;可用 POLARIS_HAR=<路径> 指定)');
+    console.log('  (仓库根目录没有 *.har,跳过真实数据断言 ⑨;可用 POLARIS_HAR=<路径> 指定)');
   } else {
     const j = JSON.parse(fs.readFileSync(har, 'utf8'));
     const resp = (j.log.entries || []).find((en) => /getAccessViewDevs/.test(en.request.url) && en.response.content && en.response.content.text);

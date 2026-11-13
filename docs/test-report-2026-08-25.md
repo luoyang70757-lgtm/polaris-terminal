@@ -5,16 +5,16 @@
 
 ---
 
-## 一、真实环境验证（JumpServer 192.168.1.250）— ✅ 19/19
+## 一、真实环境验证（JumpServer jms.example）— ✅ 19/19
 
 `verify-realjms.js`（`JMS_PW` 环境变量传密码，脚本已 gitignore）覆盖全链路：
 
 | 阶段 | 断言 | 结果 |
 |---|---|---|
 | JMS 登录 | token / 用户身份 | ✅ |
-| 资产拉取 | 3 台资产（PVE-堡垒机 192.168.1.254、堡垒机 192.168.1.250、飞牛 192.168.1.14） | ✅ |
+| 资产拉取 | 3 台资产（PVE-堡垒机 pve.example、堡垒机 jms.example、飞牛 nas.example） | ✅ |
 | 左侧分组渲染 | 生产一/二/三/四 + 堡垒机分组头、7 资产行（多分组归属） | ✅ |
-| 双击资产走 KoKo 连 SSH | 会话 connected、网关 1.250:2222、复合用户名 `admin@ssh@root@192.168.1.254` | ✅ |
+| 双击资产走 KoKo 连 SSH | 会话 connected、网关 jms.example:2222、复合用户名 `admin@ssh@root@pve.example` | ✅ |
 | shell 交互 | 注入 `echo` 收到回显（会话日志实录） | ✅ |
 | SFTP via KoKo | `sftp:home` 探测 `/root`、`sftp:list` 列 9 项 | ✅ |
 | 清除历史回归 | 连接配置/登录态/已拉资产保留，缓存资产清空 | ✅ |

@@ -20,7 +20,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 4. **信任弹窗**每次连接都弹 → 加 `autoTrustHostKey` 自动信任
 5. 堡垒机 SFTP 空目录 → 登录 JumpServer 实查：资产 PVE-堡垒机缺 sftp 协议 → API 启用
 6. 上传成功但不知文件到哪 → 状态栏明确路径 + 列表高亮闪烁
-7. 测试 H3C 堡垒机（10.204.240.4）→ 提供真实 HAR 分析 → 实现 accessclient:// 对接
+7. 测试 H3C 堡垒机（h3c-bastion.example）→ 提供真实 HAR 分析 → 实现 accessclient:// 对接
 8. **右键菜单 open/close 刷屏**（多轮）：空菜单数组 → 残留 click 防抖（250ms）→ webview 抢焦点（bastionFocusCheck 暂停）→ 焦点跟随用户（__hostAnyClickTs）
 9. **堡垒机连接后频繁刷新** → pollBastionAssets 站点守卫（仅 H3C /shterm）→ 事件驱动 + 15s 兜底 → 数据无变化零刷新（stableJson + 提示去重）
 10. SFTP 下载失败排查 → 底层全通 → **macOS TCC 权限**（桌面不可写 EPERM）→ 保存位置预检 + 明确指引
@@ -160,7 +160,7 @@ node verify-<功能>.js
 
 - **发布流程**：`git tag vX.Y.Z` → `git push origin <tag>` → GitHub Actions 编译 Windows → 自动创建 Release 并附 `.exe`
   **只推 main 不会出 Release**（workflow 的 release job 条件是 `refs/tags/v*`）；CI 不编 macOS、也不再向 gitee 同步产物（gitee 只留源码仓库）
-- 真实环境：JumpServer `192.168.1.250`（admin / 密码见本地 `~/.jms-terminal/jms-servers.json` 或用户提供），PVE 资产 `192.168.1.254`（root，经 KoKo 网关 2222）；H3C 参考 `10.204.240.4`（HAR 已入 .gitignore）
+- 真实环境：JumpServer `jms.example`（admin / 密码见本地 `~/.jms-terminal/jms-servers.json` 或用户提供），PVE 资产 `pve.example`（root，经 KoKo 网关 2222）；H3C 参考 `h3c-bastion.example`（HAR 已入 .gitignore）
 - 日志：`数据目录/logs/app-*.log`（全量）；调试面板 🧾 → ⬇ 下载日志
 - verify 脚本：`verify-bastion-merge.js`（堡垒机入口整合回归）、`verify-sftp-*.js`、`verify-bastion-*.js`、`verify-h3c*.js`、`verify-ctxmenu*.js` 等 40+ 个（CDP e2e，自建 electron + 调试端口 + 临时数据目录）
 
@@ -229,7 +229,7 @@ user/password 一律 `encodeURIComponent`（否则 WinSCP 解析歪成"密码错
 
 **已实现（2026-11-12，v1.0.17）**：**WinSCP 排障日志可见**——用户贴回 v1.0.16 的调试日志导出一看，里面一条 `[WINSCP]` 都没有（只有 `FOCUS window blur … active=BUTTON#btn-sftp-toggle`）。查明是**日志可观测性缺口**：`main.js` 里 WinSCP 拉起/失败走 `appLog.log('main', …)`，它**只写 `数据目录/logs/app-*.log`，不转发渲染层调试面板**（面板只能看到经 `main:log` 转发的 `console.log` 系内容），于是「点 SFTP 后 WinSCP 到底起没起、`SFTPRealPath=off` 带没带」在面板上完全无痕。修法：① 主进程两处改 `console.log`（面板 + 落盘双写，内容仍是 `describeCommand` 脱敏后的命令行 + `rawsettings={…}`）；② 渲染层 `openSessionInWinScp`/`toggleSftpPanel` 新增 `dlog('WINSCP', …)`（`交给 WinSCP: 账号@主机:22 起始目录=…` / `WINSCP·错误 …` / `拉起失败 → 回落内置面板` / `本机未检测到 WinSCP`），只含账号/主机/路径，**永不写密码**；③ `verify-winscp-open.js` 的 sid 轮询失败会再点一次连接再等一轮，消除一次 mock 握手抖动连带 18 条断言全红的偶发。回归：`verify-winscp-open.js` 32→**37**、`--pure` 13/13 脚本 135 断言、key-forward 7/7、ai-copy 11/11、sftp-panel 5/5。发布说明 `docs/release-v1.0.17.md`。
 
-**已实现（2026-11-13，v1.0.18）**：**H3C 资产协议识别（RDP / Web 不再当 SSH 连）**——用户给出真实流量 `10.204.240.4-5.har`，对照后发现 `dev.services.services` 的键**就是 H3C 的 proto 名**（实测 `ssh` / `rdp` / `Device_Storage_web`），而旧代码只认 `srv.ssh`/`srv.sftp`、其余一律当 `ssh`。后果：双击 RDP 或存储资产时 **拿 `proto='ssh'` 去 `POST /shterm/api/deviceAccess/accessUrl`**（堡垒机侧协议不匹配，还留一条失败访问记录），若真的拿到图形 token（`app:"mstsc"`、`fa:"网关:3389"`、`as:"…OTP:…"`，**没有 `pw`/`hn`/`pn`**）前端只能落到「堡垒机连接信息不完整」——用户完全看不出是资产类型不支持。规模：`-11.har` 全量复算 **854 台资产里 180 台（约 21%）不是 SSH**，旧版下都是"点了没反应/连不上"。
+**已实现（2026-11-13，v1.0.18）**：**H3C 资产协议识别（RDP / Web 不再当 SSH 连）**——用户给出真实流量 `bastion-5.har`，对照后发现 `dev.services.services` 的键**就是 H3C 的 proto 名**（实测 `ssh` / `rdp` / `Device_Storage_web`），而旧代码只认 `srv.ssh`/`srv.sftp`、其余一律当 `ssh`。后果：双击 RDP 或存储资产时 **拿 `proto='ssh'` 去 `POST /shterm/api/deviceAccess/accessUrl`**（堡垒机侧协议不匹配，还留一条失败访问记录），若真的拿到图形 token（`app:"mstsc"`、`fa:"网关:3389"`、`as:"…OTP:…"`，**没有 `pw`/`hn`/`pn`**）前端只能落到「堡垒机连接信息不完整」——用户完全看不出是资产类型不支持。规模：`-11.har` 全量复算 **854 台资产里 180 台（约 21%）不是 SSH**，旧版下都是"点了没反应/连不上"。
 
 修法：① `src/renderer.js bastionParseDevs` 按服务键识别协议，新增 `protocols`（保留原始键，缺省 `['ssh']` 兼容老缓存）、`webUrl`（`services.<*web*>.url`，只收 `http/https`），`proto` 取 `ssh`→`sftp`→首个服务键，`port` 取所选服务端口（缺省 22）；② `bastionConnect` 开头用 `bastionAssetSupportsSsh()` **拦下非 SSH 资产、不发 `accessUrl`**，提示由 `bastionUnsupportedAssetMsg()` 生成（写明真实协议；有 `webUrl` 就指到右键「🌐 用系统浏览器打开」，否则让用户去 H3C 网页打开）；③ `handleAccessClientUrl` 先 `accessClientSessionKind(info)` 分类：`mstsc/rdp/vnc/guacamole/xfreerdp/spice` → `graphic`（明确"图形会话，Polaris 无法接管"）、缺 `pw`+`hn/pn` → `incomplete`、其余（含带 `app` 字段的 SSH token）→ `ssh`；④ 批量连接只连 SSH 资产并注明「跳过 M 台非 SSH」；⑤ 列表行非 SSH 资产加橙色协议徽标（`asset-proto`：`RDP`/`Web`/原始键，多协议并集）+ 名字压次要色（`.asset-nonssh`）+ `title` 写"双击查看说明"，右键菜单首项换成「ℹ️ 非 SSH 资产(RDP)，点此查看说明」、有 `webUrl` 增加「🌐 用系统浏览器打开」，SSH 专属项（连接/账号/断开/打开 SFTP）只对 SSH 资产出现。
 

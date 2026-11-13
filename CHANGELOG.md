@@ -98,7 +98,7 @@ macOS 仍是 `npm run dist` 出的 `Polaris.app`。v1.0.20 的 Release 已把安
 
 ## v1.0.18（2026-11-13）
 
-- **H3C 堡垒机：分得清 RDP / Web 资产，不再当 SSH 连**（对照用户给的真实流量 `10.204.240.4-5.har` 发现）：H3C 资产 `dev.services.services` 的键**就是协议名**，实测有 `ssh` / `rdp` / `Device_Storage_web` 三类；旧代码只认 `ssh`/`sftp`，其余一律当 `ssh`。
+- **H3C 堡垒机：分得清 RDP / Web 资产，不再当 SSH 连**（对照用户给的真实流量 `bastion-5.har` 发现）：H3C 资产 `dev.services.services` 的键**就是协议名**，实测有 `ssh` / `rdp` / `Device_Storage_web` 三类；旧代码只认 `ssh`/`sftp`，其余一律当 `ssh`。
   - **症状**：双击 RDP 或存储资产时，拿 `proto='ssh'` 去 `POST /shterm/api/deviceAccess/accessUrl`（堡垒机侧协议不匹配，还留失败访问记录），偶尔拿到图形 token（无 `pw`/`hn`/`pn`）后只报「堡垒机连接信息不完整」，用户看不出是资产类型不支持。全量 HAR（`-11`）复算：854 台里 **180 台（约 21%）不是 SSH**。
   - **修法**：① `bastionParseDevs` 改为按服务键识别协议，新增 `protocols`（保留原始键）与 `webUrl`（`services.<*web*>.url`，只收 http/https），`proto=ssh→sftp→首个服务键`、`port` 取所选服务端口；② `bastionConnect` 开头就拦非 SSH 资产（**不发 accessUrl**），提示写清协议 + 替代路径（有 `webUrl` 就指到右键「🌐 用系统浏览器打开」）；③ `handleAccessClientUrl` 先判 token 类型（`mstsc/rdp/vnc/…` → 图形客户端，明确提示无法接管；缺 `pw/pn` → 不完整），SSH token 照旧接管；④ 批量连接只连 SSH 资产，状态栏标明「跳过 M 台非 SSH」。
   - **列表可见性**：非 SSH 资产行加橙色协议徽标（`RDP`/`Web`/原始键，多协议并集）、名字压成次要色，`title` 写明"双击查看说明"；右键菜单对非 SSH 资产首项换成「ℹ️ 非 SSH 资产(RDP)，点此查看说明」，有 `webUrl` 时多一项「🌐 用系统浏览器打开」，SSH 专属项（连接/账号/断开/打开 SFTP）只对 SSH 资产出现（`src/renderer.js` + `src/styles.css`）。

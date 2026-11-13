@@ -77,7 +77,7 @@ WinSCP.exe sftp://user:pass@host:port/ /rawsettings SFTPRealPath=off [RemoteDire
 现场特征（Windows 实测日志）：
 
 ```
-[WINSCP] 已拉起: …WinSCP.exe sftp://root:***@10.204.240.4:22/ /rawsettings SFTPRealPath=off
+[WINSCP] 已拉起: …WinSCP.exe sftp://root:***@h3c-bastion.example:22/ /rawsettings SFTPRealPath=off
 → WinSCP 弹「一般错误（服务器应该提供错误描述）。错误码：4，服务器返回的错误消息：General failure」
 ```
 

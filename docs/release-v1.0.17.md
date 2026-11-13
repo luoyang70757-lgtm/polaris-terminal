@@ -22,7 +22,7 @@ v1.0.16 修好了「不能获得 `'.'` 的真实路径（错误码 4）」，但
    改为 `console.log(…)` —— 同时进调试面板（`main:log` 通道）与落盘日志，且内容是脱敏后的命令行：
 
    ```
-   [WINSCP] 已拉起: sftp://root:***@10.204.240.4:22/ /rawsettings SFTPRealPath=off RemoteDirectory=/root | rawsettings={"SFTPRealPath":"off","RemoteDirectory":"/root"}
+   [WINSCP] 已拉起: sftp://root:***@h3c-bastion.example:22/ /rawsettings SFTPRealPath=off RemoteDirectory=/root | rawsettings={"SFTPRealPath":"off","RemoteDirectory":"/root"}
    ```
 
    面板里一行就能核对：URL 密码是 `***`（脱敏生效）、`rawsettings` 里确有 `SFTPRealPath=off`。

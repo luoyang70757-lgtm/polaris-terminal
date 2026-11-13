@@ -4,7 +4,7 @@ const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
  * verify-pack-real.js — 真实 Linux 主机上验证"目录打包上传"(方案 B)全链路:
  *   探测(真实 tar/gzip)→ 本地纯 JS tar 打包 → SFTP 单文件上传 → 远端 tar -xzf 解压 → 清理压缩包。
  * 凭据只走环境变量(CLAUDE.md 安全红线:真实凭据绝不在代码里留默认密码):
- *   REAL_PASS(必填)  REAL_HOST(默认 10.211.55.5)  REAL_PORT(22)  REAL_USER(root)
+ *   REAL_PASS(必填)  REAL_HOST(默认 real-host.example)  REAL_PORT(22)  REAL_USER(root)
  * 流程:boot app → sshConnect 真机 → 造本地小文件目录 → sftpUploadPaths 上传 →
  *       done.packed=true → sftpList 递归核验远端文件数/目录数/字节数与本地一致、压缩包已清理 →
  *       sftpRmdir 清理远端测试目录。
@@ -13,7 +13,7 @@ const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 const { spawn } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 
-const HOST = process.env.REAL_HOST || '10.211.55.5';
+const HOST = process.env.REAL_HOST || 'real-host.example';
 const PORT = parseInt(process.env.REAL_PORT || '22', 10);
 const USER = process.env.REAL_USER || 'root';
 const PASS = process.env.REAL_PASS || '';

@@ -9,7 +9,7 @@
  *
  * 断言:① 解析出全部设备且都带目录归属 ② 存在多目录设备 ③ 子目录设备的 dirPath 带业务根
  *      ④ 观察到 >100 个目录 ⑤ 同一响应重复喂入 → devId 去重(不翻倍) ⑥ 树结构({children})也能解析
- * 依赖本地 10.204.240.4-*.har(HAR 不入库,无 HAR 时本脚本自动跳过)。
+ * 依赖本地 bastion-*.har(HAR 不入库,无 HAR 时本脚本自动跳过)。
  * 运行: node verify-bastion-har.js(需 9377 空闲)
  */
 const { spawn, execSync } = require('child_process');
@@ -20,13 +20,23 @@ let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e : '')); };
 
+const HAR_SUFFIXES = ['-5.har', '-11.har', '-10.har', '-9.har', '-8.har'];
+
 function findHar() {
   // POLARIS_HAR 可指定任意一份(本机 HAR 不入库,常放在别的目录)
   if (process.env.POLARIS_HAR && fs.existsSync(process.env.POLARIS_HAR)) return process.env.POLARIS_HAR;
-  for (const c of ['10.204.240.4-5.har', '10.204.240.4-11.har', '10.204.240.4-10.har', '10.204.240.4-9.har', '10.204.240.4-8.har']) {
-    if (fs.existsSync(path.join(__dirname, c))) return path.join(__dirname, c);
+  // 仓库根目录里任何 *.har 都能用(不再写死文件名——文件名里可能带内网地址);
+  // 优先用户录的小样本(常带 -5 后缀),小样本跑得快,没有就取名字最小的那份
+  let all = [];
+  try { all = fs.readdirSync(__dirname).filter((f) => /\.har$/i.test(f)).map((f) => path.join(__dirname, f)); } catch { all = []; }
+  if (!all.length) return null;
+  // 按后缀挑(不写死文件名前缀——文件名里可能带内网地址,不该出现在仓库里):
+  // -5 是常录的小样本,其次 -11(全量),再 10/9/8;都没有就取任意一份
+  for (const suf of HAR_SUFFIXES) {
+    const hit = all.find((f) => f.toLowerCase().endsWith(suf));
+    if (hit) return hit;
   }
-  return null;
+  return all.sort()[0];
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function targets(PORT) {
@@ -50,7 +60,7 @@ async function ev(c, expr) { return evaluate(c, expr); }
 (async () => {
   console.log('\n=== 真实 HAR → 资产解析/合并(原生链路同款纯函数) ===\n');
   const harFile = findHar();
-  if (!harFile) { console.log('跳过:仓库根目录没有 10.204.240.4-*.har(HAR 不入库,本测试仅本机跑)'); process.exit(0); }
+  if (!harFile) { console.log('跳过:仓库根目录没有 bastion-*.har(HAR 不入库,本测试仅本机跑)'); process.exit(0); }
   console.log('HAR:', path.basename(harFile));
   const HAR = JSON.parse(fs.readFileSync(harFile, 'utf8'));
   const entries = HAR.log.entries;
@@ -107,7 +117,7 @@ async function ev(c, expr) { return evaluate(c, expr); }
       return JSON.stringify({ n: a.length, withDir: withDir, multi: multi, sub: sub, paths: window.__seen.size,
         sample: sample ? { name: sample.name, ip: sample.ip, devId: sample.devId, dirs: sample.dirs, root: sample.dirPath[0] } : null });
     })()`));
-    // 规模阈值面向"全量 HAR"(几百台/过百目录);小样本 HAR(如 10.204.240.4-5.har 只录了
+    // 规模阈值面向"全量 HAR"(几百台/过百目录);小样本 HAR(如 bastion-5.har 只录了
     // 一页 20 台、1 个目录)只断言"解析对了",不拿规模阈值误报红。
     const smallHar = stats.n < 100;
     if (smallHar) console.log(`  (小样本 HAR:${stats.n} 台 / ${stats.paths} 个目录 → 跳过规模断言 ②③④)`);

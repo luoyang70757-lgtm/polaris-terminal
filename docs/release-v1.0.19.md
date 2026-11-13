@@ -12,9 +12,9 @@
 评估文档 `docs/decision-rdp-support.md` 的结论（v1.0.18 已写）：RDP 的问题不是"能不能"，
 而是"在哪跑"。
 
-- **H3C 自己就用 `mstsc`**：`10.204.240.4-5.har` 里 RDP 资产的 `accessUrl` token 解出来是
-  一份 mstsc 启动配置 —— `{"app":"mstsc","fa":"s:10.204.240.4:3389","sa":"super",`
-  `"as":"s:S2J2XC13N0CTKR OTP:oEdvH5XRq9IV","sh":"10.204.253.79",…}`，**没有 `pw`/`hn`/`pn`**。
+- **H3C 自己就用 `mstsc`**：`bastion-5.har` 里 RDP 资产的 `accessUrl` token 解出来是
+  一份 mstsc 启动配置 —— `{"app":"mstsc","fa":"s:h3c-bastion.example:3389","sa":"super",`
+  `"as":"s:XXXX-XXXX OTP:YYYY-YYYY","sh":"storage.example",…}`，**没有 `pw`/`hn`/`pn`**。
   也就是说网关签发的是一次性图形会话凭证，不是 SSH 凭据。
 - **纯 JS 的 RDP 库不能用**：`node-rdpjs` / `mstsc.js` 均为 **AGPL v3.0**（`npm view` 实测），
   分发桌面应用等于整包开源，直接排除。FreeRDP（Apache-2.0）官方只发源码包、Windows 二进制
@@ -103,7 +103,7 @@ SSH 资产链路（双击直连 KoKo 网关）**完全没动**。
 | `verify-h3c-client.js`（新增，纯 Node） | **30/30** | 地址判定 11 组非法输入 / 探测计划与 `reg` 输出解析 / 处理器路径 / `openTarget` 原样透传 / 主-预加载-渲染接线顺序（accessclient 分支必须在 http 白名单之前） |
 | `verify-bastion-client-open.js`（新增，e2e） | **17/17** | `POLARIS_H3C_CLIENT=1` 钩子下 detect → `state.h3cClient` → 行文案/徽标/右键首项 → **透传地址逐字节一致** → 拉起失败不冒充成功 → 未装客户端记 `accessUrl-skip` → 主进程白名单（accessclient 放行 / `file://` 拒绝 / 带空格引号拒绝 / https 回归） |
 | `verify-bastion-proto.js`（增强） | **29 → 35** | 新增 ⑩：装了/没装两种入口文案、Web 资产同入口、未装时的安装指引 |
-| `verify-bastion-har.js`（真实 HAR） | **10/10** | `10.204.240.4-5.har`：21 台设备、10 台非 SSH 识别、RDP/Web 徽标、说明文案 |
+| `verify-bastion-har.js`（真实 HAR） | **10/10** | `bastion-5.har`：21 台设备、10 台非 SSH 识别、RDP/Web 徽标、说明文案 |
 | `run-verify.js --pure` | **15/15 脚本 200 断言** | 全量纯 Node 基线（原 14/164） |
 | 无退化 | `verify-bastion-ui` 11/11、`verify-bastion-browser-ui` 9/9、`verify-term-links` 28/28 | SSH 链路、外链菜单、终端链接 |
 

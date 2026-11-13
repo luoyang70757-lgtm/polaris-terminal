@@ -2188,7 +2188,7 @@ ipcMain.handle('sftp:home', async (_e, { sessionId }) => {
 // 某些设备(H3C 网络设备等)SFTP 对刚写入的文件 readdir/stat 恒报 size 0,但数据已落盘。
 // 上传成功后把真实大小持久化(lib/sftp-sizes.js,键=稳定 hostId|路径,仿 sftp-partials),
 // 面板列目录读到 0 就用真实值覆盖 —— 重连/重启后仍正确(H3C 是主要目标,这是关键)。
-// hostId 由 ssh:connect 存进 sshSessions(如 admin@ssh@root@192.168.1.254@192.168.1.250:2222),
+// hostId 由 ssh:connect 存进 sshSessions(如 admin@ssh@root@pve.example@jms.example:2222),
 // 同资产重连 hostId 不变,尺寸记录跨会话稳定;取不到时回退 sessionId(至少本会话内覆盖)。
 const knownSizeKey = (sessionId, remotePath) => {
   const s = sshSessions.get(sessionId);

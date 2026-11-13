@@ -8,7 +8,7 @@ v1.0.16 给 WinSCP 加了 `/rawsettings SFTPRealPath=off`，解决了 chroot 型
 「不能获得'.'的真实路径（错误码 4）」那一条。但现场又报了**另一种**错误码 4：
 
 ```
-[WINSCP] 已拉起: C:\Program Files (x86)\WinSCP\WinSCP.exe sftp://root:***@10.204.240.4:22/ /rawsettings SFTPRealPath=off
+[WINSCP] 已拉起: C:\Program Files (x86)\WinSCP\WinSCP.exe sftp://root:***@h3c-bastion.example:22/ /rawsettings SFTPRealPath=off
 WinSCP → 一般错误（服务器应该提供错误描述）。错误码：4，服务器返回的错误消息：General failure
 ```
 

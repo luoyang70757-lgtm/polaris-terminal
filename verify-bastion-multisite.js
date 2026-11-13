@@ -47,8 +47,8 @@ async function ev(c, expr) { return evaluate(c, expr); }
 let passed = 0, failed = 0;
 const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e : '')); };
-const A = 'https://10.204.240.4';
-const B = 'https://10.204.240.9';
+const A = 'https://h3c-bastion.example';
+const B = 'https://h3c-bastion-b.example';
 
 (async () => {
   console.log('\n=== 多堡垒机资产分键持久化 ===\n');

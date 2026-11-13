@@ -40,7 +40,7 @@ for (const fn of ['isAccessClientUrl', 'detectPlan', 'parseDetect', 'parseHandle
 
 // ---------- ① 地址判定 ----------
 {
-  // 真实 token 前缀(10.204.240.4-5.har),含 urlsafe 的 - _ = + /
+  // 真实 token 前缀(bastion-5.har),含 urlsafe 的 - _ = + /
   const real = 'accessclient://eJx1UctOwzAQ-JUoZ-S8nIbmBKqQeEi0aivUW+U6W8VqEwc/QgHx73gdJRUHbju7Y8/M7nfIui4sw0YbzcObUBsHtO1A3S05sHZjpApWjIuj4ME8T2PH6UE5EiUzUjh08O9FmcwcqGpfU4o8ZishOeuMVdDICvwIB03vSs84+16KwlwBtAHyAlENP2KbjX4csAr5tTGdLqMoiUkaU5LSmFCnmEW6NqCaSIGWVnHQEZftMbrnrtSLs4DWELgA6rOLaMQXGkINplGj3KTP6W6RZK/xYvuyDpbbVSkfqv4x363f509vmO5j8EUL6lDHp0DMXnPgBkZreUaKuWue4PMgmapqKU9TNKthX0u/cPzj6JOWf1Jl2S0+160b/XuOIfZ+uApaUM1kDEaPP799dIp3';
   if (H.isAccessClientUrl(real) === true) ok('① 真实 token(含 + / - _ 与尾部长串)判为合法');
   else bad('① 真实 token 被拒', String(real.slice(0, 40)));

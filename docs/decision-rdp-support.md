@@ -10,7 +10,7 @@
 
 ### 1.1 用户的 H3C 环境里 RDP 到底有多少
 
-把 6 份 `10.204.240.4-*.har` 里所有资产响应按 `services.services` 的键去重（`dev.id` 唯一）：
+把 6 份 `bastion-*.har` 里所有资产响应按 `services.services` 的键去重（`dev.id` 唯一）：
 
 | 协议 | 唯一资产数 | 占比 |
 |---|---|---|
@@ -35,20 +35,20 @@ zlib 解出的内容**本身就是一份 `mstsc` 启动配置**（键名就是 R
 {"app":"mstsc","st":"super@OceanStor Pacific 9520","ver":"4.6.7","bpp":"i:16",
  "dh":"i:440","dw":"i:1474","screen mode id":"i:1","maximize":"1","mv":"0",
  "al":"i:2","au":"i:2","pc":"i:0","rm":"i:0","ec":"i:0","audiocapturemode":"i:0",
- "keyboardhook":"i:1","use_host":"0","sh":"10.204.253.79","sn":"OceanStor Pacific 9520",
- "sa":"super","fa":"s:10.204.240.4:3389","as":"s:S2J2XC13N0CTKR OTP:oEdvH5XRq9IV",
- "url":"https://10.204.240.4:443/shterm/resources/conf/AccessClient.exe","shterm_ver":"2"}
+ "keyboardhook":"i:1","use_host":"0","sh":"storage.example","sn":"OceanStor Pacific 9520",
+ "sa":"super","fa":"s:h3c-bastion.example:3389","as":"s:XXXX-XXXX OTP:YYYY-YYYY",
+ "url":"https://h3c-bastion.example:443/shterm/resources/conf/AccessClient.exe","shterm_ver":"2"}
 ```
 
 要点：
-- `fa:"s:10.204.240.4:3389"` = 客户端连的是**堡垒机网关的 3389**，由网关转发到目标 `sh`（10.204.253.79）——和 SSH 那条 gate 链路是同一个模型。
+- `fa:"s:h3c-bastion.example:3389"` = 客户端连的是**堡垒机网关的 3389**，由网关转发到目标 `sh`（storage.example）——和 SSH 那条 gate 链路是同一个模型。
 - `app:"mstsc"` 说明 **H3C 自己也是拉起 Windows 自带的 mstsc**，不是自研图形协议栈。
 - `as:"s:… OTP:…"` 是会话凭据串（含一次性密码），**没有独立的明文密码字段**（不像 SSH token 有 `pw`/`hn`/`pn`）。
 - `url` 指向 H3C 的 `AccessClient.exe` 下载地址，即 `accessclient://` 这个 URL scheme 是该程序安装时注册的——**H3C 网页 `location.href = url` 只是把 token 丢给这个处理器**。
 
 ### 1.3 关键未知点（决定方案 B 生死）
 
-网关 `10.204.240.4:3389` **接不接受“标准 RDP 客户端 + 标准账号密码”**。三种可能：
+网关 `h3c-bastion.example:3389` **接不接受“标准 RDP 客户端 + 标准账号密码”**。三种可能：
 1. 接受（凭据就是 `sa` + 某段一次性口令）→ 我们自己的 `.rdp` 也能连，方案 B 成立；
 2. 只接受 `as` 里那串“preconnection/凭据”封装（类似 RD Gateway 的 `pcb:s:`）→ 仍需 `AccessClient.exe` 参与；
 3. 走 CredSSP MITM / 自定义凭据提供程序 → 只有他们的 exe 能用。
@@ -120,7 +120,7 @@ zlib 解出的内容**本身就是一份 `mstsc` 启动配置**（键名就是 R
 2. PowerShell：
    ```powershell
    Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" | Select-Object CommandLine
-   cmdkey /list | Select-String -Context 0,3 "10.204.240.4"
+   cmdkey /list | Select-String -Context 0,3 "h3c-bastion.example"
    Get-ChildItem $env:TEMP,$env:LOCALAPPDATA -Recurse -Filter *.rdp -ErrorAction SilentlyContinue |
      Sort-Object LastWriteTime -Desc | Select-Object -First 3 FullName,LastWriteTime
    ```

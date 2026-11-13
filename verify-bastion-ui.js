@@ -64,7 +64,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? '  → ' + e
     // ---- 问题②:右侧下拉是否含左侧创建的连接 ----
     await ev(c, `(function(){
       state.settings.bastionServers = [
-        { id: 'cfg-1', name: '左侧H3C', url: 'https://10.204.240.4/shterm', type: 'h3c' },
+        { id: 'cfg-1', name: '左侧H3C', url: 'https://h3c-bastion.example/shterm', type: 'h3c' },
         { id: 'cfg-2', name: '左侧JMS', url: 'https://jms.a.com', type: 'jms' },
       ];
       state.jmsServers = [

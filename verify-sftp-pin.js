@@ -201,18 +201,18 @@ const check = (cond, n, e) => (cond ? ok(n) : bad(n, e));
 
     // ④ 堡垒机会话展示:同堡垒机的两台主机,SFTP 标签/下拉必须按"真实目标主机"区分
     //    (host/port 是堡垒机网关,所有资产相同 → 不能只显示 名称·网关:端口)
-    const textJms = await ev(c, `sftpSessionText({ session: { name: 'web-server-01', host: '192.168.1.250', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'jms-server-1|192.168.10.10|root', displayHost: '192.168.10.10' } })`);
+    const textJms = await ev(c, `sftpSessionText({ session: { name: 'web-server-01', host: 'jms.example', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'jms-server-1|192.168.10.10|root', displayHost: '192.168.10.10' } })`);
     check(textJms === '192.168.10.10 · web-server-01(root)', 'JMS 堡垒机会话标签显示真实目标主机(实际: ' + textJms + ')');
-    const textOld = await ev(c, `sftpSessionText({ session: { name: 'web-server-01', host: '192.168.1.250', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'jms-server-1|192.168.10.10|root' } })`);
+    const textOld = await ev(c, `sftpSessionText({ session: { name: 'web-server-01', host: 'jms.example', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'jms-server-1|192.168.10.10|root' } })`);
     check(textOld === '192.168.10.10 · web-server-01(root)', '老会话(无 displayHost)从 jmsKey 反推真实目标(实际: ' + textOld + ')');
-    const textH3c = await ev(c, `sftpSessionText({ session: { name: 'h3c-node', host: '192.168.1.250', port: 2222, username: 'root', displayHost: '10.0.0.5', bastionKey: 'h3c-1' } })`);
+    const textH3c = await ev(c, `sftpSessionText({ session: { name: 'h3c-node', host: 'jms.example', port: 2222, username: 'root', displayHost: '10.0.0.5', bastionKey: 'h3c-1' } })`);
     check(textH3c === '10.0.0.5 · h3c-node(root)', 'H3C 堡垒机会话标签显示真实目标主机(实际: ' + textH3c + ')');
-    const textNormal = await ev(c, `sftpSessionText({ session: { name: '直连机', host: '192.168.1.14', port: 22, username: 'root' } })`);
-    check(textNormal === '直连机 · 192.168.1.14:22', '普通会话维持 名称·host:port(实际: ' + textNormal + ')');
+    const textNormal = await ev(c, `sftpSessionText({ session: { name: '直连机', host: 'nas.example', port: 22, username: 'root' } })`);
+    check(textNormal === '直连机 · nas.example:22', '普通会话维持 名称·host:port(实际: ' + textNormal + ')');
     // 下拉里两台堡垒主机按真实 IP 区分(目标 IP 在最前,截断也不丢)
     await ev(c, `(async () => {
-      const A = { sessionId: 'bastion-fake-a', status: 'connected', session: { name: 'web-server-01', host: '192.168.1.250', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'x|192.168.10.10|root', displayHost: '192.168.10.10' } };
-      const B = { sessionId: 'bastion-fake-b', status: 'connected', session: { name: 'db-server-01', host: '192.168.1.250', port: 2222, username: 'admin@ssh@root@192.168.10.11', jmsKey: 'x|192.168.10.11|root', displayHost: '192.168.10.11' } };
+      const A = { sessionId: 'bastion-fake-a', status: 'connected', session: { name: 'web-server-01', host: 'jms.example', port: 2222, username: 'admin@ssh@root@192.168.10.10', jmsKey: 'x|192.168.10.10|root', displayHost: '192.168.10.10' } };
+      const B = { sessionId: 'bastion-fake-b', status: 'connected', session: { name: 'db-server-01', host: 'jms.example', port: 2222, username: 'admin@ssh@root@192.168.10.11', jmsKey: 'x|192.168.10.11|root', displayHost: '192.168.10.11' } };
       state.tabs.set(A.sessionId, A); state.tabs.set(B.sessionId, B);
       return true;
     })()`);

@@ -6305,7 +6305,7 @@ function bastionNonSshEntry(a, clientInstalled) {
     : { menu: `ℹ️ 非 SSH 资产(${labels}),点此查看说明`, title: `查看说明(${labels} 资产)` };
 }
 // accessclient token 类型:ssh(可接管) / graphic(RDP、VNC 等图形客户端) / incomplete
-// 真实 HAR(10.204.240.4-5.har)里 RDP token 形如 {app:'mstsc', fa:'网关:3389', as:'…OTP:…'},
+// 真实 HAR(bastion-5.har)里 RDP token 形如 {app:'mstsc', fa:'网关:3389', as:'…OTP:…'},
 // 没有 pw/pn —— 旧代码会落到「堡垒机连接信息不完整」,用户完全不知道是资产类型不支持。
 function accessClientSessionKind(info) {
   const app = String((info && info.app) || '').toLowerCase();

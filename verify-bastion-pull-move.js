@@ -38,8 +38,8 @@ async function ev(c, expr) { return evaluate(c, expr); }
     const r = await ev(c, `
       (function(){
         state.settings.bastionServers = [
-          { id: 's-h3c', name: 'H3C测试', url: 'https://10.204.240.4/shterm/', type: 'h3c', account: '', password: '' },
-          { id: 's-jms', name: 'JMS测试', url: 'http://192.168.1.250', type: 'jms', account: 'admin', password: '' },
+          { id: 's-h3c', name: 'H3C测试', url: 'https://h3c-bastion.example/shterm/', type: 'h3c', account: '', password: '' },
+          { id: 's-jms', name: 'JMS测试', url: 'http://jms.example', type: 'jms', account: 'admin', password: '' },
         ];
         state.collapsedTopBastion = false; state.collapsedBastionSaved = false;
         renderSessionList(els.inputSessionSearch.value);
