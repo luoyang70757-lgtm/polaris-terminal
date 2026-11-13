@@ -82,6 +82,15 @@
 
 已知历史红灯不变（与本版无关）：`verify-debug-log` 6/8、`verify-space-composition-flush` 4/6、`verify-vim-real`（需真实 vim），见 `docs/verify-known-red.md`。
 
+## 发布形态变更（同日追加）
+
+按要求 **Windows 只发便携版**：
+
+- `package.json` 的 `build.win.target` 只留 `{ target: 'portable', arch: ['x64'] }`，`nsis` 配置块删除。
+- `.github/workflows/build-windows.yml` 的 artifact / Release 上传项只留 `*.exe`（不再传 `latest*.yml` / `*.blockmap`）。
+- v1.0.20 的 Release 已删除 `Polaris.Setup.1.0.20.exe`、`.blockmap`、`latest.yml`，**只剩 `Polaris.Portable.1.0.20.exe`**。
+- 自动更新（electron-updater）随之停用：便携版一直走「手动下载新版（替换 exe 即可保留数据）」提示，`app:checkUpdate` 的版本检查与下载页跳转不受影响。
+
 ## 升级注意
 
 - 无破坏性变更：老数据库、老设置照旧；限速默认 0 = 不限，行为与升级前一致。

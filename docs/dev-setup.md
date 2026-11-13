@@ -92,7 +92,7 @@ node verify-<功能>.js        # 例：node verify-sftp-panel.js
 ## 4. 打包（可选）
 
 ```bash
-npm run dist            # → release/ 下 NSIS 安装版 + portable 版
+npm run dist            # macOS → release/mac/Polaris.app；--win → release/Polaris Portable <v>.exe（只发便携版）
 npm run dist -- --win   # 只编 Windows
 ```
 

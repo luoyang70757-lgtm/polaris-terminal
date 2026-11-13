@@ -37,8 +37,7 @@ POLARIS_LOCK_DIR="$PWD/.polaris-data" ./node_modules/.bin/electron . --dev --no-
 
 # 编译正式版
 npm run dist   # → release/mac/Polaris.app(macOS，未签名)
-# Windows(同时产出两种包):
-#   release/Polaris Setup <v>.exe     NSIS 安装版(启动快，推荐)
+# Windows(只产出便携版——2026-11-13 用户决定不再发布 NSIS 安装版):
 #   release/Polaris Portable <v>.exe  portable 免安装版(每次启动自解压，较慢)
 npm run dist -- --win
 ```

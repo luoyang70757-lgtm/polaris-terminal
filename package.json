@@ -59,12 +59,6 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
           "target": "portable",
           "arch": [
             "x64"
@@ -76,15 +70,6 @@
         "en-US"
       ],
       "verifyUpdateCodeSignature": false
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Polaris",
-      "artifactName": "Polaris.Setup.${version}.${ext}"
     },
     "portable": {
       "artifactName": "Polaris.Portable.${version}.${ext}",

@@ -5,9 +5,9 @@ name: Build & Release
 #   - push 到 main → 只传 Actions Artifact(不发布)
 #   - 打标签 v* → 编译 Windows 并发布到 Releases(自动发布)
 #   - 手动触发(workflow_dispatch,可填 version)→ 编译 Windows 并发布到 Releases(草稿)
-# 产物:
-#   release/Polaris Setup <version>.exe    NSIS 安装版(启动快,推荐)
-#   release/Polaris Portable <version>.exe portable 免安装版(每次启动自解压,较慢)
+# 产物(用户决定:Windows 只发便携版):
+#   release/Polaris Portable <version>.exe   portable 免安装版(每次启动自解压,较慢)
+#   NSIS 安装版不再产出/发布;自动更新(electron-updater)随之停用,便携版走"手动下载新版"提示。
 on:
   push:
     branches: [ main ]
@@ -41,8 +41,6 @@ jobs:
           name: win-packages
           path: |
             release/*.exe
-            release/latest*.yml
-            release/*.blockmap
           if-no-files-found: error
 
   # Windows 编译完 → 汇总发布(避免并发建 Release 冲突)
@@ -75,8 +73,6 @@ jobs:
         with:
           files: |
             artifacts/**/*.exe
-            artifacts/**/latest*.yml
-            artifacts/**/*.blockmap
           tag_name: ${{ steps.rel.outputs.tag }}
           name: Polaris ${{ steps.rel.outputs.name }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}

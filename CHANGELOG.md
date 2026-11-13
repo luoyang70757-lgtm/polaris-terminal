@@ -2,6 +2,13 @@
 
 ## v1.0.20（2026-11-13）
 
+### 发布形态变更：Windows 只发便携版
+
+按要求，`build.win.target` 只保留 `portable`（x64），NSIS 安装版配置与 CI 上传/发布规则一并收掉：
+`release/Polaris Portable <v>.exe` 是 Windows 唯一的产物，`latest.yml` / `.blockmap` 不再生成。
+顺带影响：自动更新（electron-updater）没有安装版可替换了，便携版本来就走「手动下载新版（替换 exe 保留数据）」提示，行为不变；
+macOS 仍是 `npm run dist` 出的 `Polaris.app`。v1.0.20 的 Release 已把安装版/`latest.yml`/`.blockmap` 三个资产删掉，只剩便携版。
+
 **两个 SFTP 干活时最缺的能力：改权限、限带宽。** 以前在 Polaris 里只能上传下载，改一个 `chmod`、改一次属主、或者"别把公司专线跑满"都得切到别的工具。这一版把两件事都放进面板了。
 
 ### 一、右键 →「🔐 权限与属性…」（chmod / chown / 改时间戳，可递归）
