@@ -133,6 +133,13 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     })();
     if (!logs.includes(SECRET)) ok('渲染层调试日志里没有明文密码');
     else bad('渲染层调试日志里没有明文密码');
+    // v1.0.17:拉起/失败日志改成 console.log → 调试面板也能看到(以前只落盘,面板里只有 window blur)
+    if (/\[WINSCP\] 已拉起/.test(logs)) ok('拉起成功同时进调试面板(不再只落盘)');
+    else bad('拉起成功同时进调试面板', logs.slice(-300));
+    if (logs.includes('rawsettings=') && logs.includes('SFTPRealPath') && !logs.includes(SECRET)) ok('面板日志里能看到 rawsettings(SFTPRealPath=off) 且无密码');
+    else bad('面板日志里能看到 rawsettings 且无密码', logs.slice(-300));
+    if (diskLog.includes('[WINSCP] 已拉起')) ok('落盘日志里也有 [WINSCP] 已拉起');
+    else bad('落盘日志里也有 [WINSCP] 已拉起');
     if (diskLog.includes('***@10.0.0.9')) ok('落盘日志里有脱敏后的命令行(说明确实记了日志)');
     else bad('落盘日志里有脱敏后的命令行', diskLog.slice(-200));
     if (!diskLog.includes(SECRET) && !diskLog.includes('p%40ss')) ok('落盘日志里没有明文/编码密码');
@@ -187,6 +194,12 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     const lastArgs = argvFrames().slice(-1)[0];
     if (lastArgs && lastArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('replace 模式:用的是这条会话自己的账号密码(不是别的会话)');
     else bad('replace 模式:用的是这条会话的账号密码', JSON.stringify(lastArgs));
+    // 渲染层也记一行“交给谁 / 落在哪”(排查起始目录优先级问题时有据可查)
+    const rlog = await evaluate(c, `(function(){ return termDebug.lines.slice(-40).join('\\n'); })()`);
+    if (/WINSCP 交给 WinSCP: admin@127.0.0.1/.test(rlog) && rlog.includes('起始目录=')) ok('渲染层调试日志记了“交给 WinSCP + 起始目录”');
+    else bad('渲染层调试日志记了交给 WinSCP', String(rlog).slice(-200));
+    if (!rlog.includes('admin123')) ok('这行日志不含密码');
+    else bad('这行日志不含密码');
 
     // replace + 没装(探测结果 false) → 回落内置面板
     await evaluate(c, `state.winScp.installed = false; toggleSftpPanel(); true`);

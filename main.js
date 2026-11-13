@@ -2068,10 +2068,11 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
     // detached 子进程必须自己能被回收:父进程退出后 WinSCP 继续用(用户要的正是这个)
     child.on('error', (err) => {
-      try { appLog.log('main', `[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
+      // 用 console.log 而不是 appLog.log:面板与落盘日志都要能看到(排障第一现场)
+      try { console.log(`[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { appLog.log('main', `[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}`); } catch { /* ignore */ }
+    try { console.log(`[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}`); } catch { /* ignore */ }
     return { ok: true, command: show };
   } catch (err) {
     return { ok: false, error: err.message };

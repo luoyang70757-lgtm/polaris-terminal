@@ -10158,11 +10158,19 @@ async function openSessionInWinScp(sessionId) {
   const payload = winScpPayloadFor(sid);
   if (payload.error) { setStatus(payload.error, 'var(--orange)'); return false; }
   if (!state.winScp.installed) {
+    dlog('WINSCP', '本机未检测到 WinSCP,放弃拉起');
     setStatus('本机没装 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)', 'var(--orange)');
     return false;
   }
+  // 面板里留一行“交给谁、落在哪”:WinSCP 是否真带上 SFTPRealPath=off 看主进程的 [WINSCP] 行
+  dlog('WINSCP', `交给 WinSCP: ${payload.username}@${payload.host}:${payload.port} 起始目录=${payload.remotePath || '(未定,由 WinSCP 自己落位)'}`);
   const r = await window.api.winScpOpen(payload).catch((e) => ({ ok: false, error: e && e.message }));
-  if (!r || !r.ok) { setStatus('WinSCP: ' + ((r && r.error) || '打开失败'), 'var(--orange)'); return false; }
+  if (!r || !r.ok) {
+    dlog('WINSCP·错误', (r && r.error) || '打开失败');
+    setStatus('WinSCP: ' + ((r && r.error) || '打开失败'), 'var(--orange)');
+    return false;
+  }
+  if (r.command) dlog('WINSCP', `已拉起: ${r.command}`);
   const t = state.tabs.get(sid);
   setStatus(`已用 WinSCP 打开「${(t && t.title) || payload.host}」`, 'var(--green)');
   return true;
@@ -10194,7 +10202,10 @@ function toggleSftpPanel() {
     // 设置里选了"打开 SFTP 时用 WinSCP"→ 拉起 WinSCP,不显示内置面板。
     // 拉起失败(路径变了/被杀软拦)自动回落内置面板,不让功能"凭空消失"。
     openSessionInWinScp(active.sessionId).then((ok) => {
-      if (!ok) { openInlineSftp(active); refitAll(); syncPanelButtons(); }
+      if (!ok) {
+        dlog('WINSCP', '拉起失败 → 回落内置 SFTP 面板(功能不消失)');
+        openInlineSftp(active); refitAll(); syncPanelButtons();
+      }
     });
     refitAll();
     syncPanelButtons();

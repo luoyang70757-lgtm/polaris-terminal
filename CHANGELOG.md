@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.0.17（2026-11-12）
+
+- **WinSCP 排障日志可见（调试面板不再"什么都看不到"）**（用户贴回 v1.0.16 调试日志，里面一条 `[WINSCP]` 都没有，只剩 `window blur … active=BUTTON#btn-sftp-toggle`）：根因是**日志可观测性缺口**——`main.js` 里 WinSCP 拉起/失败走 `appLog.log('main', …)`，**只落盘 `logs/app-*.log`、不转发渲染层**，面板只看得到主进程 `console.log` 系的内容，于是「点了 SFTP、WinSCP 起来了/没起来」在面板上完全没有痕迹。
+  - **修法**：① 主进程拉起成功/失败改 `console.log` → 面板与落盘日志都有，内容仍是脱敏后的命令行（`sftp://账号:***@主机:22/ /rawsettings SFTPRealPath=off RemoteDirectory=/root | rawsettings={…}`）；② 渲染层 `openSessionInWinScp`/`toggleSftpPanel` 新增 `dlog`：`交给 WinSCP: 账号@主机:22 起始目录=…` / `WINSCP·错误 …` / `拉起失败 → 回落内置 SFTP 面板(功能不消失)` / `本机未检测到 WinSCP`，**这些行只含账号/主机/路径，永不含密码**。
+  - 顺带修 `verify-winscp-open.js` 的偶发：拿 sid 一轮失败会**再点一次连接再等一轮**（之前一次 mock 握手抖动会连带后面 18 条断言全红）。
+  - 回归：`verify-winscp-open.js` **32 → 37**（拉起成功同时进面板 / 面板日志含 `rawsettings` 且无密码 / 落盘日志含 `[WINSCP] 已拉起` / 渲染层记了「交给 WinSCP + 起始目录」/ 该行不含密码）；`run-verify --pure` **13/13 脚本 135 断言**；key-forward 7/7、ai-copy 11/11、sftp-panel 5/5 无退化。发布说明见 `docs/release-v1.0.17.md`。
+
 ## v1.0.16（2026-11-12）
 
 - **修「WinSCP 报『不能获得 \'.\' 的真实路径』(错误码 4)」**（用户反馈，v1.0.15 拉起 WinSCP 后必现）：根因是 WinSCP **建会话时会先对 `"."` 发一次 `SSH_FXP_REALPATH`** 当作家目录（`source/core/SftpFileSystem.cpp:2976` `FHomeDirectory = RealPath(L".")`；默认 `SessionData.cpp:303` `SFTPRealPath = asAuto`），而 **chroot 型服务端**（JumpServer KoKo 网关、H3C 网关、`internal-sftp` chroot、老 ProFTPD）对这个请求直接回 `SSH_FX_FAILURE`（错误码 4）→ WinSCP 当致命错误抛出，会话进不去。Polaris 自己的 SFTP 面板从不受影响，因为我们从不发 REALPATH（家目录走 `exec pwd` + `readdir` 验证）。
