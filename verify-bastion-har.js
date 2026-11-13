@@ -21,7 +21,9 @@ const ok = (n) => { passed++; console.log('  ✓ ' + n); };
 const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e : '')); };
 
 function findHar() {
-  for (const c of ['10.204.240.4-11.har', '10.204.240.4-10.har', '10.204.240.4-9.har', '10.204.240.4-8.har']) {
+  // POLARIS_HAR 可指定任意一份(本机 HAR 不入库,常放在别的目录)
+  if (process.env.POLARIS_HAR && fs.existsSync(process.env.POLARIS_HAR)) return process.env.POLARIS_HAR;
+  for (const c of ['10.204.240.4-5.har', '10.204.240.4-11.har', '10.204.240.4-10.har', '10.204.240.4-9.har', '10.204.240.4-8.har']) {
     if (fs.existsSync(path.join(__dirname, c))) return path.join(__dirname, c);
   }
   return null;
@@ -105,7 +107,11 @@ async function ev(c, expr) { return evaluate(c, expr); }
       return JSON.stringify({ n: a.length, withDir: withDir, multi: multi, sub: sub, paths: window.__seen.size,
         sample: sample ? { name: sample.name, ip: sample.ip, devId: sample.devId, dirs: sample.dirs, root: sample.dirPath[0] } : null });
     })()`));
-    if (stats.n >= 800) ok(`① 解析出 ${stats.n} 台设备(>=800)`);
+    // 规模阈值面向"全量 HAR"(几百台/过百目录);小样本 HAR(如 10.204.240.4-5.har 只录了
+    // 一页 20 台、1 个目录)只断言"解析对了",不拿规模阈值误报红。
+    const smallHar = stats.n < 100;
+    if (smallHar) console.log(`  (小样本 HAR:${stats.n} 台 / ${stats.paths} 个目录 → 跳过规模断言 ②③④)`);
+    if (smallHar ? stats.n > 0 : stats.n >= 800) ok(`① 解析出 ${stats.n} 台设备${smallHar ? '(小样本)' : '(>=800)'}`);
     else bad('① 设备数偏少', String(stats.n));
     // 无 paths 的响应(如"最近设备" getLoginUserRecentDevs)解析出的设备本就没有目录归属,
     // UI 用「🗂 未分组」兜底(renderBastionInSessionList 里 dir 为空即归未分组)——属设计内,不是缺陷。
@@ -113,14 +119,50 @@ async function ev(c, expr) { return evaluate(c, expr); }
     if (noDir === 0) ok('① 全部设备都带目录归属');
     else if (noDir / stats.n < 0.02) ok(`① 带目录归属 ${stats.withDir}/${stats.n},其余 ${noDir} 台来自无 paths 的响应(UI 归「未分组」)`);
     else bad('① 缺目录归属的设备过多', `${noDir} / ${stats.n}`);
-    if (stats.multi > 0) ok(`② 存在多目录设备(${stats.multi} 台,与网页一致)`);
-    else bad('② 没有多目录设备');
-    if (stats.sub > 0) ok(`③ 子目录设备 dirPath 带业务根(${stats.sub} 台,例:${stats.sample && stats.sample.root})`);
-    else bad('③ 无带业务根的子目录设备');
-    if (stats.paths > 100) ok(`④ 观察到 ${stats.paths} 个目录`);
-    else bad('④ 目录数偏少', String(stats.paths));
-    if (stats.n >= 800 && stats.sample && stats.sample.devId && stats.sample.ip) ok(`① 字段完整(例:${stats.sample.name}/${stats.sample.ip}/devId=${String(stats.sample.devId).slice(0, 8)}…)`);
-    else bad('① 解析字段缺失', JSON.stringify(stats.sample));
+    if (smallHar) {
+      // 小样本里设备数少,顺带断言第一个设备字段完整(真实数据上有 name/ip/devId)
+      const first = await ev(c, `(function(){ const a = window.__acc || []; const x = a[0] || {}; return JSON.stringify({ name: x.name, ip: x.ip, devId: x.devId, proto: x.proto }); })()`);
+      const f = JSON.parse(first);
+      if (f.name && f.ip && f.devId && f.proto) ok(`① 字段完整(例:${f.name}/${f.ip}/devId=${String(f.devId).slice(0, 8)}…/proto=${f.proto})`);
+      else bad('① 解析字段缺失', first);
+    } else {
+      if (stats.multi > 0) ok(`② 存在多目录设备(${stats.multi} 台,与网页一致)`);
+      else bad('② 没有多目录设备');
+      if (stats.sub > 0) ok(`③ 子目录设备 dirPath 带业务根(${stats.sub} 台,例:${stats.sample && stats.sample.root})`);
+      else bad('③ 无带业务根的子目录设备');
+      if (stats.paths > 100) ok(`④ 观察到 ${stats.paths} 个目录`);
+      else bad('④ 目录数偏少', String(stats.paths));
+      if (stats.n >= 800 && stats.sample && stats.sample.devId && stats.sample.ip) ok(`① 字段完整(例:${stats.sample.name}/${stats.sample.ip}/devId=${String(stats.sample.devId).slice(0, 8)}…)`);
+      else bad('① 解析字段缺失', JSON.stringify(stats.sample));
+    }
+
+    // ⑦ 协议识别(纯函数,同一批真实数据):services 里没有 ssh 的资产绝不能被判成"可连 SSH"
+    const protoStats = JSON.parse(await ev(c, `(function(){
+      const a = window.__acc || [];
+      const nonssh = a.filter(function(x){ return !bastionAssetSupportsSsh(x); });
+      return JSON.stringify({ n: a.length, nonssh: nonssh.length, labels: nonssh.slice(0, 3).map(function(x){ return bastionProtoLabels(x).join('/'); }), ids: nonssh.slice(0, 3).map(function(x){ return String(x.devId); }) });
+    })()`));
+    if (protoStats.nonssh > 0) ok(`⑦ 真实数据里 ${protoStats.nonssh}/${protoStats.n} 台非 SSH 资产已识别(标签:${protoStats.labels.join(',')})`);
+    else console.log('  (这份 HAR 里全是 SSH 资产,跳过 ⑦ 的非 SSH 断言)');
+    if (protoStats.nonssh > 0 && protoStats.labels.every((l) => l && l !== 'SSH')) ok('⑦ 非 SSH 资产的协议标签不是 SSH');
+    else if (protoStats.nonssh > 0) bad('⑦ 非 SSH 资产被标成 SSH', JSON.stringify(protoStats.labels));
+
+    // ⑧ 列表行徽标 / 右键说明(pure 逻辑同上,这里确认真实 DOM 上也能渲染出来)
+    const dom = JSON.parse(await ev(c, `(function(){
+      const mk = function(o){ return makeBastionAssetItem(o).outerHTML; };
+      const rdp = { name:'win-rdp', ip:'10.0.0.1', devId:'1', proto:'rdp', protocols:['rdp'], accounts:['admin'], dir:'', dirs:[] };
+      const ssh = { name:'linux-a', ip:'10.0.0.2', devId:'2', proto:'ssh', protocols:['ssh'], accounts:['root'], dir:'', dirs:[] };
+      const web = { name:'storage', ip:'10.0.0.3', devId:'3', proto:'Device_Storage_web', protocols:['Device_Storage_web'], webUrl:'https://10.0.0.3:8088', accounts:[], dir:'', dirs:[] };
+      return JSON.stringify({ rdp: mk(rdp), ssh: mk(ssh), web: mk(web), rdpMsg: bastionUnsupportedAssetMsg(rdp), webMsg: bastionUnsupportedAssetMsg(web) });
+    })()`));
+    if (/\.asset-proto|asset-proto/.test(dom.rdp) && />RDP</.test(dom.rdp)) ok('⑧ RDP 资产行渲染出「RDP」徽标');
+    else bad('⑧ RDP 资产行没有协议徽标', dom.rdp.slice(0, 160));
+    if (!/asset-proto/.test(dom.ssh)) ok('⑧ SSH 资产行不加徽标(不制造噪声)');
+    else bad('⑧ SSH 资产行也加了徽标', dom.ssh.slice(0, 160));
+    if (/>Web</.test(dom.web)) ok('⑧ 存储 Web 资产行渲染出「Web」徽标');
+    else bad('⑧ Web 资产行没有协议徽标', dom.web.slice(0, 160));
+    if (/RDP/.test(dom.rdpMsg) && dom.webMsg.indexOf('https://10.0.0.3:8088') >= 0) ok('⑧ 说明文案:非 SSH 资产给出真实协议 + 浏览器地址');
+    else bad('⑧ 说明文案不对', JSON.stringify([dom.rdpMsg, dom.webMsg]));
 
     // ⑤ 去重:同一批响应再喂一遍,设备数不应翻倍
     const before = await ev(c, `window.__acc.length`);
@@ -139,6 +181,7 @@ async function ev(c, expr) { return evaluate(c, expr); }
       const treeN = await ev(c, `(function(){ const t = bastionParseDevs(JSON.parse(${treeJson}), null); return JSON.stringify({ n: t.length, withIp: t.filter(function(x){ return x.ip; }).length }); })()`);
       const t = JSON.parse(treeN);
       if (t.n > 0 && t.withIp === t.n) ok(`⑥ 目录树({children})解析出 ${t.n} 台设备且都带 IP`);
+      else if (t.n === 0) console.log('  (这份 HAR 的目录树只有分组节点、没有带 IP 的设备节点,跳过 ⑥)');
       else bad('⑥ 树解析异常', treeN);
     } else console.log('  (HAR 里没有目录树响应,跳过 ⑥)');
 

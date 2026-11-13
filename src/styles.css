@@ -889,6 +889,18 @@ input[type="checkbox"] {
 .jms-asset-item:hover { background: var(--bg-hover); }
 .jms-asset-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jms-a-addr { font-size: var(--fs-sm); color: var(--text-dim); flex-shrink: 0; }
+/* 非 SSH 资产协议徽标(RDP / Web):列表里一眼分出「这台进不了终端」,别双击才发现 */
+.jms-asset-item .asset-proto {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  color: var(--orange);
+  background: rgba(255, 176, 32, 0.14);
+  border: 1px solid rgba(255, 176, 32, 0.35);
+}
+.jms-asset-item.asset-nonssh .name { color: var(--text-dim); }
 /* 堡垒机收藏资产:星标 + 高亮底色 */
 .jms-asset-item.bastion-fav .name { color: #ffd700; }
 .jms-asset-item.bastion-fav { background: color-mix(in srgb, #ffd700 7%, transparent); }

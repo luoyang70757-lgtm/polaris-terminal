@@ -5351,8 +5351,12 @@ function batchBastionConnect(assets) {
   const list = (assets || []).filter(Boolean);
   if (!list.length) return;
   if (!els.bastionWebview || !els.bastionWebview.src) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录'); openBastionPanel(); return; }
-  setStatus(`批量连接 H3C 资产 ${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
+  // 只批量连 SSH/SFTP 资产:RDP/存储 Web 资产扔进批量只会一条条弹「不支持」
+  const sshList = list.filter((a) => bastionAssetSupportsSsh(a));
+  const skipped = list.length - sshList.length;
+  if (!sshList.length) { alert(`选中的 ${list.length} 台资产都不是 SSH 类型(RDP/Web 图形客户端),无法批量连接`); return; }
+  setStatus(`批量连接 H3C 资产 ${sshList.length} 台…${skipped ? `(跳过 ${skipped} 台非 SSH)` : ''}`, 'var(--accent)');
+  sshList.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
 }
 
 // 批量打开连接:依次连接一组「已保存堡垒机连接」的资产(未登录先自动登录)
@@ -6192,14 +6196,25 @@ function bastionParseDevs(j, paths) {
       out.push(...j.content.map((c) => {
         const d = c.dev || {};
         const srv = (d.services && d.services.services) || {};
+        // services 的键**就是** H3C 的 proto 名(ssh / rdp / Device_Storage_web …),
+        // 以前只认 srv.ssh / srv.sftp,其余类型(RDP、存储 Web 客户端)一律被当成 ssh:
+        // 点这种资产会拿 proto='ssh' 去请求 accessUrl → 堡垒机报协议不匹配,或回一个
+        // 没有 pw/pn 的图形客户端凭证,前端只能报「连接信息不完整」(真实 HAR 见 -5.har)。
+        const svcKeys = Object.keys(srv).filter(Boolean);
+        const sshKey = svcKeys.find((k) => /^ssh$/i.test(k)) || svcKeys.find((k) => /^sftp$/i.test(k)) || '';
+        const webKey = svcKeys.find((k) => /web/i.test(k)) || '';
         const accts = ((d.accounts && d.accounts.accounts) || []).map((a) => a.name).filter(Boolean);
         const d2 = {
           name: d.name || c.name,
           ip: d.ip || '',
           id: d.id || c.id || '',
           devId: String(d.id != null ? d.id : c.id || ''),
-          port: (srv.ssh && srv.ssh.port) || 22,
-          proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
+          port: (sshKey && srv[sshKey] && srv[sshKey].port) || 22,
+          proto: sshKey || svcKeys[0] || 'ssh',
+          // 全部可用协议(H3C 原始键,如 ['ssh'] / ['rdp'] / ['Device_Storage_web'])
+          protocols: svcKeys.length ? svcKeys : ['ssh'],
+          // 存储/Web 类资产带浏览器入口(services.<web>.url),可在系统浏览器直接打开
+          webUrl: (webKey && srv[webKey] && /^https?:\/\//i.test(String(srv[webKey].url || '')) ? String(srv[webKey].url) : ''),
           accounts: accts,
           recentAccount: (c.recent && c.recent.account) || '',
           favorite: false, dir: '', dirs: [],
@@ -6211,13 +6226,49 @@ function bastionParseDevs(j, paths) {
       (function walk(nodes) {
         for (let i = 0; i < (nodes || []).length; i++) {
           const n = nodes[i];
-          if (n.ip) { const d3 = { name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] }; bastionTagPaths(d3, paths); out.push(d3); }
+          if (n.ip) { const d3 = { name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', protocols: ['ssh'], webUrl: '', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] }; bastionTagPaths(d3, paths); out.push(d3); }
           if (n.children) walk(n.children);
         }
       })(j.children);
     }
   } catch { /* ignore */ }
   return out;
+}
+
+// ---------- 资产协议识别(H3C services 键 = proto 名) ----------
+// 只有含 ssh/sftp 服务的资产能交给 Polaris 终端;RDP(mstsc)、存储 Web 客户端等图形
+// 会话没有 SSH 网关凭证(pw/pn),强行请求只会得到「连接信息不完整」的误报。
+function bastionAssetProtos(a) {
+  const p = (a && a.protocols && a.protocols.length) ? a.protocols : [(a && a.proto) || 'ssh'];
+  return p.map((k) => String(k)).filter(Boolean);
+}
+function bastionAssetSupportsSsh(a) {
+  return bastionAssetProtos(a).some((k) => /^(ssh|sftp)$/i.test(k));
+}
+// 列表行标签:SSH 不标(默认;标了反而噪声),非终端资产标 RDP / Web / 原始键
+function bastionProtoLabels(a) {
+  const out = [];
+  for (const k of bastionAssetProtos(a)) {
+    const label = /^(ssh|sftp)$/i.test(k) ? 'SSH' : (/rdp|mstsc/i.test(k) ? 'RDP' : (/web/i.test(k) ? 'Web' : k));
+    if (out.indexOf(label) === -1) out.push(label);
+  }
+  return out;
+}
+// 非 SSH 资产的说明文案(告诉用户为什么点不动、替代路径是什么)
+function bastionUnsupportedAssetMsg(a) {
+  const labels = bastionProtoLabels(a).join('/') || '非 SSH';
+  const base = `「${a && a.name || ''}」是通过 ${labels} 接入的资产,Polaris 只能打开 SSH/SFTP 终端。`;
+  if (a && a.webUrl) return `${base}\n可以在右键菜单「🌐 用系统浏览器打开」里直接访问: ${a.webUrl}`;
+  return `${base}\n请在 H3C 堡垒机网页里打开它。`;
+}
+// accessclient token 类型:ssh(可接管) / graphic(RDP、VNC 等图形客户端) / incomplete
+// 真实 HAR(10.204.240.4-5.har)里 RDP token 形如 {app:'mstsc', fa:'网关:3389', as:'…OTP:…'},
+// 没有 pw/pn —— 旧代码会落到「堡垒机连接信息不完整」,用户完全不知道是资产类型不支持。
+function accessClientSessionKind(info) {
+  const app = String((info && info.app) || '').toLowerCase();
+  if (/mstsc|rdp|vnc|guacamole|xfreerdp|spice/.test(app)) return { kind: 'graphic', app: app };
+  if (!info || !info.pw || !(info.hn || info.pn)) return { kind: 'incomplete', app: app };
+  return { kind: 'ssh', app: app };
 }
 // 合并:按 devId 去重(保留已有 dir/收藏标记,新数据覆盖),返回新数组
 function bastionMergeDevs(prevList, list) {
@@ -6907,9 +6958,11 @@ async function batchFavoriteAssets(assets) {
 
 function makeBastionAssetItem(a) {
   const item = document.createElement('div');
-  item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '');
+  const sshOk = bastionAssetSupportsSsh(a);
+  const protoLabels = bastionProtoLabels(a);
+  item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '') + (sshOk ? '' : ' asset-nonssh');
   const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
-  item.title = `双击连 SSH → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}`;
+  item.title = `双击${sshOk ? '连 SSH' : '查看说明(RDP/Web 资产)'} → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}${sshOk ? '' : '\n协议: ' + protoLabels.join('/') + '(Polaris 只能打开 SSH/SFTP 终端)'}`;
   const icon = document.createElement('span');
   icon.className = 'icon';
   icon.textContent = a.favorite ? '⭐' : '🖥';
@@ -6922,19 +6975,35 @@ function makeBastionAssetItem(a) {
   item.appendChild(icon);
   item.appendChild(name);
   item.appendChild(addr);
+  // 非 SSH 资产标出真实协议(RDP/Web):不标的话双击后只能看到一句“不支持”,
+  // 列表里也分不出哪些能连、哪些不能
+  if (!sshOk) {
+    const badge = document.createElement('span');
+    badge.className = 'asset-proto';
+    badge.textContent = protoLabels.join('/') || '?';
+    item.appendChild(badge);
+  }
   item.addEventListener('dblclick', () => bastionConnect(a));
   item.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const items = [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }];
+    const items = sshOk
+      ? [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }]
+      : [{ label: `ℹ️ 非 SSH 资产(${protoLabels.join('/')}),点此查看说明`, action: () => bastionConnect(a) }];
     const accts = (a.accounts || []).filter(Boolean);
-    if (accts.length > 1) {
+    if (sshOk && accts.length > 1) {
       items.push({ label: '账号', separatorLabel: true });
       for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => bastionConnect(a, un) });
     }
-    items.push({ separator: true });
-    items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
-    items.push({ separator: true });
-    items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    if (a.webUrl) {
+      items.push({ separator: true });
+      items.push({ label: '🌐 用系统浏览器打开', action: () => window.api.openExternal(a.webUrl).catch(() => {}) });
+    }
+    if (sshOk) {
+      items.push({ separator: true });
+      items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
+      items.push({ separator: true });
+      items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    }
     items.push({ separator: true });
     // 手动收藏:加入分组 / 移出收藏
     if (a.favorite || a.favGroup) {
@@ -7653,12 +7722,20 @@ function renderBastionInSessionList(container, f) {
 async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   const dev = asset.devId || asset.id || '';
   if (!dev) { alert('该资产缺少设备 ID,无法发起连接'); return; }
+  // 非 SSH 资产(RDP / 存储 Web 客户端)在终端里根本打不开:直接给可读提示,
+  // 不拿 proto='ssh' 去请求 accessUrl(那会在堡垒机侧留一条失败访问记录,前端也只能
+  // 报「连接信息不完整」)。
+  if (!bastionAssetSupportsSsh(asset)) {
+    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols: bastionAssetProtos(asset).join(',') });
+    alert(bastionUnsupportedAssetMsg(asset));
+    return;
+  }
   const baseUrl = bastionNativeBaseUrl();
   if (!baseUrl) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)'); openBastionPanel(); return; }
   const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
   bastionLog({ ev: 'accessUrl-req', asset: asset.name, dev, account, baseUrl });
   setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
-  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto: proto || 'ssh' }).catch((e) => ({ ok: false, error: e && e.message }));
+  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto: proto || asset.proto || 'ssh' }).catch((e) => ({ ok: false, error: e && e.message }));
   bastionLog({ ev: 'accessUrl-res', asset: asset.name, ok: !!(r && r.ok), needLogin: !!(r && r.needLogin), status: r && r.status, error: r && r.error });
   if (!r || !r.ok) {
     if (r && r.needLogin) {
@@ -7811,6 +7888,20 @@ async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   const r = await window.api.bastionDecode(acUrl);
   if (!r.ok) { bastionLog({ ev: 'token-decode-fail', error: r.error }); alert('解码堡垒机连接失败: ' + r.error); return; }
   const info = r.info;
+  // 先分辨 token 类型:SSH(可接管) / 图形客户端(RDP、VNC…)。图形 token 没有 pw/pn
+  // (真实 HAR: {app:'mstsc', fa:'网关:3389', as:'…OTP:…'}),直接当 SSH 连只会报
+  // 「连接信息不完整」,用户不知道是资产类型不支持。
+  const kind = accessClientSessionKind(info);
+  if (kind.kind !== 'ssh') {
+    bastionLog({ ev: 'token-not-ssh', kind: kind.kind, app: kind.app, fa: info && info.fa, sn: info && info.sn, st: info && info.st });
+    if (kind.kind === 'graphic') {
+      alert(`这个会话是 H3C「${kind.app || '图形客户端'}」接入(RDP/VNC 等图形会话),` +
+        'Polaris 只能打开 SSH/SFTP 终端,无法接管。\n请在 H3C 堡垒机网页里打开它。');
+    } else {
+      alert('堡垒机连接信息不完整(这个资产很可能不是 SSH 会话,请在堡垒机网页里打开)');
+    }
+    return;
+  }
   // hn = 堡垒机 SSH 网关(TERM-SSHD,实测监听 hn:pn;probe 证实目标机 sh 被防火墙丢弃不可直连)。
   // 无论 direct/代理模式,SSH 都经网关:连 hn:pn,用户名=目标账号 sa,密码=一次性密码 OTP,网关按 OTP 路由到目标。
   const gw = info.hn && String(info.hn).trim();
