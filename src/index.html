@@ -673,10 +673,17 @@
       <div class="settings-sec">SFTP</div>
       <label class="field"><span>打开 SFTP 时</span>
         <select id="set-winscp-mode">
+          <option value="button">用内置面板(面板里有「🪟 WinSCP」按钮)——默认</option>
           <option value="replace">用本机 WinSCP 打开(没装 WinSCP 时自动用内置面板)</option>
-          <option value="button">用内置面板(面板里有「🪟 WinSCP」按钮)</option>
           <option value="panel">只用内置面板(不显示 WinSCP 按钮)</option>
         </select>
+      </label>
+      <label class="field"><span>WinSCP 协议</span>
+        <select id="set-winscp-protocol">
+          <option value="sftp">SFTP(默认)</option>
+          <option value="scp">SCP(老设备/受限 SFTP 用这个)</option>
+        </select>
+        <span class="pwd-note">SFTP 子系统残缺的设备(报「错误码 4 / General failure」)可试 SCP——它走服务器上的 scp 命令,不碰 SFTP</span>
       </label>
       <label class="field"><span>传输限速(每条连接,KB/s;0 = 不限速)</span>
         <input id="set-sftp-limit" type="number" min="0" max="102400" step="10" value="0" />

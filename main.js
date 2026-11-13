@@ -2078,7 +2078,9 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     if (!exe) {
       return { ok: false, error: '未检测到本机安装的 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)' };
     }
-    const url = winScp.buildSessionUrl(p);
+    // 协议:默认 SFTP;设置里选 SCP 时拼 scp://(绕过 SFTP 子系统,给老设备留路)
+    const scheme = String(p.winscpProtocol || 'sftp').toLowerCase() === 'scp' ? 'scp' : 'sftp';
+    const url = winScp.buildSessionUrl(Object.assign({}, p, { scheme }));
     // WinSCP 自己的会话日志:默认一直写(<数据目录>/logs/winscp-*.log),级别 1(请求级)。
     // 为什么默认开:WinSCP 报「错误码 4 / General failure」这类消息时,只有它自己的日志
     // 能说明**是哪个请求**被服务器拒了(REALPATH? LSTAT? OPENDIR?),否则只能猜。
@@ -2097,7 +2099,8 @@ ipcMain.handle('winScp:open', (_e, payload) => {
     // 关掉这个探测即可(WinSCP 改用本地 canonify),详见 lib/winscp-open.js 文件头。
     // 想保留 WinSCP 默认行为:设 POLARIS_WINSCP_REALPATH=on。
     const rawSettings = {};
-    if (winScp.realPathCompat(process.env)) {
+    // SFTPRealPath 只对 SFTP 协议有意义;SCP 会话不带(WinSCP 会忽略,但别让人误以为生效了)
+    if (scheme === 'sftp' && winScp.realPathCompat(process.env)) {
       Object.assign(rawSettings, winScp.RAW_SETTINGS_DEFAULTS);
     }
     // 逃生阀:用户可自己追加/覆盖 WinSCP 会话开关(试错不用等新版本),
@@ -2123,7 +2126,7 @@ ipcMain.handle('winScp:open', (_e, payload) => {
       try { console.log(`[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { console.log(`[WINSCP] 已拉起: ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}` : ''}`); } catch { /* ignore */ }
+    try { console.log(`[WINSCP] 已拉起(协议=${scheme}): ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}` : ''}`); } catch { /* ignore */ }
     return { ok: true, command: show };
   } catch (err) {
     return { ok: false, error: err.message };

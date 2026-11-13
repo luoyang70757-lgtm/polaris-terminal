@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.0.22（2026-11-13）
+
+**「打开 SFTP 时」默认改成内置面板(不再默认拉 WinSCP)+ 新增「WinSCP 协议 SFTP/SCP」。**
+
+上一版只是把 WinSCP 的日志装上了,但默认行为还是「点 SFTP 直接拉 WinSCP」——在 WinSCP 进不去的机器上
+(比如报「错误码 4 / General failure」的 H3C 内网设备)等于每次点 SFTP 都先撞一次墙,还得手动回落到面板。
+这版把默认摆正,并给受限设备留一条**绕过 SFTP 子系统**的路:
+
+1. **默认 = 内置面板**(`button` 档):点 SFTP 直接开面板(该有的权限/限速/上传下载都在),WinSCP 变成面板工具栏
+   里的「🪟 WinSCP」按钮——想用的时候才用,失败也影响不到你。
+   老配置里**从没自己选过**的 `replace`(那是 v1.0.15 我们给的默认值)会自动迁到 `button` 并写回
+   (`settingsVersion` 3 → 4 + `winscpModeMigrated` 一次性标记);**用户自己选过 `replace` 的不动**。
+2. **WinSCP 协议可选 `SFTP` / `SCP`**(设置 → SFTP →「WinSCP 协议」,默认 SFTP):
+   - `sftp://` 走 SFTP 子系统;
+   - `scp://` 走服务器上的 `scp` 命令,**完全绕开 SFTP 子系统**——`LSTAT`/`OPENDIR` 被回成 4 的老设备
+     (嵌入式/H3C 类)可以用它绕过去;
+   - SCP 会话**不再下发** `SFTPRealPath=off`(那是 SFTP 专属开关,发了也只是让人误以为生效);
+     日志/私钥/口令/`RemoteDirectory` 照常;`redactUrl`/`describeCommand` 同步支持 `scp://` 脱敏。
+   - 不认识的协议值一律回落 `sftp`(绝不拼出怪 URL)。
+3. SFTP 面板每次打开都重刷一次 WinSCP 按钮显隐(装/没装、模式改过立刻反映)。
+
+回归: `verify-winscp-args.js` 34→**38**(scheme 默认/大小写/非法值回落/堡垒机复合用户名整体编码/`scp://` 脱敏)、
+`verify-winscp-open.js` 39→**46**(默认档 = button、下拉首项顺序、v4 迁移两种情形、协议下拉、
+`scp://` 真实拉起且不带 `SFTPRealPath`、面板打开重刷按钮)、`verify-sftp-panel` 5/5、`verify-sftp-attrs-dialog` 16/16、
+`run-verify --pure` **17/17 脚本 343 断言**。
+
 ## v1.0.21（2026-11-13）
 
 **修「SFTPRealPath=off 之后 WinSCP 还是打不开」——先让 WinSCP 自己说清是哪一步挂的。**

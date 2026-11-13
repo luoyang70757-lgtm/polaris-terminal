@@ -259,3 +259,12 @@ WinSCP 连会话都开不起来。Polaris 自己的 SFTP 面板之所以没这�
   拉起日志里给出 `日志=<path>`；`POLARIS_WINSCP_DEBUG=1` → `/loglevel=*`。
 - `POLARIS_WINSCP_RAWSETTINGS=名=值;名=值` 叠加覆盖默认 rawsettings —— 让用户在**现场试开关**，
   不必为每个 WinSCP 兼容性问题发一次版；解析在纯函数 `parseRawSettings()` 里（非法条目整条丢弃，不拼怪 argv）。
+
+### 追加（v1.0.22）：默认档改为内置面板 + 协议可选 SCP
+
+- **默认档从 `replace` 改为 `button`**:默认不该把用户交给一个可能进不去的第三方程序(现场已两次
+  被「错误码 4」挡住)。老配置里"从没自己选过"的 `replace` 一次性迁移到 `button`(`settingsVersion` 4 +
+  `winscpModeMigrated` 标记),用户自己选过的不动。
+- **协议可选**:`sftp://`(默认) / `scp://`(走服务器 `scp` 命令,完全绕过 SFTP 子系统——给 LSTAT/OPENDIR
+  回 4 的老设备留路)。SCP 会话不下发 `SFTPRealPath=off`;`redactUrl`/`describeCommand` 同样覆盖 `scp://`;
+  非法 scheme 一律回落 `sftp`。

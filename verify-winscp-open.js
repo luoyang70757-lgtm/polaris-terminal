@@ -181,12 +181,32 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     ok(`mock 会话已连接(sid=${sid})`);
 
     // ---------- ④ 三种模式 ----------
+    // 默认 = button(v1.0.22 起):点 SFTP 开内置面板,不默认把用户交给 WinSCP
+    await evaluate(c, `state.settings.winscpMode = undefined; state.settings.winscpModeMigrated = true; true`);
     const modeDefault = await evaluate(c, `winScpMode()`);
-    if (modeDefault === 'replace') ok('默认模式 = replace(点了 SFTP 就开 WinSCP)');
-    else bad('默认模式 = replace', modeDefault);
-    const opts = JSON.parse(await evaluate(c, `(function(){ var s=document.getElementById('set-winscp-mode'); return JSON.stringify({ n: s.options.length, vals: [].map.call(s.options, function(o){return o.value;}) }); })()`));
-    if (opts.n === 3 && opts.vals.join(',') === 'replace,button,panel') ok('设置项有三种模式(replace/button/panel)');
-    else bad('设置项有三种模式', JSON.stringify(opts));
+    if (modeDefault === 'button') ok('默认模式 = button(点 SFTP 开内置面板,面板里有 WinSCP 按钮)');
+    else bad('默认模式 = button', modeDefault);
+    const opts = JSON.parse(await evaluate(c, `(function(){ var s=document.getElementById('set-winscp-mode'); return JSON.stringify({ n: s.options.length, vals: [].map.call(s.options, function(o){return o.value;}), first: s.options[0].value }); })()`));
+    if (opts.n === 3 && opts.first === 'button' && ['replace', 'button', 'panel'].every((v) => opts.vals.includes(v))) ok('设置项有三种模式且默认档排在第一位(button/replace/panel)');
+    else bad('设置项有三种模式且默认档排第一', JSON.stringify(opts));
+    // v4 迁移:老配置里仍是 replace(= 当年我们给的默认值)且用户没自己选过 → 变 button
+    await evaluate(c, `state.settings.winscpMode = 'replace'; state.settings.winscpModeMigrated = false; state.settings.settingsVersion = 3; saveSettings(); loadSettings(); true`);
+    const afterMigrate = await evaluate(c, `({ mode: winScpMode(), migrated: state.settings.winscpModeMigrated, ver: state.settings.settingsVersion, raw: state.settings.winscpMode })`);
+    if (afterMigrate.mode === 'button' && afterMigrate.raw === 'button' && afterMigrate.migrated === true && afterMigrate.ver === 4) ok('v4 迁移:没自己选过的 replace 老配置 → button(并写回)');
+    else bad('v4 迁移 replace→button', JSON.stringify(afterMigrate));
+    // 用户自己选过 replace(迁移标记为 true)→ 绝不再改
+    await evaluate(c, `state.settings.winscpMode = 'replace'; state.settings.winscpModeMigrated = true; state.settings.settingsVersion = 3; saveSettings(); loadSettings(); true`);
+    if ((await evaluate(c, `winScpMode()`)) === 'replace') ok('v4 迁移:用户自己选过的 replace 保持不动');
+    else bad('v4 迁移:用户自己选的 replace 被改了');
+    // WinSCP 协议下拉:默认 sftp,可切 scp
+    const proto = await evaluate(c, `(function(){ var s=document.getElementById('set-winscp-protocol'); return JSON.stringify({ n: s.options.length, vals: [].map.call(s.options, function(o){return o.value;}), cur: s.value, fn: winScpProtocol() }); })()`);
+    const prot = JSON.parse(proto);
+    if (prot.n === 2 && prot.vals.join(',') === 'sftp,scp' && prot.fn === 'sftp') ok('WinSCP 协议下拉(SFTP/SCP),默认 sftp');
+    else bad('WinSCP 协议下拉', proto);
+    await evaluate(c, `state.settings.winscpProtocol = 'scp'; true`);
+    if ((await evaluate(c, `winScpProtocol()`)) === 'scp') ok('切 SCP 后 winScpProtocol() 生效');
+    else bad('切 SCP 后 winScpProtocol()');
+    await evaluate(c, `state.settings.winscpProtocol = 'sftp'; true`);
 
     // replace:点 SFTP → 拉起 WinSCP,内置面板不显示
     const nBefore = argvFrames().length;
@@ -223,6 +243,19 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     await evaluate(c, `state.settings.winscpMode='panel'; refreshWinScpButton(); true`);
     if (await evaluate(c, `document.getElementById('btn-sftp-winscp').classList.contains('hidden')`)) ok('panel 模式:按钮隐藏(只用内置面板)');
     else bad('panel 模式:按钮隐藏');
+
+    // 协议=scp:URL 换成 scp://,且不再下发 SFTPRealPath(SCP 会话没有这个概念)
+    const nScp = argvFrames().length;
+    await evaluate(c, `state.settings.winscpProtocol = 'scp'; state.settings.winscpMode = 'replace'; openSessionInWinScp('${sid}'); true`);
+    await sleep(400);
+    const scpArgs = argvFrames().slice(nScp).pop() || [];
+    if (scpArgs[0] === 'scp://admin:admin123@127.0.0.1:' + SSH + '/') ok('设置 SCP 协议后 WinSCP 收到 scp:// 会话 URL');
+    else bad('SCP 协议 → scp:// URL', JSON.stringify(scpArgs));
+    if (!scpArgs.includes('SFTPRealPath=off')) ok('SCP 协议不下发 SFTPRealPath(避免误以为生效)');
+    else bad('SCP 协议仍下发 SFTPRealPath', JSON.stringify(scpArgs));
+    if (scpArgs.includes('/log=') || scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样默认写日志');
+    else bad('SCP 会话缺日志参数', JSON.stringify(scpArgs));
+    await evaluate(c, `state.settings.winscpProtocol = 'sftp'; state.settings.winscpMode = 'replace'; true`);
 
     // ---------- ⑦ 标签右键菜单 ----------
     await evaluate(c, `state.settings.winscpMode='button'; state.winScp.installed = true; true`);

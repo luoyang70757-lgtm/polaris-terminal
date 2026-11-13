@@ -189,5 +189,27 @@ t('describeCommand 脱敏不误伤 rawsettings(目录不是敏感信息)', () =>
   assert.ok(!s.includes('p@ss') && s.includes('u:***@h'), s);
 });
 
+t('buildSessionUrl 默认 sftp,可切 scp(绕过 SFTP 子系统)', () => {
+  assert.strictEqual(w.buildSessionUrl({ host: 'h', username: 'u', password: 'p' }), 'sftp://u:p@h/');
+  assert.strictEqual(w.buildSessionUrl({ host: 'h', username: 'u', password: 'p', scheme: 'scp' }), 'scp://u:p@h/');
+  assert.strictEqual(w.buildSessionUrl({ host: 'h', port: 2222, username: 'u', password: 'p', scheme: 'SCP' }), 'scp://u:p@h:2222/');
+});
+t('buildSessionUrl 不认识的 scheme 一律回落 sftp(绝不拼出怪 URL)', () => {
+  for (const bad of ['telnet', 'ftp', 'ssh', 'SFTP ', '', null, 1, {}]) {
+    assert.strictEqual(w.buildSessionUrl({ host: 'h', username: 'u', password: 'p', scheme: bad }), 'sftp://u:p@h/', String(bad));
+  }
+});
+t('SCP URL 里堡垒机复合用户名照样整体编码、不拆', () => {
+  const user = 'jms@ssh@root@10.1.2.3';
+  const url = w.buildSessionUrl({ host: 'gateway', port: 2222, username: user, password: 'pw', scheme: 'scp' });
+  assert.ok(url.startsWith('scp://jms%40ssh%40root%4010.1.2.3:pw@gateway:2222/'), url);
+});
+t('redactUrl / describeCommand 对 scp:// 同样脱敏(别只防 sftp)', () => {
+  assert.strictEqual(w.redactUrl('scp://u:secret@h:22/'), 'scp://u:***@h:22/');
+  assert.strictEqual(w.redactUrl('scp://u@h:22/'), 'scp://u@h:22/');
+  const cmd = w.describeCommand('C:\\WinSCP.exe', [w.buildSessionUrl({ host: 'h', username: 'u', password: 'p@ss:w/rd#1', scheme: 'scp' })]);
+  assert.ok(!cmd.includes('p@ss') && cmd.includes('scp://u:***@h/'), cmd);
+});
+
 console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);
 process.exit(failed ? 1 : 0);

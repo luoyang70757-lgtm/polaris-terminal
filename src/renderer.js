@@ -543,6 +543,7 @@ const els = {
   setSessionLog: $('set-sessionlog'),
   setAutoFillPw: $('set-autofillpw'),
   setWinScpMode: $('set-winscp-mode'),
+  setWinScpProtocol: $('set-winscp-protocol'),
   setSftpLimit: $('set-sftp-limit'),
   sftpLimitNote: $('sftp-limit-note'),
   attrsModal: $('attrs-modal'),
@@ -770,6 +771,17 @@ function loadSettings() {
     state.settings.settingsVersion = 3;
     saveSettings();
   }
+  // v4 迁移:「打开 SFTP 时」的默认从 replace(直接拉 WinSCP)改为 button(内置面板 + WinSCP 按钮)。
+  // 只有"从没自己选过"的老配置(没有 winscpModeMigrated)里仍是 replace 的才跟着改;
+  // 用户自己选过 replace 的(切换时会置 winscpModeMigrated)保持不动。
+  if (!state.settings.settingsVersion || state.settings.settingsVersion < 4) {
+    if (!state.settings.winscpModeMigrated && (!state.settings.winscpMode || state.settings.winscpMode === 'replace')) {
+      state.settings.winscpMode = 'button';
+    }
+    state.settings.winscpModeMigrated = true;
+    state.settings.settingsVersion = 4;
+    saveSettings();
+  }
 }
 function saveSettings() {
   try { localStorage.setItem('jms-settings', JSON.stringify(state.settings)); } catch { /* ignore */ }
@@ -840,6 +852,7 @@ function openSettingsModal() {
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
   if (els.setWinScpMode) els.setWinScpMode.value = winScpMode();
+  if (els.setWinScpProtocol) els.setWinScpProtocol.value = winScpProtocol();
   if (els.setSftpLimit) els.setSftpLimit.value = String(sftpLimitKbps());
   refreshSftpLimitNote();
   refreshWinScpButton(); // SFTP 面板里的 WinSCP 按钮只在"装了 + 模式=button"时出现
@@ -10473,7 +10486,17 @@ function closeSftpPanel() {
 // 前提:本机装了 WinSCP(state.winScp.installed);没装时所有入口都不出现/自动回落内置面板。
 // 安全:密码只交给主进程拼 argv / 会话 URL,不落盘、不写日志(日志里一律 ***)。
 // =====================================================================
-function winScpMode() { return state.settings.winscpMode || 'replace'; }
+// 默认 = 'button'(点 SFTP 开内置面板,面板工具栏给「🪟 WinSCP」按钮)。
+// v1.0.15 曾把默认设成 'replace'(点 SFTP 直接拉 WinSCP),但很多内网/嵌入式设备上
+// WinSCP 根本进不去(见 docs/winscp-realpath-fix.md),默认不该把用户挡在门外 → v1.0.22 改回内置面板。
+function winScpMode() {
+  const m = state.settings.winscpMode;
+  return (m === 'replace' || m === 'button' || m === 'panel') ? m : 'button';
+}
+// WinSCP 会话协议:'sftp'(默认) | 'scp'(绕过 SFTP 子系统,给老设备留路)
+function winScpProtocol() {
+  return state.settings.winscpProtocol === 'scp' ? 'scp' : 'sftp';
+}
 
 // =====================================================================
 // SFTP 传输限速(设置项 → 主进程 lib/ssh-client 的节流流)
@@ -10549,6 +10572,7 @@ function winScpPayloadFor(sessionId) {
   if (!remotePath) remotePath = t.shellCwd || '';
   return {
     protocol: 'ssh',
+    winscpProtocol: winScpProtocol(), // 交给 WinSCP 的协议(sftp/scp);与上面的会话协议无关
     host: s.host || '',
     port: s.port || 22,
     username: s.username || '',
@@ -10653,6 +10677,8 @@ function openInlineSftp(active) {
       loadSftpList();
     }).catch(() => loadSftpList());
   }
+  // 面板每次打开都按当前状态刷一次 WinSCP 按钮(装/没装、模式改过都能立刻反映)
+  refreshWinScpButton();
 }
 
 // ---- SFTP 连接切换下拉:列出所有已连接的 SSH 会话,点选 = 切到该标签并打开它的 SFTP ----
@@ -11843,7 +11869,8 @@ els.setAutoFillPw.addEventListener('change', () => {
 });
 // 打开 SFTP 时用内置面板还是拉 WinSCP(面板里 WinSCP 按钮的显隐也随之变)
 els.setWinScpMode.addEventListener('change', () => {
-  state.settings.winscpMode = els.setWinScpMode.value || 'replace';
+  state.settings.winscpMode = els.setWinScpMode.value || 'button';
+  state.settings.winscpModeMigrated = true; // 用户自己选了,以后不再自动迁移
   saveSettings();
   refreshWinScpButton();
   setStatus(winScpMode() === 'replace'
@@ -11851,6 +11878,16 @@ els.setWinScpMode.addEventListener('change', () => {
     : (winScpMode() === 'button' ? '打开 SFTP 用内置面板(面板里加了 WinSCP 按钮)' : '打开 SFTP 只用内置面板'),
   'var(--text-dim)');
 });
+// WinSCP 协议(SFTP / SCP):只影响下次拉起 WinSCP(不用重连)
+if (els.setWinScpProtocol) {
+  els.setWinScpProtocol.addEventListener('change', () => {
+    state.settings.winscpProtocol = els.setWinScpProtocol.value === 'scp' ? 'scp' : 'sftp';
+    saveSettings();
+    setStatus(winScpProtocol() === 'scp'
+      ? '以后用 WinSCP 打开会走 SCP(绕过 SFTP 子系统,给老设备/受限设备用)'
+      : '以后用 WinSCP 打开走 SFTP(标准协议)', 'var(--text-dim)');
+  });
+}
 // 传输限速:改完立刻推给主进程(所有 upload/download 都会用新速率,不必重连)
 els.setSftpLimit.addEventListener('change', () => {
   const kbps = Math.max(0, parseInt(els.setSftpLimit.value, 10) || 0);

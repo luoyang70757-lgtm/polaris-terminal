@@ -139,3 +139,19 @@ set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
 | `main.js` | `winScp:open` 默认在 `<数据目录>/logs/winscp-<时间戳>.log` 落 WinSCP 日志（先 `mkdir` 再拉起）；`POLARIS_WINSCP_RAWSETTINGS` 合并进 rawsettings；拉起日志里带 `日志=<path>` |
 
 回归：`verify-winscp-args.js` **34/34**、`verify-winscp-open.js` **39/39**（新增日志参数/日志落点/目录预建三条）。
+
+## 七、v1.0.22：内网设备的终极退路 —— 改用 SCP
+
+排查表里「LSTAT / OPENDIR 被回 4」那一行,到了 v1.0.22 有了不用改代码的解法:
+
+**设置 → SFTP → WinSCP 协议 = SCP** → WinSCP 用 `scp://` 会话,文件传输走服务器上的 `scp` 命令。
+
+- 整个 SFTP 子系统(REALPATH / LSTAT / OPENDIR / READDIR / SETSTAT …)一个请求都不发,所以"回 4"这类
+  半残实现完全绕开;
+- 命令形态:`WinSCP.exe scp://user:pw@host:2222/ /log=… /loglevel=1`(不再带 `SFTPRealPath=off`);
+- 代价:SCP 只有 `scp` 命令的能力——没有远端复制/改名、不保留时间戳、单文件不能断点续传、列目录走
+  `ls -l` 解析(特殊文件名可能出偏差);大目录明显慢。**能用 SFTP 就别用 SCP**。
+- 服务器上没有 `scp` 命令(纯 sftp-server 的精简系统)→ SCP 也进不去,那就只剩内置面板/或让设备侧开 SFTP。
+
+同时默认档兜底:点 SFTP 现在默认开**内置面板**(`button`),WinSCP 变成按需按钮——
+再怎么折腾 WinSCP 也挡不住日常传文件。
