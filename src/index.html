@@ -678,6 +678,10 @@
           <option value="panel">只用内置面板(不显示 WinSCP 按钮)</option>
         </select>
       </label>
+      <label class="field"><span>传输限速(每条连接,KB/s;0 = 不限速)</span>
+        <input id="set-sftp-limit" type="number" min="0" max="102400" step="10" value="0" />
+        <span id="sftp-limit-note" class="pwd-note"></span>
+      </label>
       <div class="settings-sec">安全</div>
       <label class="field"><span>闲置自动锁定(分钟,0=关闭)</span>
         <input id="set-lock-idle" type="number" min="0" max="120" value="5" />
@@ -692,6 +696,43 @@
         <button id="btn-about" class="btn-mini" title="关于 Polaris(版本与简介)">ℹ️ 关于</button>
         <span class="spacer"></span>
         <button id="set-close" class="btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 权限 / 属主 / 时间戳(SFTP 右键「🔐 权限与属性」) ============ -->
+  <div id="attrs-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>权限与属性</h3>
+      <div id="attrs-path" class="attrs-path" title=""></div>
+      <label class="field"><span>权限(八进制,如 644 / 755 / 4755)</span>
+        <div class="attrs-mode-row">
+          <input id="attrs-mode" type="text" inputmode="numeric" autocomplete="off" placeholder="644" />
+          <button type="button" class="btn-mini" data-attrs-mode="644">644</button>
+          <button type="button" class="btn-mini" data-attrs-mode="755">755</button>
+          <button type="button" class="btn-mini" data-attrs-mode="600">600</button>
+          <button type="button" class="btn-mini" data-attrs-mode="700">700</button>
+        </div>
+        <span id="attrs-mode-preview" class="pwd-note">-</span>
+      </label>
+      <label class="field"><span>属主 UID(留空 = 不修改;0 = root)</span>
+        <input id="attrs-uid" type="number" min="0" max="2147483647" />
+      </label>
+      <label class="field"><span>属组 GID(留空 = 不修改)</span>
+        <input id="attrs-gid" type="number" min="0" max="2147483647" />
+      </label>
+      <label class="field"><span>修改时间(留空 = 不修改)</span>
+        <input id="attrs-mtime" type="datetime-local" step="1" />
+      </label>
+      <label id="attrs-recursive-row" class="field field-check hidden">
+        <input type="checkbox" id="attrs-recursive" />
+        <span>递归应用到目录内全部内容(改权限常用于整棵目录)</span>
+      </label>
+      <div id="attrs-status" class="pwd-note"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="attrs-cancel" class="btn-ghost">取消</button>
+        <button id="attrs-save" class="btn-primary">保存</button>
       </div>
     </div>
   </div>

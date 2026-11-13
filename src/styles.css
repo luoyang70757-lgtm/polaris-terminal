@@ -71,6 +71,12 @@ body {
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
 /* 自定义输入弹窗(prompt)的输入框 + 粘贴按钮 */
+/* 权限与属性对话框(单行路径 + 八进制输入 + 快捷档位) */
+.attrs-path { font-family: var(--mono, ui-monospace, monospace); font-size: var(--fs-sm); color: var(--text-dim);
+  margin: 2px 0 10px; word-break: break-all; }
+.attrs-mode-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.attrs-mode-row input { flex: 1 1 90px; min-width: 72px; width: auto; }
+.attrs-mode-row .btn-mini { flex: 0 0 auto; }
 .prompt-input-row { display: flex; gap: 8px; align-items: stretch; }
 .prompt-input-row input { flex: 1; width: auto; }
 .prompt-input-row .btn-ghost { flex: 0 0 auto; white-space: nowrap; }

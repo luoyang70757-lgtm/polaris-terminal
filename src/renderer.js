@@ -543,6 +543,20 @@ const els = {
   setSessionLog: $('set-sessionlog'),
   setAutoFillPw: $('set-autofillpw'),
   setWinScpMode: $('set-winscp-mode'),
+  setSftpLimit: $('set-sftp-limit'),
+  sftpLimitNote: $('sftp-limit-note'),
+  attrsModal: $('attrs-modal'),
+  attrsPath: $('attrs-path'),
+  attrsMode: $('attrs-mode'),
+  attrsModePreview: $('attrs-mode-preview'),
+  attrsUid: $('attrs-uid'),
+  attrsGid: $('attrs-gid'),
+  attrsMtime: $('attrs-mtime'),
+  attrsRecursiveRow: $('attrs-recursive-row'),
+  attrsRecursive: $('attrs-recursive'),
+  attrsStatus: $('attrs-status'),
+  attrsSave: $('attrs-save'),
+  attrsCancel: $('attrs-cancel'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
   // 智能命令推荐
@@ -671,6 +685,7 @@ const state = {
     autoFillPassword: true,     // 自动填充密码:终端出现 Password: 提示时自动发会话保存的密码(默认开)
     // 打开 SFTP 时的行为:replace=直接拉本机 WinSCP(没装则回落内置面板) | button=内置面板+WinSCP 按钮 | panel=只用内置面板
     winscpMode: 'replace',
+    sftpSpeedLimitKBps: 0,      // SFTP 传输限速(KB/s,0 = 不限速;对所有连接/批量/目录递归生效)
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
@@ -825,6 +840,8 @@ function openSettingsModal() {
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
   if (els.setWinScpMode) els.setWinScpMode.value = winScpMode();
+  if (els.setSftpLimit) els.setSftpLimit.value = String(sftpLimitKbps());
+  refreshSftpLimitNote();
   refreshWinScpButton(); // SFTP 面板里的 WinSCP 按钮只在"装了 + 模式=button"时出现
   els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
   renderAnsiEditor();
@@ -10152,6 +10169,7 @@ function renderSftpList() {
       }
       items.push({ label: '⬇ 下载', action: () => downloadSftpEntry(remotePath, e.isDir) });
       if (!e.isDir) items.push({ label: '✏ 编辑', action: () => openRemoteEditor(remotePath) });
+      items.push({ label: '🔐 权限与属性…', action: () => openSftpAttrs(remotePath, e) });
       items.push({ label: '✂ 重命名', action: () => renameSftpEntry(remotePath, e.name) });
       items.push({ separator: true });
       items.push({ label: '📋 复制路径', action: () => { window.api.copyText(remotePath); setStatus(`已复制路径: ${remotePath}`, 'var(--green)'); } });
@@ -10163,6 +10181,170 @@ function renderSftpList() {
   }
   updateSftpSelection(); // 渲染完统一刷新选中高亮 + 底部已选数量提示
 }
+
+// ---------- 权限 / 属主 / 修改时间(右键「🔐 权限与属性」) ----------
+// 为什么需要它:SFTP 面板只做"搬文件",而部署脚本/Web 服务最常踩的坑是权限不对
+// (600 的私钥、755 的可执行、上传后属主成了 root)。以前只能开终端敲 chmod/chown。
+// 校验在两端各做一次:渲染层即时给红字提示,主进程 lib/sftp-attrs 再复核(IPC 不是只有对话框能调)。
+let sftpAttrsTarget = null; // { sessionId, remotePath, isDir } —— 当前对话框在改谁
+
+// mode → `ls -l` 风格符号串(与 lib/sftp-attrs.js 的 modeToSymbolic 保持一致,verify-sftp-attrs 会逐值对拍)
+function modeSymbolicPreview(mode, isDir) {
+  const n = Number(mode);
+  if (!Number.isFinite(n) || n < 0) return '';
+  const m = n & 0o7777;
+  const special = (m >> 9) & 7;
+  const bits = m & 0o777;
+  const trio = (shift, bit, chr) => {
+    const r = bits >> shift & 4 ? 'r' : '-';
+    const w = bits >> shift & 2 ? 'w' : '-';
+    const x = bits >> shift & 1;
+    if (special & bit) return r + w + (x ? chr : chr.toUpperCase());
+    return r + w + (x ? 'x' : '-');
+  };
+  return (isDir ? 'd' : '-') + trio(6, 4, 's') + trio(3, 2, 's') + trio(0, 1, 't');
+}
+
+function parseAttrsModeInput(raw) {
+  const s0 = String(raw == null ? '' : raw).trim();
+  if (!s0) return { ok: false, error: '权限不能为空' };
+  const m = /^0o/i.test(s0) ? s0.slice(2) : s0;
+  if (!/^[0-7]{3,4}$/.test(m)) return { ok: false, error: '权限要写成 3~4 位八进制数字(如 644 / 755 / 4755)' };
+  return { ok: true, mode: parseInt(m, 8) };
+}
+
+function updateAttrsModePreview() {
+  if (!els.attrsModePreview) return;
+  const pm = parseAttrsModeInput(els.attrsMode.value);
+  if (!pm.ok) {
+    els.attrsModePreview.textContent = els.attrsMode.value.trim() ? pm.error : '-';
+    els.attrsModePreview.style.color = els.attrsMode.value.trim() ? 'var(--red)' : '';
+    return;
+  }
+  els.attrsModePreview.style.color = '';
+  els.attrsModePreview.textContent = `${modeSymbolicPreview(pm.mode, !!(sftpAttrsTarget && sftpAttrsTarget.isDir))}   (${pm.mode.toString(8)})`;
+}
+
+function setAttrsStatus(text, color) {
+  if (!els.attrsStatus) return;
+  els.attrsStatus.textContent = text || '';
+  els.attrsStatus.style.color = color || '';
+}
+
+function closeSftpAttrs() {
+  sftpAttrsTarget = null;
+  els.attrsModal.classList.add('hidden');
+  setAttrsStatus('');
+}
+
+// 打开对话框:先读远端属性填进去(读不到就说明原因,不允许盲改)
+async function openSftpAttrs(remotePath, entry) {
+  const sid = state.sftp.sessionId;
+  if (!sid) { setStatus('先连接一个会话再改权限', 'var(--yellow)'); return; }
+  sftpAttrsTarget = { sessionId: sid, remotePath, isDir: !!(entry && entry.isDir) };
+  els.attrsPath.textContent = remotePath;
+  els.attrsPath.title = remotePath;
+  els.attrsMode.value = '';
+  els.attrsUid.value = '';
+  els.attrsGid.value = '';
+  els.attrsMtime.value = '';
+  els.attrsRecursive.checked = false;
+  els.attrsRecursiveRow.classList.toggle('hidden', !sftpAttrsTarget.isDir);
+  els.attrsSave.disabled = true; // 读到属性之前不让点保存
+  updateAttrsModePreview();
+  setAttrsStatus('读取远端属性…', 'var(--text-dim)');
+  els.attrsModal.classList.remove('hidden');
+  focusModalInput(els.attrsModal, els.attrsMode);
+
+  try {
+    const res = await window.api.sftpStat(sid, remotePath);
+    if (!sftpAttrsTarget || sftpAttrsTarget.remotePath !== remotePath) return; // 用户已关掉/换了目标
+    if (!res || !res.ok) {
+      setAttrsStatus(`读不到属性: ${(res && res.error) || '未知错误'}`, 'var(--red)');
+      return;
+    }
+    const st = res.stat;
+    els.attrsMode.value = st.modeOctal;
+    els.attrsUid.value = String(st.uid);
+    els.attrsGid.value = String(st.gid);
+    els.attrsMtime.value = st.mtimeLocal || '';
+    els.attrsSave.disabled = false;
+    setAttrsStatus(`${st.symbolic}   大小 ${formatSize(st.size)}   修改 ${formatTime(st.mtime)}`, 'var(--text-dim)');
+    updateAttrsModePreview();
+  } catch (e) {
+    setAttrsStatus(`读不到属性: ${(e && e.message) || e}`, 'var(--red)');
+  }
+}
+
+// 保存:收集"真的改了的"项目 → 下发。没改任何项就不打扰服务器。
+async function saveSftpAttrs() {
+  if (!sftpAttrsTarget) return;
+  const { sessionId, remotePath, isDir } = sftpAttrsTarget;
+  const patch = {};
+  const errs = [];
+
+  const pm = parseAttrsModeInput(els.attrsMode.value);
+  if (!pm.ok) errs.push(pm.error); else patch.mode = pm.mode;
+
+  const uidRaw = els.attrsUid.value.trim();
+  if (uidRaw) {
+    if (!/^\d{1,7}$/.test(uidRaw)) errs.push('属主 UID 只支持数字(0 = root / 1000 等)');
+    else patch.uid = parseInt(uidRaw, 10);
+  }
+  const gidRaw = els.attrsGid.value.trim();
+  if (gidRaw) {
+    if (!/^\d{1,7}$/.test(gidRaw)) errs.push('属组 GID 只支持数字');
+    else patch.gid = parseInt(gidRaw, 10);
+  }
+  const mtRaw = els.attrsMtime.value.trim();
+  if (mtRaw) {
+    const sec = Math.floor(new Date(mtRaw).getTime() / 1000);
+    if (!Number.isFinite(sec)) errs.push('修改时间格式不正确');
+    else patch.mtime = sec;
+  }
+  if (errs.length) { setAttrsStatus(errs.join(';'), 'var(--red)'); return; }
+
+  const recursive = !!(isDir && els.attrsRecursive.checked);
+  els.attrsSave.disabled = true;
+  setAttrsStatus(recursive ? '正在递归修改…(条目多时需要一点时间)' : '正在修改…', 'var(--text-dim)');
+  try {
+    const res = await window.api.sftpSetAttrs(sessionId, remotePath, patch, recursive);
+    if (!res || !res.ok) {
+      // 部分成功也算失败但要分清:失败条目原因在 res.errors 里
+      const detail = (res && res.errors && res.errors.length) ? res.errors[0] : ((res && res.error) || '未知错误');
+      const done = res && res.applied ? `(已改 ${res.applied}/${res.total})` : '';
+      setAttrsStatus(`修改失败${done}: ${detail}`, 'var(--red)');
+      addLog(`🔐 权限修改失败 ${remotePath}: ${detail}`, true);
+      els.attrsSave.disabled = false;
+      return;
+    }
+    const txt = res.text || '';
+    setStatus(`已修改 ${remotePath} ${res.applied > 1 ? `${res.applied} 项` : ''} ${txt}`.trim(), 'var(--green)');
+    addLog(`🔐 已修改 ${remotePath}${recursive ? ` 及其中 ${res.applied - 1} 项` : ''}${txt ? ` (${txt})` : ''}`);
+    closeSftpAttrs();
+    loadSftpList(); // 权限/时间变了,列表里的时间列可能跟着变
+  } catch (e) {
+    setAttrsStatus(`修改失败: ${(e && e.message) || e}`, 'var(--red)');
+    els.attrsSave.disabled = false;
+  }
+}
+
+els.attrsMode.addEventListener('input', updateAttrsModePreview);
+els.attrsSave.addEventListener('click', saveSftpAttrs);
+els.attrsCancel.addEventListener('click', closeSftpAttrs);
+els.attrsModal.addEventListener('click', (ev) => { if (ev.target === els.attrsModal) closeSftpAttrs(); });
+els.attrsModal.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') { ev.stopPropagation(); closeSftpAttrs(); }
+  else if (ev.key === 'Enter' && !els.attrsSave.disabled) { ev.preventDefault(); saveSftpAttrs(); }
+});
+// 快捷档位(644/755/600/700):点一下填进输入框,不用背八进制
+els.attrsModal.querySelectorAll('[data-attrs-mode]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    els.attrsMode.value = btn.dataset.attrsMode;
+    updateAttrsModePreview();
+    els.attrsMode.focus();
+  });
+});
 
 // ---- 传输记录(第 5 课)----
 // 每次上传/下载/新建/删除都留一行记录,让用户看得见"刚才发生了什么"。
@@ -10292,6 +10474,35 @@ function closeSftpPanel() {
 // 安全:密码只交给主进程拼 argv / 会话 URL,不落盘、不写日志(日志里一律 ***)。
 // =====================================================================
 function winScpMode() { return state.settings.winscpMode || 'replace'; }
+
+// =====================================================================
+// SFTP 传输限速(设置项 → 主进程 lib/ssh-client 的节流流)
+// 限速对"所有连接"生效:上传/下载/批量/目录递归都走同一对 uploadFile/downloadFile。
+// 0 = 不限速(不插节流流,零开销)。
+// =====================================================================
+function sftpLimitKbps() {
+  const n = Number(state.settings.sftpSpeedLimitKBps);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function refreshSftpLimitNote() {
+  if (els.sftpLimitNote) {
+    els.sftpLimitNote.textContent = sftpLimitKbps() > 0
+      ? `当前:每条连接 ${sftpLimitKbps()} KB/s`
+      : '当前:不限速(用带宽上限跑)';
+  }
+}
+
+// 把当前设置的限速推给主进程。启动/改设置/连接前都可以安全重复调用(幂等)。
+async function applySftpLimit() {
+  try {
+    const res = await window.api.sftpSetTransferLimit(sftpLimitKbps());
+    return res;
+  } catch (e) {
+    console.warn('设置传输限速失败', e && e.message);
+    return { ok: false };
+  }
+}
 
 // 面板里的「🪟 WinSCP」按钮:只在"装了 WinSCP + 模式选了带按钮的那个"时出现
 function refreshWinScpButton() {
@@ -11640,6 +11851,15 @@ els.setWinScpMode.addEventListener('change', () => {
     : (winScpMode() === 'button' ? '打开 SFTP 用内置面板(面板里加了 WinSCP 按钮)' : '打开 SFTP 只用内置面板'),
   'var(--text-dim)');
 });
+// 传输限速:改完立刻推给主进程(所有 upload/download 都会用新速率,不必重连)
+els.setSftpLimit.addEventListener('change', () => {
+  const kbps = Math.max(0, parseInt(els.setSftpLimit.value, 10) || 0);
+  els.setSftpLimit.value = String(kbps);
+  state.settings.sftpSpeedLimitKBps = kbps;
+  saveSettings();
+  applySftpLimit();
+  refreshSftpLimitNote();
+});
 els.setLockIdle.addEventListener('change', () => {
   state.settings.lockIdleMin = Math.max(0, parseInt(els.setLockIdle.value, 10) || 0);
   saveSettings();
@@ -12030,6 +12250,7 @@ els.btnSftpWinScp.addEventListener('click', () => openSessionInWinScp(state.sftp
 detectWinScp();
 // 启动时探测一次 H3C 客户端(决定非 SSH 资产双击是"交给客户端打开"还是"查看说明")
 detectH3cClient();
+applySftpLimit(); // 启动时把已保存的传输限速推给主进程(设置里改过的值重启后仍生效)
 // SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
 els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
 document.addEventListener('click', (e) => {

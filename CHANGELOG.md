@@ -1,5 +1,33 @@
 # 更新日志
 
+## v1.0.20（2026-11-13）
+
+**两个 SFTP 干活时最缺的能力：改权限、限带宽。** 以前在 Polaris 里只能上传下载，改一个 `chmod`、改一次属主、或者"别把公司专线跑满"都得切到别的工具。这一版把两件事都放进面板了。
+
+### 一、右键 →「🔐 权限与属性…」（chmod / chown / 改时间戳，可递归）
+
+- SFTP 面板对文件或目录右键 →「🔐 权限与属性…」：先**读远端真实属性**再给你改，读到之前保存按钮是灰的（不盲改、不猜）。
+- 权限支持三种写法：`644` / `0644` / `0o644` 随便填，旁边**实时显示 `ls -l` 风格符号**（`-rw-r--r-- (644)`、`drwxr-xr-x (755)`，setuid/setgid/sticky 显示 `s`/`S`/`t`/`T`），也有 644 / 755 / 600 / 700 四个快捷档位。
+- 属主 / 属组（UID / GID）与**修改时间**（本地时间选择器，秒级往返）可一起改。
+- 目录多一个「包含子目录与文件（递归）」：改之前先把目标清单列出来，**上限 20000 条**（`SFTP_ATTRS_RECURSE_MAX`），符号链接目录不递归（防环）——不会因为误点一下把几万条文件一起 chmod 拖死 SFTP 通道。
+- 下发顺序固定 **chown → chmod → utimes**：`chown` 会清掉 setuid/setgid 位，反过来先 chmod 就白改了；`chown` 必须 uid+gid 一起给（缺的一侧用当前值回填，避免把属主改一半）。
+- 只改**你真的动过**的字段：没改的项不下发，一项没改就不惊动服务器。失败项汇总回显前 10 条，成功条数写进传输记录（`🔐 权限 644 …`）。
+- 校验两端各做一次：渲染层即时红字（`644` 写错立刻提示），主进程再用 `lib/sftp-attrs.js` 复核（IPC 不是只有对话框能调），`mode` 上限 `0o7777`。
+
+### 二、设置 → SFTP →「传输限速」（每条连接，KB/s，0 = 不限）
+
+- 默认 0 = 不限速：**不插节流流，零开销**，老机器不受影响。
+- 想给专线留余量就填个数（如 `50`）：上传/下载两条管道都按这个速率走，走的是**节流 Transform 插在 `rs.pipe → mid → ws` 中间**——不碰 ssh2 底层 SFTP 请求、不改断点续传/对账逻辑（它们只看流是否正常结束），有 backpressure 也不会"内存里攒一大坨再一次性灌出去"。
+- 速率按「下一个允许开始时间」单调累加，长时间跑下来速率稳定（不是逐块定长 sleep，不受定时器抖动影响）；上限 100 MB/s，填非法值按不限速处理。
+- 改完立即生效（保存设置 + 推给主进程），状态栏/日志记 `[SFTP] 传输限速 = 50 KB/s`，方便在调试面板确认到底是"没生效"还是"网络本来就慢"。
+- 取消/超时/出错各分支都会销毁节流流并清掉待触发的定时器，不会留悬挂 timer。
+
+### 三、mock 与回归
+
+- `mock/sftp-vfs.js` 补 **SETSTAT** 应答（chmod/chown/utimes 都得有回应，否则 ssh2 客户端一直等），并且**改 mode 时保留类型位**（`0o100640` / `0o040700`）——真实 OpenSSH 就是这么回的，不补类型位面板会把目录当文件。
+- 新增 `lib/sftp-attrs.js`、`lib/sftp-throttle.js`（都是纯函数，可单测）、`verify-sftp-attrs.js`（纯 Node **100** 条，含渲染层与服务端两份八进制解析逐值对拍）、`verify-sftp-throttle.js`（**37** 条，含"20 万字节 @100KB/s 实测约 2s"与"destroy 后不留悬挂定时器"）、`verify-sftp-attrs-dialog.js`（真 Electron + mock **16** 条，端到端跑通 chmod/chown/utimes/递归/限速下载）。
+- 无退化：`verify-sftp-download-many` 16/16、`verify-sftp-panel` 5/5、`verify-batch-sftp` 5/5、`verify-sftp-upload-flash` 3/3、`verify-transfer-cancel` 10/10、`verify-sftp-cancel` 9/9；`run-verify --pure` **17/17 脚本 337 断言**（原 15/200）。
+
 ## v1.0.19（2026-11-13）
 
 - **RDP / 存储 Web 资产：双击直接交给 H3C 客户端打开（方案 A 落地）**（v1.0.18 只做到"识别出非 SSH 资产并提示去网页开"，这一版把双击之后那一步补上）：H3C 的 RDP/Web 资产本来就是靠 `AccessClient.exe` 拉起 mstsc / 浏览器 —— 真实 HAR 里 RDP 的 `accessUrl` token 解出来就是一份 mstsc 启动配置（`{"app":"mstsc","fa":"s:<网关>:3389","sa":"super","as":"…OTP:…"}`，**没有 `pw`/`hn`/`pn`**）。所以 Polaris **不做 RDP 协议栈**，把堡垒机签发的 `accessclient://<token>` **原样交给本机已装的客户端**（`docs/decision-rdp-support.md` 结论：纯 JS RDP 库 `node-rdpjs`/`mstsc.js` 是 AGPL v3.0 → 排除；FreeRDP 只发源码、IronRDP 要 Rust 工具链 + 4~8 周）。

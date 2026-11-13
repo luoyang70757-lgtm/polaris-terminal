@@ -84,6 +84,9 @@ contextBridge.exposeInMainWorld('api', {
   sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
   sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),
   sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', { sessionId, from, to }),
+  sftpStat: (sessionId, remotePath) => ipcRenderer.invoke('sftp:stat', { sessionId, remotePath }), // 权限/属主/时间戳对话框
+  sftpSetAttrs: (sessionId, remotePath, patch, recursive) => ipcRenderer.invoke('sftp:setAttrs', { sessionId, remotePath, patch, recursive }),
+  sftpSetTransferLimit: (kbps) => ipcRenderer.invoke('sftp:setTransferLimit', kbps), // 传输限速(KB/s,0=不限)
   sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
   sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
   sftpUpload: (sessionId, remoteDir, mode) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir, mode }),

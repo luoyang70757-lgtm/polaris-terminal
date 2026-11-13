@@ -114,10 +114,11 @@ function toAttrs(node) {
       mode: 0o120777, uid: 1000, gid: 1000, size: realSize, atime: node.mtime, mtime: node.mtime,
     };
   }
+  // mode/uid/gid/mtime 允许被 SETSTAT 改过(权限与属性对话框的 e2e 会真改这些值)
   return {
-    mode: node.type === 'dir' ? 0o40755 : 0o100644,
-    uid: 1000,
-    gid: 1000,
+    mode: typeof node.mode === 'number' ? node.mode : (node.type === 'dir' ? 0o40755 : 0o100644),
+    uid: typeof node.uid === 'number' ? node.uid : 1000,
+    gid: typeof node.gid === 'number' ? node.gid : 1000,
     size: (LIE_SIZES && node.type === 'file') ? 0 : realSize,
     atime: node.mtime,
     mtime: node.mtime,
@@ -279,6 +280,24 @@ function createSftpServer(sftpStream) {
   sftpStream.on('FSETSTAT', (reqid, handle, attrs) => {
     const h = getHandle(handle);
     if (h && h.node && attrs && typeof attrs.mode === 'number') h.node.mode = attrs.mode;
+    sftpStream.status(reqid, STATUS_CODE.OK);
+  });
+
+  // SETSTAT(按路径改属性):chmod / chown / utimes 都走这里。
+  // 真实 OpenSSH 支持;缺了它 ssh2 的 chmod 会让客户端一直等应答(旧版 mock 只实现了 FSETSTAT)。
+  const applyAttrs = (node, attrs) => {
+    if (!node || !attrs) return;
+    // chmod 只带 9~12 位权限位(0o640),类型位由服务端保留 —— 真实 OpenSSH 回 stat 是 0o100640,
+    // 不补类型位的话面板会把目录当文件(attrs.isDirectory() 依赖 0o040000)
+    if (typeof attrs.mode === 'number') node.mode = (attrs.mode & 0o7777) | (node.type === 'dir' ? 0o040000 : 0o100000);
+    if (typeof attrs.uid === 'number') node.uid = attrs.uid;
+    if (typeof attrs.gid === 'number') node.gid = attrs.gid;
+    if (typeof attrs.mtime === 'number') node.mtime = attrs.mtime;
+  };
+  sftpStream.on('SETSTAT', (reqid, p, attrs) => {
+    const node = resolve(root, normalize(p));
+    if (!node) return sftpStream.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+    applyAttrs(node, attrs);
     sftpStream.status(reqid, STATUS_CODE.OK);
   });
 

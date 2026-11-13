@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.19**（2026-11-13；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.20**（2026-11-13；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -57,6 +57,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 - JumpServer API（登录/资产/复合用户名 KoKo 网关）+ H3C Web（accessclient:// token 解码、自动登录、资产捕获）
 - 堡垒机入口整合：头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单；堡垒机连接 CRUD（type=jms|h3c）、编辑入口、双击资产直连 SSH（`bastionConnectAsset`，未登录自动用保存账号登录）；右侧浏览器面板保留
 - 堡垒机收藏分组（按收藏分组展示 + 自动获取 + 上下级缩进）；分组计数与网页一致（多业务目录去重）；收藏分组脏 favGroup 清洗
+- **SFTP 权限与限速（v1.0.20）**：面板右键「🔐 权限与属性…」先 `sftp:stat` 读远端真实属性再允许保存，mode/uid/gid/mtime 一起改，目录可递归（上限 20000 条、软链不递归），**下发顺序 chown→chmod→utimes**；设置里「传输限速(每条连接,KB/s;0=不限)」用节流 Transform 插在 `rs.pipe→mid→ws`，0 档不插流零开销，取消/出错分支都销毁流。纯函数在 `lib/sftp-attrs.js` / `lib/sftp-throttle.js`，回归 `verify-sftp-attrs`(100)/`verify-sftp-throttle`(37)/`verify-sftp-attrs-dialog`(16)。见 `docs/release-v1.0.20.md`
 - **协议识别（v1.0.18）+ 客户端透传（v1.0.19）**：`dev.services.services` 的键=协议名，RDP/存储 Web 资产不再当 SSH 连（不请求 accessUrl、加橙色徽标）；去掉「RDP 在终端里跑」的错误预期，改为把堡垒机签发的 `accessclient://` **原样交给本机 `AccessClient.exe`**（`lib/h3c-client.js` 纯函数 + `h3cClient:detect` + `app:openExternal` 的 `accessclient:` 分支，**分支提前且不过 `new URL()`**）。没装客户端 → 提示缺 AccessClient + 浏览器直达，不发无效请求。见 `docs/decision-rdp-support.md`、`docs/release-v1.0.19.md`
 - 左侧列表显示未登录的 JMS 服务器；默认折叠分组；webview 焦点不抢占终端
 

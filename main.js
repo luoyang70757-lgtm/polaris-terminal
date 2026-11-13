@@ -16,6 +16,8 @@ const os = require('os'); // 数据目录回退路径(POLARIS_LOCK_DIR 未设时
 const { spawn, execFile } = require('child_process'); // 拉起外部程序(WinSCP 外链 / H3C 客户端探测)
 const winScp = require('./lib/winscp-open'); // WinSCP 外链(纯函数:探测安装位置/拼会话 URL 与参数)
 const h3cClient = require('./lib/h3c-client'); // H3C AccessClient 透传(纯函数:accessclient:// 校验/注册表探测)
+const sftpAttrs = require('./lib/sftp-attrs'); // SFTP 权限/属主/时间戳(纯函数:八进制校验、符号串、时间串)
+const sftpThrottle = require('./lib/sftp-throttle'); // 传输限速(纯函数速率换算 + 节流 Transform)
 
 // 执行一个外部命令并拿 {code, stdout}(探测注册表之类的一次性短命令,超时兜底)
 function execFileP(file, args) {
@@ -2322,6 +2324,148 @@ ipcMain.handle('sftp:rename', async (_e, { sessionId, from, to }) => {
     resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
     return { ok: false, error: err.message };
   }
+});
+
+// ---- SFTP 权限 / 属主 / 时间戳 ----
+// 读单个远端条目的完整属性(面板列表只给了 size/mtime,改权限要先知道 mode/uid/gid)
+const SFTP_STAT_TIMEOUT = 20000;
+ipcMain.handle('sftp:stat', async (_e, { sessionId, remotePath }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    const st = await new Promise((resolve, reject) => {
+      let done = false;
+      const to = setTimeout(() => {
+        if (done) return;
+        done = true;
+        reject(new Error('读取属性超时(20s)'));
+      }, SFTP_STAT_TIMEOUT);
+      sftp.stat(remotePath, (err, a) => {
+        if (done) return;
+        done = true; clearTimeout(to);
+        err ? reject(err) : resolve(a);
+      });
+    });
+    const isDir = typeof st.isDirectory === 'function' ? st.isDirectory() : (st.mode & 0o170000) === 0o040000;
+    const mode = typeof st.mode === 'number' ? st.mode : 0;
+    return {
+      ok: true,
+      stat: {
+        mode, modeOctal: sftpAttrs.formatMode(mode), symbolic: sftpAttrs.modeToSymbolic(mode, isDir),
+        uid: typeof st.uid === 'number' ? st.uid : 0,
+        gid: typeof st.gid === 'number' ? st.gid : 0,
+        size: st.size || 0,
+        isDir,
+        atime: st.atime || 0,
+        mtime: st.mtime || 0,
+        mtimeLocal: sftpAttrs.toDatetimeLocal(st.mtime || 0),
+      },
+    };
+  } catch (err) {
+    resetSftpIfBroken(sessionId, err); // General failure → 连接已坏,下次自动重建
+    return { ok: false, error: err.message };
+  }
+});
+
+// 递归列出 root 下所有条目(只用于"递归改权限";路径串,不碰本地目录)
+const SFTP_ATTRS_RECURSE_MAX = 20000; // 上限:防止误点递归把几万条一起 chmod,把通道拖死
+function walkRemotePaths(sftp, root) {
+  return new Promise((resolve) => {
+    const out = [];
+    let truncated = false;
+    const readdir = (dir) => new Promise((res, rej) => sftp.readdir(dir, (e, l) => (e ? rej(e) : res(l || []))));
+    (async () => {
+      const stack = [root];
+      while (stack.length) {
+        const dir = stack.pop();
+        let items;
+        try { items = await readdir(dir); } catch { continue; } // 读不进的子目录跳过,不影响其它
+        for (const it of items) {
+          if (out.length >= SFTP_ATTRS_RECURSE_MAX) { truncated = true; stack.length = 0; break; }
+          const p = joinRemote(dir, it.filename);
+          const isDir = !!it.attrs.isDirectory();
+          out.push({ path: p, isDir });
+          // 符号链接不当目录递归(否则可能绕成环)
+          if (isDir && !(it.attrs.isSymbolicLink && it.attrs.isSymbolicLink())) stack.push(p);
+        }
+      }
+    })().then(() => resolve({ paths: out, truncated }));
+  });
+}
+
+// 改权限 / 属主 / 修改时间。patch 由渲染层的对话框收集,这里用 lib/sftp-attrs 复核一遍
+// (对话框不是唯一的调用入口,主进程不能信"前端已经校验过")。
+// 顺序:chown → chmod → utimes。chown 会清掉 setuid/setgid 位,先 chown 再 chmod 才不会白改。
+ipcMain.handle('sftp:setAttrs', async (_e, { sessionId, remotePath, patch, recursive }) => {
+  try {
+    const sftp = await getSftp(sessionId);
+    // 复核数值范围(渲染层传的是数字,但 IPC 不是只有对话框能调):lib 是唯一校验源
+    const v = sftpAttrs.validatePatch(patch);
+    if (!v.ok) return { ok: false, error: v.errors.join(';') };
+    if (v.empty) return { ok: false, error: '没有要修改的项目' };
+    const p = v.patch;
+    const statP = (rp) => new Promise((res) => sftp.stat(rp, (e, a) => res(e ? null : a)));
+    const chmodP = (rp, mode) => new Promise((res, rej) => sftp.chmod(rp, mode, (e) => (e ? rej(e) : res())));
+    const chownP = (rp, uid, gid) => new Promise((res, rej) => sftp.chown(rp, uid, gid, (e) => (e ? rej(e) : res())));
+    const utimesP = (rp, at, mt) => new Promise((res, rej) => sftp.utimes(rp, at, mt, (e) => (e ? rej(e) : res())));
+
+    // 目标清单:递归时先列子项(根自己也算一条)
+    const targets = [{ path: remotePath, isDir: true }];
+    let truncated = false;
+    let rootIsDir = true;
+    const rootStat = await statP(remotePath);
+    if (rootStat) rootIsDir = typeof rootStat.isDirectory === 'function' ? rootStat.isDirectory() : true;
+    targets[0].isDir = rootIsDir;
+    if (recursive && rootIsDir) {
+      const w = await walkRemotePaths(sftp, remotePath);
+      targets.push(...w.paths);
+      truncated = w.truncated;
+    }
+    if (recursive && !rootIsDir) {
+      // 单文件勾了递归:忽略(调用方界面里已经禁用了这个勾,这里再兜一层)
+      recursive = false;
+    }
+
+    const errors = [];
+    let applied = 0;
+    for (const t of targets) {
+      try {
+        let st = null;
+        if (typeof p.uid === 'number' || typeof p.gid === 'number') {
+          st = t.path === remotePath ? rootStat : await statP(t.path);
+          // ssh2 的 chown 要求同时给 uid 与 gid:只改一个时,另一个用当前值回填
+          const uid = typeof p.uid === 'number' ? p.uid : (st && typeof st.uid === 'number' ? st.uid : 0);
+          const gid = typeof p.gid === 'number' ? p.gid : (st && typeof st.gid === 'number' ? st.gid : 0);
+          await chownP(t.path, uid, gid);
+        }
+        if (typeof p.mode === 'number') await chmodP(t.path, p.mode);
+        if (typeof p.mtime === 'number') {
+          // atime 没让用户改 → 跟 mtime 一致(多数场景就是"保持访问时间和修改时间同步")
+          st = st || (t.path === remotePath ? rootStat : await statP(t.path));
+          const atime = typeof p.atime === 'number' ? p.atime : (st && typeof st.atime === 'number' && st.atime > 0 ? st.atime : p.mtime);
+          await utimesP(t.path, atime, p.mtime);
+        }
+        applied++;
+      } catch (err) {
+        errors.push(`${t.path}: ${err.message}`);
+        if (errors.length >= 10) break; // 报前 10 条,后面都是同一个原因(权限不足等)
+      }
+    }
+    if (errors.length) {
+      try { __sftpLog('setAttrs 部分失败', { sessionId, path: remotePath, applied, failed: errors.length, first: errors[0] }); } catch { /* ignore */ }
+    }
+    return { ok: errors.length === 0, applied, total: targets.length, errors, truncated, text: sftpAttrs.describePatch(p) };
+  } catch (err) {
+    resetSftpIfBroken(sessionId, err);
+    return { ok: false, error: err.message };
+  }
+});
+
+// 传输限速(设置项 → 全部 upload/download 生效)。入参是 KB/s,0 = 不限。
+ipcMain.handle('sftp:setTransferLimit', (_e, kbps) => {
+  const bytesPerSec = sftpThrottle.normalizeRate(kbps);
+  const eff = sshClient.setTransferRate(bytesPerSec);
+  try { console.log(`[SFTP] 传输限速 = ${sftpThrottle.describeRate(eff)}`); } catch { /* ignore */ }
+  return { ok: true, bytesPerSec: eff, text: sftpThrottle.describeRate(eff) };
 });
 
 // 上传:弹出系统对话框选本地文件 → fastPut 到远程
