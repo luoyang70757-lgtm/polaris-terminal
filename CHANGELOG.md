@@ -1,5 +1,14 @@
 # 更新日志
 
+## v1.0.19（2026-11-13）
+
+- **RDP / 存储 Web 资产：双击直接交给 H3C 客户端打开（方案 A 落地）**（v1.0.18 只做到"识别出非 SSH 资产并提示去网页开"，这一版把双击之后那一步补上）：H3C 的 RDP/Web 资产本来就是靠 `AccessClient.exe` 拉起 mstsc / 浏览器 —— 真实 HAR 里 RDP 的 `accessUrl` token 解出来就是一份 mstsc 启动配置（`{"app":"mstsc","fa":"s:<网关>:3389","sa":"super","as":"…OTP:…"}`，**没有 `pw`/`hn`/`pn`**）。所以 Polaris **不做 RDP 协议栈**，把堡垒机签发的 `accessclient://<token>` **原样交给本机已装的客户端**（`docs/decision-rdp-support.md` 结论：纯 JS RDP 库 `node-rdpjs`/`mstsc.js` 是 AGPL v3.0 → 排除；FreeRDP 只发源码、IronRDP 要 Rust 工具链 + 4~8 周）。
+  - **新增 `lib/h3c-client.js`（纯函数）**：`isAccessClientUrl` 只放行 `accessclient://` + urlsafe base64 字符集（挡掉 http/file/javascript、空格/引号/换行注入、>8KB）、`detectPlan`（Windows 用 `%SystemRoot%\System32\reg.exe` 绝对路径查 `HKCR\accessclient` 的 `URL Protocol`，非 Windows 返回 `supported:false`）、`parseDetect/parseHandler/handlerBasename`、`openTarget`（**返回原样字符串，不做规范化**）。
+  - **主进程**：新增 `h3cClient:detect` IPC（探测失败也是 `{ok:true, installed:false}`，不报错）；**`app:openExternal` 新增 `accessclient:` 分支且放在 http/https 白名单之前**——自定义 scheme **不能过 `new URL()`**（token 里的 `+` `/` `=` `%` 会被重编码，`zlib.inflateSync` 会报 `unexpected end of file`）；新增 `execFileP()`（8s 超时/1MB 上限、不经 shell）只用于注册表探测。
+  - **渲染层**：`state.h3cClient` + 启动 `detectH3cClient()`（失败静默回落"未装"，功能降级不消失）；新增 `bastionConnectNonSsh()`（**装了才请求 accessUrl**，带真实 `proto` + `handoff:'accessclient'` 日志；没装/没登录记 `accessUrl-skip` 并给可读提示，绝不发无效请求）与 `bastionOpenAccessClient()`（走唯一外链出口 `openExternalUrl`，失败**状态栏改红 + 弹窗写原因**，不冒充成功）；新增纯函数 `bastionNonSshEntry()` 统一入口文案（右键首项 + 行 `title`）；`bastionUnsupportedAssetMsg(a,{clientMissing})` 补「缺 AccessClient.exe + 安装指引」；`handleAccessClientUrl` 的 `graphic` 分支复用同一套透传；`isOpenableUrl()` 显式放行 `accessclient://`。
+  - **安全边界**：不分发 H3C 闭源二进制（只借用用户已装的，`POLARIS_H3C_CLIENT=1` 仅为回归钩子）；白名单仍只有 `accessclient://`（`file://`/`javascript:` 拒绝）；非 Windows 完全无感；日志只记 `tokenLen`/`app`/`sn`，不含 token 正文。
+  - 回归：新增 `verify-h3c-client.js`（纯 Node，**30/30**：11 组非法输入/探测解析/`openTarget` 原样透传/接线顺序断言）+ `verify-bastion-client-open.js`（e2e，**17/17**：detect→state→行文案→**透传地址逐字节一致**→失败不冒充成功→未装记 `accessUrl-skip`→主进程白名单）；`verify-bastion-proto.js` **29 → 35**（新增"装了/没装"两套入口文案 + Web 同入口 + 安装指引）；`verify-bastion-har.js` 10/10（`-5.har`）；`run-verify --pure` **15/15 脚本 200 断言**（原 14/164）；`verify-bastion-ui` 11/11、`verify-bastion-browser-ui` 9/9、`verify-term-links` 28/28 无退化。发布说明 `docs/release-v1.0.19.md`。
+
 ## v1.0.18（2026-11-13）
 
 - **H3C 堡垒机：分得清 RDP / Web 资产，不再当 SSH 连**（对照用户给的真实流量 `10.204.240.4-5.har` 发现）：H3C 资产 `dev.services.services` 的键**就是协议名**，实测有 `ssh` / `rdp` / `Device_Storage_web` 三类；旧代码只认 `ssh`/`sftp`，其余一律当 `ssh`。

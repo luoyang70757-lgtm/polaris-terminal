@@ -36,13 +36,13 @@ const BLOCK = SRC.slice(s, e);
 let F;
 try {
   F = new Function(
-    BLOCK + '\nreturn { bastionParseDevs, bastionAssetProtos, bastionAssetSupportsSsh, bastionProtoLabels, bastionUnsupportedAssetMsg, accessClientSessionKind };'
+    BLOCK + '\nreturn { bastionParseDevs, bastionAssetProtos, bastionAssetSupportsSsh, bastionProtoLabels, bastionUnsupportedAssetMsg, bastionNonSshEntry, accessClientSessionKind };'
   )();
 } catch (err) {
   console.error('  ✗ 区块无法求值: ' + err.message);
   process.exit(1);
 }
-const { bastionParseDevs, bastionAssetSupportsSsh, bastionProtoLabels, bastionUnsupportedAssetMsg, accessClientSessionKind } = F;
+const { bastionParseDevs, bastionAssetSupportsSsh, bastionProtoLabels, bastionUnsupportedAssetMsg, bastionNonSshEntry, accessClientSessionKind } = F;
 
 console.log('\n=== H3C 资产协议识别(RDP/Web 不能当 SSH 连) ===\n');
 
@@ -195,6 +195,32 @@ const devOf = (services, extra) => Object.assign({
       else bad('⑨ 非 SSH 资产没有协议标签', [...labels].join('/'));
     }
   }
+}
+
+// ⑩ 非 SSH 资产入口文案:装了 H3C 客户端 → 直接打开;没装 → 查看说明(v1.0.19)
+{
+  const rdp = bastionParseDevs(content(devOf({ rdp: { port: 3389 } }, { id: 5005, name: 'win-rdp' })), ['IDC'])[0];
+  const withClient = bastionNonSshEntry(rdp, true);
+  if (withClient && /用堡垒机客户端打开/.test(withClient.menu) && /RDP/.test(withClient.menu)) ok('⑩ 装了客户端 → 菜单项「用堡垒机客户端打开(RDP)」');
+  else bad('⑩ 装了客户端时的菜单项不对', JSON.stringify(withClient));
+  if (withClient && withClient.menu.indexOf('点此查看说明') === -1) ok('⑩ 装了客户端不再出现「查看说明」');
+  else bad('⑩ 装了客户端仍提示查看说明');
+  if (withClient && /H3C 客户端/.test(withClient.title)) ok('⑩ 悬浮提示写明「用 H3C 客户端打开」');
+  else bad('⑩ 悬浮提示没提客户端', withClient && withClient.title);
+
+  const noClient = bastionNonSshEntry(rdp, false);
+  if (noClient && /点此查看说明/.test(noClient.menu) && noClient.menu.indexOf('用堡垒机客户端打开') === -1) ok('⑩ 没装客户端 → 保持「查看说明」');
+  else bad('⑩ 没装客户端时的菜单项不对', JSON.stringify(noClient));
+
+  const webAsset = bastionParseDevs(content(devOf({ Device_Storage_web: { url: 'https://10.0.0.9:8088' } }, { id: 6006 })), ['IDC'])[0];
+  const webEntry = bastionNonSshEntry(webAsset, true);
+  if (/Web/.test(webEntry.menu)) ok('⑩ Web 资产也走同一个入口(标签=Web)');
+  else bad('⑩ Web 资产入口标签不对', JSON.stringify(webEntry));
+
+  // 失败/未装时的提示补一句「本机没有客户端」,避免用户以为是密码问题
+  const msgMissing = bastionUnsupportedAssetMsg(rdp, { clientMissing: true });
+  if (/AccessClient/.test(msgMissing) && /安装/.test(msgMissing)) ok('⑩ 未装客户端时提示指出缺 AccessClient 并给安装指引');
+  else bad('⑩ 未装客户端提示缺指引', msgMissing);
 }
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);

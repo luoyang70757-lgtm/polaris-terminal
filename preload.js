@@ -176,6 +176,7 @@ contextBridge.exposeInMainWorld('api', {
   readClipboard: () => clipboard.readText(),
 
   // ---- 用 WinSCP 打开 SFTP 会话(Windows 可选:本机装了 WinSCP 才可用) ----
+  h3cClientDetect: () => ipcRenderer.invoke('h3cClient:detect'), // H3C AccessClient(accessclient://)是否已装
   winScpDetect: () => ipcRenderer.invoke('winScp:detect'),
   winScpOpen: (payload) => ipcRenderer.invoke('winScp:open', payload),
 

@@ -680,6 +680,7 @@ const state = {
     bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
   winScp: { installed: false, path: '' }, // 本机 WinSCP 探测结果(winScp:detect IPC;没装则不显示入口)
+  h3cClient: { installed: false, handler: '', supported: false }, // H3C AccessClient 探测结果(accessclient://;没装则非 SSH 资产只给说明)
   jmsServers: [],   // JumpServer 服务器列表: [{ id, name, baseUrl, sshHost, sshPort, account, password, token, user, assets, seq }]
   jmsActiveId: null, // 当前正在管理/登录的服务器 id
   jmsSeq: 0,         // 合成会话 id 全局计数器
@@ -6255,11 +6256,23 @@ function bastionProtoLabels(a) {
   return out;
 }
 // 非 SSH 资产的说明文案(告诉用户为什么点不动、替代路径是什么)
-function bastionUnsupportedAssetMsg(a) {
+function bastionUnsupportedAssetMsg(a, opts) {
+  const o = opts || {};
   const labels = bastionProtoLabels(a).join('/') || '非 SSH';
-  const base = `「${a && a.name || ''}」是通过 ${labels} 接入的资产,Polaris 只能打开 SSH/SFTP 终端。`;
-  if (a && a.webUrl) return `${base}\n可以在右键菜单「🌐 用系统浏览器打开」里直接访问: ${a.webUrl}`;
-  return `${base}\n请在 H3C 堡垒机网页里打开它。`;
+  const lines = [`「${a && a.name || ''}」是通过 ${labels} 接入的资产,Polaris 只能打开 SSH/SFTP 终端。`];
+  if (o.clientMissing) {
+    lines.push('本机没有检测到 H3C 堡垒机客户端(AccessClient.exe),没法直接把这类会话交给它;可以先在 H3C 控制台页面安装,再回来双击打开。');
+  }
+  if (a && a.webUrl) lines.push(`也可以在右键菜单「🌐 用系统浏览器打开」里直接访问: ${a.webUrl}`);
+  else lines.push('请在 H3C 堡垒机网页里打开它。');
+  return lines.join('\n');
+}
+// 非 SSH 资产的入口文案(装了 H3C 客户端 = 直接交给它打开;没装 = 查看说明)
+function bastionNonSshEntry(a, clientInstalled) {
+  const labels = bastionProtoLabels(a).join('/') || '非 SSH';
+  return clientInstalled
+    ? { menu: `🖥 用堡垒机客户端打开(${labels})`, title: `用 H3C 客户端打开(${labels})` }
+    : { menu: `ℹ️ 非 SSH 资产(${labels}),点此查看说明`, title: `查看说明(${labels} 资产)` };
 }
 // accessclient token 类型:ssh(可接管) / graphic(RDP、VNC 等图形客户端) / incomplete
 // 真实 HAR(10.204.240.4-5.har)里 RDP token 形如 {app:'mstsc', fa:'网关:3389', as:'…OTP:…'},
@@ -6962,7 +6975,9 @@ function makeBastionAssetItem(a) {
   const protoLabels = bastionProtoLabels(a);
   item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '') + (sshOk ? '' : ' asset-nonssh');
   const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
-  item.title = `双击${sshOk ? '连 SSH' : '查看说明(RDP/Web 资产)'} → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}${sshOk ? '' : '\n协议: ' + protoLabels.join('/') + '(Polaris 只能打开 SSH/SFTP 终端)'}`;
+  // 非 SSH 资产的入口文案跟着「本机有没有 H3C 客户端」走(装了 = 交给它打开)
+  const nonSshEntry = bastionNonSshEntry(a, state.h3cClient.installed);
+  item.title = `双击${sshOk ? '连 SSH' : nonSshEntry.title} → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}${sshOk ? '' : '\n协议: ' + protoLabels.join('/') + (state.h3cClient.installed ? '(交给 H3C 客户端打开)' : '(Polaris 只能打开 SSH/SFTP 终端)')}`;
   const icon = document.createElement('span');
   icon.className = 'icon';
   icon.textContent = a.favorite ? '⭐' : '🖥';
@@ -6988,7 +7003,7 @@ function makeBastionAssetItem(a) {
     e.preventDefault();
     const items = sshOk
       ? [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }]
-      : [{ label: `ℹ️ 非 SSH 资产(${protoLabels.join('/')}),点此查看说明`, action: () => bastionConnect(a) }];
+      : [{ label: nonSshEntry.menu, action: () => bastionConnect(a) }];
     const accts = (a.accounts || []).filter(Boolean);
     if (sshOk && accts.length > 1) {
       items.push({ label: '账号', separatorLabel: true });
@@ -6996,7 +7011,7 @@ function makeBastionAssetItem(a) {
     }
     if (a.webUrl) {
       items.push({ separator: true });
-      items.push({ label: '🌐 用系统浏览器打开', action: () => window.api.openExternal(a.webUrl).catch(() => {}) });
+      items.push({ label: '🌐 用系统浏览器打开', action: () => openExternalUrl(a.webUrl) });
     }
     if (sshOk) {
       items.push({ separator: true });
@@ -7722,14 +7737,10 @@ function renderBastionInSessionList(container, f) {
 async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   const dev = asset.devId || asset.id || '';
   if (!dev) { alert('该资产缺少设备 ID,无法发起连接'); return; }
-  // 非 SSH 资产(RDP / 存储 Web 客户端)在终端里根本打不开:直接给可读提示,
-  // 不拿 proto='ssh' 去请求 accessUrl(那会在堡垒机侧留一条失败访问记录,前端也只能
-  // 报「连接信息不完整」)。
-  if (!bastionAssetSupportsSsh(asset)) {
-    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols: bastionAssetProtos(asset).join(',') });
-    alert(bastionUnsupportedAssetMsg(asset));
-    return;
-  }
+  // 非 SSH 资产(RDP / 存储 Web 客户端)在终端里根本打不开:装了就交给 H3C 客户端,
+  // 没装就给可读提示 —— 都**不拿 proto='ssh' 去请求 accessUrl**(那会在堡垒机侧留一条
+  // 失败访问记录,前端也只能报「连接信息不完整」)。
+  if (!bastionAssetSupportsSsh(asset)) { bastionConnectNonSsh(asset, accountName); return; }
   const baseUrl = bastionNativeBaseUrl();
   if (!baseUrl) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)'); openBastionPanel(); return; }
   const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
@@ -7754,6 +7765,69 @@ async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   }
   bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, token: url.slice(0, 60) + '…' });
   handleAccessClientUrl(url, openSftp, dev, opts);
+}
+
+// 非 SSH 资产(RDP / 存储 Web):把堡垒机签发的 accessclient:// 会话原样交给本机
+// H3C 客户端(AccessClient.exe 注册的 URL scheme 会拉起 mstsc / 浏览器)。
+// 见 docs/decision-rdp-support.md:v1.0.19 取「不自己实现 RDP 协议栈,只做会话透传」。
+async function bastionConnectNonSsh(asset, accountName) {
+  const dev = asset.devId || asset.id || '';
+  const protocols = bastionAssetProtos(asset).join(',');
+  if (!state.h3cClient.installed) {
+    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols, reason: 'no-h3c-client' });
+    alert(bastionUnsupportedAssetMsg(asset, { clientMissing: true }));
+    return;
+  }
+  const baseUrl = bastionNativeBaseUrl();
+  if (!baseUrl) {
+    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols, reason: 'no-bastion-base' });
+    alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)');
+    openBastionPanel();
+    return;
+  }
+  const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
+  const proto = asset.proto || (asset.protocols && asset.protocols[0]) || 'ssh';
+  bastionLog({ ev: 'accessUrl-req', asset: asset.name, dev, account, proto, baseUrl, handoff: 'accessclient' });
+  setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
+  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto }).catch((e) => ({ ok: false, error: e && e.message }));
+  bastionLog({ ev: 'accessUrl-res', asset: asset.name, ok: !!(r && r.ok), needLogin: !!(r && r.needLogin), status: r && r.status, error: r && r.error });
+  if (!r || !r.ok) {
+    if (r && r.needLogin) {
+      bastionHandleLoginSignal(r);
+      alert('堡垒机未返回连接信息(可能已退出登录),请先在控制台重新登录');
+    } else {
+      alert('请求堡垒机连接失败: ' + ((r && r.error) || '未知错误'));
+    }
+    return;
+  }
+  const url = String((r.data && r.data.url) || '');
+  if (url.indexOf('accessclient://') !== 0) {
+    bastionLog({ ev: 'accessUrl-bad', asset: asset.name, protocols });
+    alert('堡垒机未返回有效的客户端地址');
+    return;
+  }
+  bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, proto, tokenLen: url.length, handoff: 'accessclient' });
+  bastionOpenAccessClient(url, asset);
+}
+
+// 把 accessclient:// 交出去(openExternalUrl 是渲染层唯一外链出口,测试可替换它断言传了什么)
+async function bastionOpenAccessClient(acUrl, asset) {
+  const name = (asset && asset.name) || '';
+  bastionLog({ ev: 'accessclient-open', asset: name, tokenLen: String(acUrl || '').length });
+  const res = await openExternalUrl(acUrl);
+  // openExternalUrl 正常返回 boolean;回归脚本会把它替换成返回 {ok} 的桩,两种都认
+  const okOpen = !!(res && (typeof res === 'object' ? res.ok : res));
+  if (okOpen) {
+    setStatus(`已交给 H3C 客户端打开${name ? '「' + name + '」' : ''}(RDP/Web 会话不在终端里)`, 'var(--green)');
+    return true;
+  }
+  const reason = (res && typeof res === 'object' && res.error) || state.lastOpenExternalError || '未知错误';
+  bastionLog({ ev: 'accessclient-open-fail', asset: name, reason });
+  // 失败不能静默:状态栏也改回失败,避免上一句成功文案留在那里误导
+  setStatus('交给 H3C 客户端失败: ' + reason, 'var(--red)');
+  alert('打开 H3C 客户端失败: ' + reason +
+    '\n没装 H3C 堡垒机客户端(AccessClient.exe)?可以在 H3C 控制台页面安装,或改用右键「🌐 用系统浏览器打开」。');
+  return false;
 }
 
 // 断开该 H3C 资产已打开的连接(标签保留,显示"已断开")
@@ -7895,6 +7969,11 @@ async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   if (kind.kind !== 'ssh') {
     bastionLog({ ev: 'token-not-ssh', kind: kind.kind, app: kind.app, fa: info && info.fa, sn: info && info.sn, st: info && info.st });
     if (kind.kind === 'graphic') {
+      // 装了 H3C 客户端就直接把这枚 token 交出去(RDP/Web 会话一次性覆盖);没装才只剩说明
+      if (state.h3cClient.installed) {
+        const okHand = await bastionOpenAccessClient(acUrl, { name: (info && (info.sn || info.st)) || '' });
+        if (okHand) return;
+      }
       alert(`这个会话是 H3C「${kind.app || '图形客户端'}」接入(RDP/VNC 等图形会话),` +
         'Polaris 只能打开 SSH/SFTP 终端,无法接管。\n请在 H3C 堡垒机网页里打开它。');
     } else {
@@ -9792,21 +9871,32 @@ function extractTermUrls(text) {
 }
 // URL 是否允许打开(与主进程 app:openExternal 的白名单保持一致)
 function isOpenableUrl(u) {
+  const raw = String(u || '').trim();
+  // H3C 客户端协议(v1.0.19):不能交给 new URL() 判定(自定义 scheme 的 token 会被重新编码),
+  // 合法性由主进程 lib/h3c-client.js 用同一套正则复核。
+  if (raw.toLowerCase().indexOf('accessclient://') === 0) return true;
   try {
-    const p = new URL(String(u || '')).protocol;
+    const p = new URL(raw).protocol;
     return p === 'http:' || p === 'https:';
   } catch { return false; }
 }
-// 打开外链:统一走主进程 IPC(http/https 白名单在那边再校验一次)
+// 打开外链:统一走主进程 IPC(http/https / accessclient 白名单在那边再校验一次)
 async function openExternalUrl(url) {
+  const isH3cClient = String(url || '').trim().toLowerCase().indexOf('accessclient://') === 0;
   if (!isOpenableUrl(url)) { setStatus('只支持打开 http/https 链接', 'var(--orange)'); return false; }
   try {
     const res = await window.api.openExternal(url);
-    if (!res || !res.ok) { setStatus('打开浏览器失败: ' + ((res && res.error) || '未知错误'), 'var(--red)'); return false; }
-    setStatus('已在系统浏览器打开:' + url, 'var(--green)');
+    if (!res || !res.ok) {
+      state.lastOpenExternalError = (res && res.error) || '未知错误';
+      setStatus((isH3cClient ? '交给 H3C 客户端失败: ' : '打开浏览器失败: ') + state.lastOpenExternalError, 'var(--red)');
+      return false;
+    }
+    state.lastOpenExternalError = '';
+    setStatus(isH3cClient ? '已交给 H3C 客户端打开' : '已在系统浏览器打开:' + url, 'var(--green)');
     return true;
   } catch (e) {
-    setStatus('打开浏览器失败: ' + ((e && e.message) || e), 'var(--red)');
+    state.lastOpenExternalError = (e && e.message) || String(e);
+    setStatus('打开浏览器失败: ' + state.lastOpenExternalError, 'var(--red)');
     return false;
   }
 }
@@ -10214,6 +10304,21 @@ async function detectWinScp() {
   state.winScp = { installed: !!(r && r.ok && r.installed), path: (r && r.path) || '' };
   refreshWinScpButton();
   return state.winScp;
+}
+
+// 探测本机是否装了 H3C 堡垒机客户端(AccessClient.exe)。装了才把 RDP/存储 Web 资产交给它
+// (accessclient:// 透传);没装则列表里只给说明 + 浏览器直达,不请求 accessUrl。
+async function detectH3cClient() {
+  let r = null;
+  try { r = await window.api.h3cClientDetect(); } catch { r = null; }
+  state.h3cClient = {
+    installed: !!(r && r.ok && r.installed),
+    handler: (r && r.handler) || '',
+    supported: !!(r && r.supported),
+  };
+  // 资产行的提示/右键文案依赖它,探测完重画一次列表(探测失败也只是回落到"查看说明")
+  try { renderSessionList(); } catch { /* 列表还没就绪 */ }
+  return state.h3cClient;
 }
 
 // 取某个标签页会话的连接参数(给 WinSCP 用)。注意堡垒机会话:
@@ -11923,6 +12028,8 @@ els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
 els.btnSftpWinScp.addEventListener('click', () => openSessionInWinScp(state.sftp.sessionId || state.activeSessionId));
 // 启动时探测一次本机有没有装 WinSCP(决定所有入口显不显示)
 detectWinScp();
+// 启动时探测一次 H3C 客户端(决定非 SSH 资产双击是"交给客户端打开"还是"查看说明")
+detectH3cClient();
 // SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
 els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
 document.addEventListener('click', (e) => {

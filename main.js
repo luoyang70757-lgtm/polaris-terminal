@@ -13,8 +13,21 @@ const path = require('path');
 const fs = require('fs'); // 读私钥、写导出文件等
 const net = require('net'); // 堡垒机连通性探测(bastion:probe)
 const os = require('os'); // 数据目录回退路径(POLARIS_LOCK_DIR 未设时)
-const { spawn } = require('child_process'); // 拉起外部程序(用 WinSCP 打开 SFTP 会话)
+const { spawn, execFile } = require('child_process'); // 拉起外部程序(WinSCP 外链 / H3C 客户端探测)
 const winScp = require('./lib/winscp-open'); // WinSCP 外链(纯函数:探测安装位置/拼会话 URL 与参数)
+const h3cClient = require('./lib/h3c-client'); // H3C AccessClient 透传(纯函数:accessclient:// 校验/注册表探测)
+
+// 执行一个外部命令并拿 {code, stdout}(探测注册表之类的一次性短命令,超时兜底)
+function execFileP(file, args) {
+  return new Promise((resolve) => {
+    try {
+      execFile(file, args, { encoding: 'utf8', timeout: 8000, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+        resolve({ code, stdout: stdout || '' });
+      });
+    } catch (e) { resolve({ code: 1, stdout: '', error: e && e.message }); }
+  });
+}
 
 // ---------- 便携版数据目录(必须在任何模块读写数据目录之前确定) ----------
 // 便携版(PORTABLE_EXECUTABLE_DIR 由 electron-builder portable 运行时注入,= exe 所在目录):
@@ -634,6 +647,29 @@ ipcMain.handle('h3c:tree',      h3cHandle((baseUrl) => h3cApi.getTree(baseUrl)))
 ipcMain.handle('h3c:devs',      h3cHandle(({ baseUrl, paths, page }) => h3cApi.getDevs(baseUrl, paths, page)));
 ipcMain.handle('h3c:recent',    h3cHandle(({ baseUrl, page }) => h3cApi.getRecent(baseUrl, page)));
 ipcMain.handle('h3c:accessUrl', h3cHandle(({ baseUrl, dev, account, proto }) => h3cApi.accessUrl(baseUrl, { dev, account, proto })));
+
+// 本机有没有装 H3C 堡垒机客户端(AccessClient.exe)?装了才把 RDP/Web 资产交给它打开。
+// 判定方式是查注册表 HKCR\accessclient 的 "URL Protocol"(该程序安装时注册 accessclient:// scheme)。
+// POLARIS_H3C_CLIENT=1 是回归钩子:让 macOS/Linux 也能跑「已安装」这条链路(见 verify-bastion-client-open.js)。
+ipcMain.handle('h3cClient:detect', async () => {
+  if (process.env.POLARIS_H3C_CLIENT === '1') {
+    return { ok: true, installed: true, supported: true, platform: process.platform, handler: 'AccessClient.exe', forced: true };
+  }
+  const plan = h3cClient.detectPlan(process.platform, process.env);
+  if (!plan.supported) return { ok: true, installed: false, supported: false, platform: process.platform, reason: plan.reason };
+  try {
+    const probe = await execFileP(plan.file, plan.args);
+    const installed = h3cClient.parseDetect({ platform: process.platform, code: probe.code, stdout: probe.stdout });
+    let handler = '';
+    if (installed && plan.commandArgs) {
+      const cmd = await execFileP(plan.file, plan.commandArgs);
+      handler = h3cClient.handlerBasename(h3cClient.parseHandler(cmd.stdout));
+    }
+    return { ok: true, installed, supported: true, platform: process.platform, handler };
+  } catch (err) {
+    return { ok: false, installed: false, supported: true, platform: process.platform, error: err.message };
+  }
+});
 
 ipcMain.handle('bastion:decode', (_e, url) => {
   try {
@@ -2819,7 +2855,20 @@ ipcMain.handle('app:openRelease', async (_e, url) => {
 // 通用外部链接(堡垒机「在系统浏览器打开」、终端 Cmd/Ctrl+点击链接):只允许 http/https
 ipcMain.handle('app:openExternal', async (_e, url) => {
   try {
-    const u = new URL(String(url || ''));
+    const raw = String(url || '').trim();
+    // ① H3C 堡垒机客户端协议(v1.0.19):把堡垒机签发的 accessclient://<token> 原样交给
+    //    Windows 上注册的 AccessClient.exe,由它拉起 mstsc / 浏览器(RDP、存储 Web 资产)。
+    //    必须放在 http/https 白名单**之前**且**不做 URL 规范化**:token 里的 + / = % 过一遍
+    //    new URL() 会被重编码,主进程解码就失败。
+    if (raw.toLowerCase().indexOf('accessclient:') === 0) {
+      if (!h3cClient.isAccessClientUrl(raw)) return { ok: false, error: '连接凭证格式不正确(accessclient)' };
+      if (process.env.POLARIS_TEST_NO_EXTERNAL === '1') return { ok: true, skipped: true };
+      const plan = h3cClient.openTarget(process.platform, raw);
+      if (!plan.ok) return { ok: false, error: plan.error };
+      await shell.openExternal(plan.url);
+      return { ok: true };
+    }
+    const u = new URL(raw);
     if (!/^https?:$/.test(u.protocol)) return { ok: false, error: '仅支持 http/https 地址' };
     // 测试钩子:回归用例要断言"点了什么 URL",但不该真的弹出浏览器(v1.0.9)
     if (process.env.POLARIS_TEST_NO_EXTERNAL === '1') return { ok: true, skipped: true };
