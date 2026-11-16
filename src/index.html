@@ -165,7 +165,8 @@
         </div>
         <div class="bastion-bar">
           <select id="bastion-server-select" class="select bastion-server-select" title="已保存的堡垒机,选一个加载"></select>
-          <span class="bastion-nav" title="浏览导航(可拖左侧分隔条调面板宽度)">
+          <!-- 导航按钮已收进「⋯」菜单(保留 DOM/ID:回归脚本与快捷键仍可直接调用) -->
+          <span class="bastion-nav bastion-hidden-tools" aria-hidden="true">
             <button id="bastion-back" class="btn-mini" title="后退">←</button>
             <button id="bastion-forward" class="btn-mini" title="前进">→</button>
             <button id="bastion-reload" class="btn-mini" title="刷新">↻</button>
@@ -174,7 +175,8 @@
             <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://h3c-bastion.example" />
             <button id="bastion-go" class="btn-mini" title="打开堡垒机">打开</button>
           </div>
-          <span class="bastion-zoom" title="画面缩放(双击百分比恢复 100%)">
+          <!-- 缩放已收进「⋯」菜单(保留 DOM/ID:双击百分比重置的回归脚本仍可用) -->
+          <span class="bastion-zoom bastion-hidden-tools" title="画面缩放(双击百分比恢复 100%)" aria-hidden="true">
             <button id="bastion-zoom-out" class="btn-mini" title="缩小画面">A−</button>
             <span id="bastion-zoom-label" class="bastion-zoom-label">100%</span>
             <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
@@ -190,11 +192,10 @@
         <div class="bastion-body">
           <div class="bastion-web-wrap">
             <div id="bastion-empty" class="bastion-empty">
-              <div class="be-icon">🌐</div>
-              <div id="bastion-empty-title" class="be-title">堡垒机浏览器</div>
-              <div id="bastion-empty-sub" class="be-sub">在上方选择/输入堡垒机 Web 地址,点「打开」开始</div>
+              <div class="be-title"><span class="be-icon">🌐</span><span id="bastion-empty-title">堡垒机浏览器</span></div>
+              <div id="bastion-empty-sub" class="be-sub">选择/输入堡垒机地址后点「打开」</div>
               <div class="be-actions">
-                <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机</button>
+                <button id="bastion-empty-cfg" class="btn-mini">＋ 添加站点</button>
                 <button id="bastion-empty-retry" class="btn-mini hidden">↻ 重试</button>
               </div>
             </div>

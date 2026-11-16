@@ -5364,6 +5364,11 @@ function renderJmsInSessionList(container, f) {
       if (!x) return 1; if (!y) return -1;
       return x.localeCompare(y, 'zh');
     });
+    // 所有资产都没有节点(未分组):直接平铺,省掉「🗂 未分组(N)」这一层
+    if (keys.length === 1 && !keys[0]) {
+      for (const a of (groups.get('') || [])) container.appendChild(makeJmsAssetRow(s, a));
+      continue;
+    }
     for (const dir of keys) {
       const arr = groups.get(dir);
       const key = 'jms:' + s.id + ':' + (dir || '__ungrouped__');
@@ -5720,6 +5725,9 @@ function bastionRenderTabs() {
     hint.textContent = '点 ⚙ 添加堡垒机站点';
     list.appendChild(hint);
   }
+  // 一个站点都没有 → 整条标签栏收起(空态里已有「＋ 添加站点」,别再多占一行)
+  const row = document.getElementById('bastion-tabs');
+  if (row) row.classList.toggle('hidden', bastionServers().length === 0);
 }
 
 // 切换到指定堡垒机标签:填地址并加载(用保存的凭据自动登录)
@@ -6823,7 +6831,8 @@ function placeAssetInFavTree(root, a) {
     node = child;
   }
   if (node) node.assets.push(a);
-  else root.push({ id: null, name: a.name, parentId: null, children: [], assets: [a] });
+  // 没有归组的主机:直接挂在收藏根下平铺,别再给它造一个"和主机同名"的分组(白多一层)
+  else { if (!root._loose) root._loose = []; root._loose.push(a); }
 }
 // 收集分组下全部资产(含后代;按 devId 去重)
 function collectFavAssets(node, out = [], seen = new Set()) {
@@ -7386,7 +7395,7 @@ function renderBastionInSessionList(container, f) {
   const nonFavCount = all.length - favCount;
   // 当前 H3C 站点对应的已保存堡垒机连接(按 origin 匹配):存在则区块头右键可「编辑连接」
   const curConn = (state.bastionUrl && bastionServers().find((s) => s && s.url && bastionOrigin(s.url) === bastionOrigin(state.bastionUrl))) || null;
-  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${kw ? list.length : nonFavCount}${kw ? '/' + all.length : ''}${favCount ? ' ⭐' + favCount : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
+  container.appendChild(makeSectionHead(`🌐 H3C 堡垒机(${kw ? list.length : nonFavCount}${kw ? '/' + all.length : ''}${state.bastionGrouping ? ' ·分组中…' : ''})`, state.bastionCollapsed,
     () => { state.bastionCollapsed = !state.bastionCollapsed; renderSessionList(els.inputSessionSearch.value); },
     [
       ...(curConn ? [{ label: '✏️ 编辑连接', action: () => bastionCfgEdit(curConn.id) }] : []),
@@ -7573,6 +7582,14 @@ function renderBastionInSessionList(container, f) {
         link.addEventListener('click', () => showPrompt({ title: '新建收藏分组', label: '分组名称', value: '', password: false, onOk: (name) => createFavGroup(name, null, state.bastionUrl || '') }));
         empty.appendChild(link);
         container.appendChild(empty);
+      } else if (keys.size === 1) {
+        // 只有一台堡垒机的收藏:直接列分组/主机,不再套一层「📁 站点(数)」
+        const key = [...keys][0];
+        const keyAssets = byKey.get(key) || [];
+        const favRoot = favGroupTree(key);
+        for (const a of keyAssets) placeAssetInFavTree(favRoot, a);
+        renderFavNode(favRoot, '', 0, key);
+        for (const a of (favRoot._loose || [])) container.appendChild(makeBastionAssetItem(a));
       } else {
         for (const key of keys) {
           const keyAssets = byKey.get(key) || [];
@@ -10515,6 +10532,12 @@ els.bastionMore.addEventListener('click', () => {
       setStatus('已复制堡垒机地址', 'var(--green)');
     } },
     { separator: true },
+    { label: '← 后退', action: () => els.bastionBack.click() },
+    { label: '→ 前进', action: () => els.bastionForward.click() },
+    { label: '↻ 刷新页面', action: () => els.bastionReload.click() },
+    { separator: true },
+    { label: `A+ 放大(当前 ${Math.round((state.bastionZoom || 1) * 100)}%)`, action: () => els.bastionZoomIn.click() },
+    { label: 'A− 缩小', action: () => els.bastionZoomOut.click() },
     { label: '↻ 重置缩放(100%)', action: () => {
       bastionManualZoom = false;
       state.bastionZoom = 1;
