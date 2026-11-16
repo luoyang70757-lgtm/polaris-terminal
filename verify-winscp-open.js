@@ -36,6 +36,23 @@ process.env.MOCK_HTTP_PORT = String(HTTP);
 require('./mock/mock-server').start();
 
 const SECRET = 'p@ss:w/rd#1';
+
+// Windows 上抓不到 argv(桩是 sh 脚本,Windows 无法 spawn):
+// 改为断言 winScpOpen 返回的 command 文本(与 argv 等价的脱敏命令行)。
+const WINSCP_CMD_SKIP = (label) => console.log('  ⤵ Windows 跳过 argv 断言:' + label + '(参数细节见 verify-winscp-args.js)');
+
+// Windows 无法 spawn 这个 #!/bin/sh 桩(EINVAL)→ 在 Windows 上改用**真实 WinSCP** 验证
+// 「进程真被拉起」,其余参数细节由 verify-winscp-args.js(纯函数,39 条)覆盖。
+const IS_WIN = process.platform === 'win32';
+const REAL_WINSCP = (() => {
+  if (!IS_WIN) return null;
+  const cands = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'WinSCP', 'WinSCP.exe'),
+    path.join(process.env.ProgramFiles || 'C:\Program Files', 'WinSCP', 'WinSCP.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\Program Files (x86)', 'WinSCP', 'WinSCP.exe'),
+  ];
+  return cands.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } }) || null;
+})();
 function argvFrames() {
   const raw = fs.readFileSync(ARGV_FILE, 'utf8');
   return raw.split('---\n').filter((x) => x.trim()).map((x) => x.split('\n').filter(Boolean));
@@ -46,7 +63,7 @@ const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-po
     ...process.env,
     POLARIS_LOCK_DIR: DIR,
     ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
-    POLARIS_WINSCP_PATH: STUB,     // 打桩:让探测认为"装了 WinSCP"
+    POLARIS_WINSCP_PATH: IS_WIN && REAL_WINSCP ? REAL_WINSCP : STUB, // Windows:用真实 WinSCP(桩脚本跑不了)
     WINSCP_STUB_OUT: ARGV_FILE,
   },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
@@ -96,11 +113,12 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     await evaluate(c, `state.settings.verifyHostKey = false; state.settings.autoTrustHostKey = true; state.settings.onboardingDone = true; saveSettings(); true`);
 
     // ---------- ① 探测 ----------
+    const EXPECT = IS_WIN && REAL_WINSCP ? REAL_WINSCP : STUB;
     const det = await evaluate(c, `(async()=>JSON.stringify(await window.api.winScpDetect()))()`);
     const detJ = JSON.parse(det);
-    if (detJ.ok && detJ.installed && detJ.path === STUB) ok('探测到桩 WinSCP(installed + path 正确)');
-    else bad('探测到桩 WinSCP', det);
-    if (await evaluate(c, `state.winScp.installed === true && state.winScp.path === ${JSON.stringify(STUB)}`)) ok('渲染层 state.winScp 与探测结果一致');
+    if (detJ.ok && detJ.installed && detJ.path === EXPECT) ok(`探测到 WinSCP(installed + path 正确${IS_WIN ? ' · 真实安装' : ' · 桩'})`);
+    else bad('探测到 WinSCP', det + (IS_WIN && !REAL_WINSCP ? '(本机未安装 WinSCP)' : ''));
+    if (await evaluate(c, `state.winScp.installed === true && state.winScp.path === ${JSON.stringify(EXPECT)}`)) ok('渲染层 state.winScp 与探测结果一致');
     else bad('渲染层 state.winScp 与探测结果一致');
 
     // ---------- ② 打开 + ③ 脱敏 ----------
@@ -110,22 +128,39 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     })})))()`));
     if (r1.ok) ok('winScp:open 返回成功');
     else bad('winScp:open 返回成功', r1.error);
-    await sleep(500);
+    await sleep(1200);
     const frames = argvFrames().slice(before);
-    if (frames.length >= 1) ok('真的拉起了 WinSCP(桩收到了参数)');
+    if (IS_WIN) {
+      // Windows:真实 WinSCP 被拉起 → 进程表里应出现 WinSCP.exe(拉起后立刻收掉,别在测试机留窗口)
+      let procCount = 0;
+      try {
+        const out = execSync('tasklist /FI "IMAGENAME eq WinSCP.exe" /FO CSV /NH', { encoding: 'utf8', windowsHide: true });
+        procCount = (out.match(/WinSCP\.exe/gi) || []).length;
+      } catch { /* 没查到就当 0 */ }
+      if (procCount > 0) ok(`真的拉起了 WinSCP(进程表有 ${procCount} 个 WinSCP.exe)`);
+      else bad('真的拉起了 WinSCP', '进程表里没有 WinSCP.exe(可能 WinSCP 未装/拒绝启动)');
+      try { execSync('taskkill /F /IM WinSCP.exe', { stdio: 'ignore', windowsHide: true }); } catch { /* ignore */ }
+    } else if (frames.length >= 1) ok('真的拉起了 WinSCP(桩收到了参数)');
     else bad('真的拉起了 WinSCP');
     const first = frames[0] && frames[0][0];
+    if (IS_WIN) {
+      // 参数内容由 verify-winscp-args.js(纯函数 39 条)在任意平台验证;这里只看真实拉起与日志脱敏
+      console.log('  ⤵ Windows 跳过 argv 抓取(桩脚本无法 spawn,参数细节见 verify-winscp-args.js)');
+    }
     // 期望:密码整段 percent-encode,一个原始 @ : / # 都不能漏出去
     const wantUrl = `sftp://root:p%40ss%3Aw%2Frd%231@10.0.0.9:22/`;
-    if (first === wantUrl) ok('会话 URL 正确(密码已 percent-encode)');
+    if (IS_WIN) { /* 见上:argv 断言在 args 用例覆盖 */ }
+    else if (first === wantUrl) ok('会话 URL 正确(密码已 percent-encode)');
     else bad('会话 URL 正确', `实际: ${first}`);
     const argv1 = frames[0] || [];
     // rawsettings 必须带上 SFTPRealPath=off(否则 chroot 服务器报「不能获得 '.' 的真实路径,错误码 4」)
-    if (argv1.includes('/rawsettings') && argv1.includes('SFTPRealPath=off')) ok('参数带 /rawsettings SFTPRealPath=off(绕开 REALPATH(".") 探测)');
+    if (IS_WIN) { /* 同上 */ }
+    else if (argv1.includes('/rawsettings') && argv1.includes('SFTPRealPath=off')) ok('参数带 /rawsettings SFTPRealPath=off(绕开 REALPATH(".") 探测)');
     else bad('参数带 SFTPRealPath=off', JSON.stringify(argv1));
     // 日志默认**关闭**(v1.0.24):/loglevel=1 的 `Parameter:` 行是明文口令 → 不再默认落盘。
     // 默认参数 = URL + /rawsettings + SFTPRealPath=off,没有任何 /log= / /loglevel=
-    if (argv1.length === 3 && argv1[1] === '/rawsettings' && argv1[2] === 'SFTPRealPath=off' && !argv1.some((a) => a.startsWith('/log'))) ok('参数只有 URL + /rawsettings(默认不写日志)');
+    if (IS_WIN) { /* 同上 */ }
+    else if (argv1.length === 3 && argv1[1] === '/rawsettings' && argv1[2] === 'SFTPRealPath=off' && !argv1.some((a) => a.startsWith('/log'))) ok('参数只有 URL + /rawsettings(默认不写日志)');
     else bad('参数只有 URL + /rawsettings(默认不写日志)', JSON.stringify(argv1));
     const anyWinScpLog = (() => {
       try { return fs.readdirSync(path.join(DIR, 'logs')).filter((f) => f.startsWith('winscp-')); } catch { return []; }
@@ -232,22 +267,39 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     const entryArgs = argvFrames().slice(nEntry).pop() || [];
     if (/已用 WinSCP 打开/.test(String(eOk))) ok('入口成功:状态栏「已用 WinSCP 打开…」');
     else bad('入口成功的状态栏反馈', String(eOk).slice(0, 120));
-    if (entryArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('入口拉起的是这条会话自己的账号密码');
+    if (IS_WIN) {
+      // 用面板日志里的脱敏命令行验证(与 argv 等价):账号对、起始目录对、密码被 *** 掉
+      const logTxt = await evaluate(c, `window.api.appLogDump().then(r => (r && r.content) || '')`);
+      const line = String(logTxt || '').split(String.fromCharCode(13,10)).filter((l) => l.includes('RemoteDirectory=/root/www')).slice(-1)[0] || '';
+      if (/sftp:\/\/admin:\*\*\*@127\.0\.0\.1:/.test(line)) ok('入口拉起的是这条会话自己的账号(密码脱敏为 ***)+ 跟踪到的 cd 目录');
+      else bad('入口使用的账号密码/起始目录', line.slice(0, 160));
+    } else if (entryArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('入口拉起的是这条会话自己的账号密码');
     else bad('入口使用的账号密码', JSON.stringify(entryArgs));
-    if (entryArgs.some((a) => a === 'RemoteDirectory=/root/www')) ok('入口把跟踪到的绝对 cd 目录作为起始目录');
-    else bad('入口带起始目录', JSON.stringify(entryArgs));
+    if (!IS_WIN && entryArgs.some((a) => a === 'RemoteDirectory=/root/www')) ok('入口把跟踪到的绝对 cd 目录作为起始目录');
+    else if (!IS_WIN) bad('入口带起始目录', JSON.stringify(entryArgs));
 
     // 协议=scp:URL 换成 scp://,且不再下发 SFTPRealPath(SCP 会话没有这个概念)
     const nScp = argvFrames().length;
     await evaluate(c, `state.settings.winscpProtocol = 'scp'; openSessionInWinScp('${sid}'); true`);
     await sleep(400);
     const scpArgs = argvFrames().slice(nScp).pop() || [];
-    if (scpArgs[0] === 'scp://admin:admin123@127.0.0.1:' + SSH + '/') ok('设置 SCP 协议后 WinSCP 收到 scp:// 会话 URL');
+    if (IS_WIN) {
+      const logTxt = await evaluate(c, `window.api.appLogDump().then(r => (r && r.content) || '')`);
+      if (/scp:\/\/admin:\*\*\*@127\.0\.0\.1:/.test(String(logTxt || ''))) ok('设置 SCP 协议后 WinSCP 收到 scp:// 会话 URL(日志脱敏可见)');
+      else bad('SCP 协议 → scp:// URL', '日志里没有 scp:// 行');
+    } else if (scpArgs[0] === 'scp://admin:admin123@127.0.0.1:' + SSH + '/') ok('设置 SCP 协议后 WinSCP 收到 scp:// 会话 URL');
     else bad('SCP 协议 → scp:// URL', JSON.stringify(scpArgs));
-    if (!scpArgs.includes('SFTPRealPath=off')) ok('SCP 协议不下发 SFTPRealPath(避免误以为生效)');
-    else bad('SCP 协议仍下发 SFTPRealPath', JSON.stringify(scpArgs));
-    if (!scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样不写日志(默认关)');
-    else bad('SCP 会话不该有 /log=', JSON.stringify(scpArgs));
+    if (IS_WIN) {
+      const logTxt = String(await evaluate(c, `window.api.appLogDump().then(r => (r && r.content) || '')`) || '');
+      const scpLine = logTxt.split(String.fromCharCode(13,10)).filter((l) => l.includes('scp://')).slice(-1)[0] || '';
+      if (!/SFTPRealPath=off/.test(scpLine) && !/\/log=/.test(scpLine)) ok('SCP 会话不带 SFTPRealPath、不写日志(默认关)');
+      else bad('SCP 会话参数不该有 realpath/log', scpLine.slice(0, 160));
+    } else {
+      if (!scpArgs.includes('SFTPRealPath=off')) ok('SCP 协议不下发 SFTPRealPath(避免误以为生效)');
+      else bad('SCP 协议仍下发 SFTPRealPath', JSON.stringify(scpArgs));
+      if (!scpArgs.some((a) => a.startsWith('/log='))) ok('SCP 会话同样不写日志(默认关)');
+      else bad('SCP 会话不该有 /log=', JSON.stringify(scpArgs));
+    }
     await evaluate(c, `state.settings.winscpProtocol = 'sftp'; true`);
 
     // ---------- ⑦ 标签右键菜单 ----------
@@ -273,10 +325,18 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     })})))()`));
     await sleep(400);
     const f2 = argvFrames().slice(before2)[0] || [];
-    if (r2.ok && f2[0] === 'sftp://k@k.example.com:22/') ok('公钥会话:URL 不带密码');
-    else bad('公钥会话:URL 不带密码', JSON.stringify(f2));
-    if (f2.some((a) => a.startsWith('-privatekey=')) && f2.some((a) => a === '-passphrase=kpp')) ok('私钥路径与口令作为参数传给 WinSCP');
-    else bad('私钥路径与口令作为参数传给 WinSCP', JSON.stringify(f2));
+    if (IS_WIN) {
+      const cmd = String(r2.command || '');
+      if (r2.ok && /sftp:\/\/k@k\.example\.com:22/.test(cmd) && !/@[^ ]*:\*\*\*@/.test(cmd)) ok('公钥会话:URL 不带密码');
+      else bad('公钥会话:URL 不带密码', cmd.slice(0, 140));
+      if (/-privatekey=/.test(cmd) && /-passphrase=\*\*\*/.test(cmd)) ok('私钥路径与口令作为参数传给 WinSCP(口令脱敏)');
+      else bad('私钥路径与口令作为参数传给 WinSCP', cmd.slice(0, 160));
+    } else {
+      if (r2.ok && f2[0] === 'sftp://k@k.example.com:22/') ok('公钥会话:URL 不带密码');
+      else bad('公钥会话:URL 不带密码', JSON.stringify(f2));
+      if (f2.some((a) => a.startsWith('-privatekey=')) && f2.some((a) => a === '-passphrase=kpp')) ok('私钥路径与口令作为参数传给 WinSCP');
+      else bad('私钥路径与口令作为参数传给 WinSCP', JSON.stringify(f2));
+    }
 
     // ---------- 起始目录(RemoteDirectory)直通 ----------
     const beforePath = argvFrames().length;
@@ -285,10 +345,18 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     })})))()`));
     await sleep(400);
     const fPath = argvFrames().slice(beforePath)[0] || [];
-    if (rPath.ok && fPath.some((a) => a === 'RemoteDirectory=/srv/my dir')) ok('起始目录原样交给 WinSCP(含空格不拆参)');
-    else bad('起始目录原样交给 WinSCP', JSON.stringify(fPath));
-    if (fPath.includes('SFTPRealPath=off')) ok('起始目录与 SFTPRealPath=off 同在一个 /rawsettings 里');
-    else bad('SFTPRealPath=off 仍在', JSON.stringify(fPath));
+    if (IS_WIN) {
+      const cmd = String(rPath.command || '');
+      if (rPath.ok && /RemoteDirectory=\/srv\/my dir/.test(cmd)) ok('起始目录原样交给 WinSCP(含空格,脱敏命令可见)');
+      else bad('起始目录原样交给 WinSCP', cmd.slice(0, 160));
+      if (/SFTPRealPath=off/.test(cmd)) ok('SFTPRealPath=off 仍在(同一 /rawsettings)');
+      else bad('SFTPRealPath=off 仍在', cmd.slice(0, 160));
+    } else {
+      if (rPath.ok && fPath.some((a) => a === 'RemoteDirectory=/srv/my dir')) ok('起始目录原样交给 WinSCP(含空格不拆参)');
+      else bad('起始目录原样交给 WinSCP', JSON.stringify(fPath));
+      if (fPath.includes('SFTPRealPath=off')) ok('起始目录与 SFTPRealPath=off 同在一个 /rawsettings 里');
+      else bad('SFTPRealPath=off 仍在', JSON.stringify(fPath));
+    }
     // 渲染层组装 payload:面板/标签/跟踪的 cwd 都能被用作起始目录,相对路径丢弃
     const payload = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); if (!t) return '{}'; t.shellCwd='/root/www'; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
     if (payload.remotePath === '/root/www') ok('winScpPayloadFor 用跟踪到的 cd 目录作起始目录');
