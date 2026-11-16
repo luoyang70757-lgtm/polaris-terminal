@@ -31,7 +31,7 @@ const server = http.createServer((req, res) => {
 });
 server.listen(HTTP_PORT, '127.0.0.1');
 
-const appProc = spawn('node_modules/.bin/electron', ['.', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, POLARIS_UPDATE_API: `http://127.0.0.1:${HTTP_PORT}/latest`, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });

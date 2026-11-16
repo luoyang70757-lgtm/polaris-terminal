@@ -22,7 +22,7 @@ process.env.MOCK_SSH_PORT = String(SSH);
 process.env.MOCK_HTTP_PORT = String(HTTP);
 require('./mock/mock-server').start();
 
-const appProc = spawn('node_modules/.bin/electron', ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
+const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });

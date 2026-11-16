@@ -45,7 +45,7 @@ const server = https.createServer({ key: fs.readFileSync(KEY), cert: fs.readFile
 });
 server.listen(HTTPS_PORT, '127.0.0.1');
 
-const appProc = spawn('node_modules/.bin/electron', ['.', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${PORT}`], {
+const appProc = spawn(require('electron'), ['.', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${PORT}`], {
   env: { ...process.env, POLARIS_LOCK_DIR: DIR, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'], detached: true,
 });
