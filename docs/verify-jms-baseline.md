@@ -30,11 +30,27 @@
 - 根因：`lib/jms-api.js` 的 `request()` 只在「HTTP ≥400 **且响应体不是 JSON**」时才 reject；而 JumpServer 的 401 正好返回 JSON `{error: '未认证或 token 已过期'}` → 被当成正常响应。
 - 修复：4xx/5xx 一律按失败处理，错误信息带上状态码语义（401/403 → "登录已过期或无权限,请重新登录 JumpServer"）；`err.status`/`err.data` 保留原始响应。**例外**：登录阶段的 `{error:'mfa_required'}` 仍按正常分支 resolve（MFA 是流程内状态，不是错误）。
 
+## MFA（双因素）—— 已由 mock 覆盖
+
+mock 新增账号 `mfa / mfa123`（OTP = `123456`）与端点 `POST /api/v1/authentication/mfa/challenge/`，
+用例 `verify-jms-mfa.js`（10 条）覆盖：
+
+| # | 断言 | 结果 |
+|---|---|---|
+| ① | 密码通过 → 返回 `mfaRequired`（不是直接发 token）+ 会话 cookie + `choices:['otp']` + 挑战地址 | ✅ |
+| ② | 错误 OTP → 明确失败且信息可读（`JumpServer 请求失败(HTTP 400): 验证码错误`） | ✅ |
+| ③ | 正确 OTP → 拿到 token | ✅ |
+| ④ | MFA 后的 token 真能用（拉到 3 台资产） | ✅ |
+| ⑤ | 不需要 MFA 的账号（admin）不受影响 | ✅ |
+| ⑥ | UI 路径：填表点登录 → OTP 框自动出现 → 填码 → 「验证并登录」成功、资产进列表 | ✅ |
+
+复跑：`node verify-jms-mfa.js`
+
 ## 覆盖范围之外（需真机）
 
-- 真实 JumpServer v4 的 **MFA/OTP 挑战**（mock 未实现 `/authentication/mfa/challenge/`）
+- 真实 JumpServer 的 MFA 类型差异（短信/邮件/企业微信，mock 只模拟 otp）与 challenge 页面跳转
 - 真实 KoKo 网关的资产跳转与审计
-- 团队/角色差异（mock 只有 admin/ops 两个账号，权限表是硬编码的 2/3 台）
+- 团队/角色差异（mock 只有 admin/ops/mfa 三个账号，权限表是硬编码的 2/3 台）
 
 ## 相关用例（同批验证，全部通过）
 

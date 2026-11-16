@@ -37,6 +37,8 @@ const USERS = [
   // keyboard-interactive 认证测试:kbd 单密码挑战(自动应答);kbd2 密码+OTP 双提示(弹窗)
   { username: 'kbd', password: 'kbd123', name: '键盘交互(单提示)', role: 'user' },
   { username: 'kbd2', password: 'kbd123', name: '键盘交互(密码+OTP)', role: 'user' },
+  // JumpServer MFA:密码通过后还要提交一次性验证码(OTP)才发 token
+  { username: 'mfa', password: 'mfa123', name: '双因素用户', role: 'user', mfa: true, otp: '123456' },
 ];
 
 const ASSETS = [
@@ -99,6 +101,13 @@ function makeH3CAccessUrl(dev) {
 
 
 // ---------- HTTP API ----------
+// ---------- MFA(mock):会话 cookie → 是否已通过 OTP ----------
+const mfaSessions = new Map(); // sid -> { username, verified }
+function mfaSidOf(req) {
+  const m = /(?:^|;\s*)mfa_sid=([^;]+)/.exec(req.headers.cookie || '');
+  return m ? m[1] : null;
+}
+
 function authHandler(req, res, body) {
   const { username, password } = body || {};
   const user = USERS.find((u) => u.username === username && u.password === password);
@@ -106,6 +115,21 @@ function authHandler(req, res, body) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: '用户名或密码错误' }));
     return;
+  }
+  // 需要 MFA 且本会话还没验过 OTP → 返回 mfa_required(与 JumpServer 一致:不是错误,是流程分支)
+  if (user.mfa) {
+    const sid = mfaSidOf(req);
+    const sess = sid && mfaSessions.get(sid);
+    if (!(sess && sess.username === user.username && sess.verified)) {
+      const newSid = sid && sess && sess.username === user.username ? sid : crypto.randomBytes(12).toString('hex');
+      if (!mfaSessions.has(newSid)) mfaSessions.set(newSid, { username: user.username, verified: false });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': [`mfa_sid=${newSid}; Path=/; HttpOnly`] });
+      res.end(JSON.stringify({
+        error: 'mfa_required',
+        data: { choices: ['otp'], url: '/api/v1/authentication/mfa/challenge/' },
+      }));
+      return;
+    }
   }
   const token = crypto.randomBytes(24).toString('hex');
   tokens.set(token, user.username);
@@ -150,6 +174,27 @@ const server = http.createServer((req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/v1/authentication/auth/') {
       return authHandler(req, res, body);
+    }
+    // MFA 第二步:提交一次性验证码(mock 只认 otp=123456),通过后该 cookie 才允许换 token
+    if (req.method === 'POST' && url.pathname === '/api/v1/authentication/mfa/challenge/') {
+      const sid = mfaSidOf(req);
+      const sess = sid && mfaSessions.get(sid);
+      if (!sess) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'mfa_session_missing', msg: '验证会话不存在或已过期' }));
+        return;
+      }
+      const code = String((body && body.code) || '');
+      const user = USERS.find((u) => u.username === sess.username);
+      if (!user || code !== user.otp) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'otp_invalid', msg: '验证码错误' }));
+        return;
+      }
+      sess.verified = true;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/v1/assets/assets/') {
       return assetsHandler(req, res, bearer);
@@ -530,7 +575,7 @@ function start() {
   sshd.listen(SSH_PORT, '127.0.0.1', () => {
     console.log(`[MOCK] KoKo SSH 网关已启动: 127.0.0.1:${SSH_PORT}`);
     console.log(`[MOCK]   直连格式  ssh -p ${SSH_PORT} 'admin@root@192.168.10.10'@127.0.0.1`);
-    console.log(`[MOCK]   测试账号  admin/admin123 · ops/ops123`);
+    console.log(`[MOCK]   测试账号  admin/admin123 · ops/ops123 · mfa/mfa123(MFA,OTP=123456)`);
     console.log(`[MOCK]   审计日志  ${LOG_DIR}/audit-*.log`);
   });
 }
