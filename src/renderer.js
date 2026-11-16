@@ -31,61 +31,91 @@ const WebglAddonClass = (window.WebglAddon && window.WebglAddon.WebglAddon) || w
 // 启动计时起点(调试日志 BOOT 埋点用,排查"打开慢"问题)
 const __bootT0 = performance.now();
 
-// ---- 主题预设(参考 Netcatty / Chaterm / Termius 的个性化)----
+// ---- 主题预设(10 套精选;参考 Tabby / iTerm2 的配色库)----
 // term = 终端配色;ansi = 该主题的 ANSI 16 色板(官方色板优先,未设置兜底 DEFAULT_ANSI)
 // UI 变量统一由 deriveUiTokens 从 term 配色按 appearance 派生(单一事实来源),不再手写 css
+// 配色来源:Tabby 社区配色方案(tabby-community-color-schemes,MIT License,Copyright © 2017 Tabby
+// Developers;配色本身移植自 iTerm2-Color-Schemes,MIT)。只取终端色板(fg/bg/cursor/16 色 ANSI),
+// UI 外壳(面板/边框/悬停/次要文字)仍由 deriveUiTokens 从 bg/fg 派生,风格与原来一致。
+// 换配色只改这里;THEME_ALIASES 负责把老用户存的旧键迁移到新键(见下方)。
 const THEMES = {
-  dark: {
-    name: '深空(默认)', appearance: 'dark',
-    term: { background: '#070c18', foreground: '#c7dcff', cursor: '#2dd4fe', selectionBackground: '#3a67c8', selectionForeground: '#ffffff' },
-    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  light: {
-    name: '浅色', appearance: 'light',
-    term: { background: '#ffffff', foreground: '#1f2430', cursor: '#1f2430', selectionBackground: '#b8d4f0', selectionForeground: '#1f2430' },
-    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  solarizedDark: {
-    name: 'Solarized 深', appearance: 'dark',
-    term: { background: '#002b36', foreground: '#839496', cursor: '#839496', selectionBackground: '#0a5a6e', selectionForeground: '#ffffff' },
-    ansi: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5', '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
-  },
-  nord: {
-    name: 'Nord', appearance: 'dark',
-    term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#5e81ac', selectionForeground: '#ffffff' },
-    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#4c566a', '#d08770', '#8fbcbb', '#eceff4', '#5e81ac', '#d8dee9', '#434c5e', '#eceff4'],
+  tokyonight: {
+    name: "夜色 Tokyo Night(默认)", appearance: 'dark',
+    term: { background: '#1a1b26', foreground: '#c0caf5', cursor: '#c0caf5', selectionBackground: '#54586e', selectionForeground: '#c0caf5' },
+    ansi: ['#15161e', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#a9b1d6', '#414868', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#c0caf5'],
   },
   dracula: {
-    name: 'Dracula', appearance: 'dark',
-    term: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', selectionBackground: '#6272a4', selectionForeground: '#ffffff' },
-    ansi: ['#21222c', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#f8f8f2', '#6272a4', '#ff6e6e', '#69ff94', '#ffffa5', '#d6acff', '#ff92df', '#a4ffff', '#ffffff'],
+    name: "德古拉 Dracula", appearance: 'dark',
+    term: { background: '#1e1f29', foreground: '#f8f8f2', cursor: '#bbbbbb', selectionBackground: '#6a6b6f', selectionForeground: '#f8f8f2' },
+    ansi: ['#000000', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#bbbbbb', '#555555', '#ff5555', '#50fa7b', '#f1fa8c', '#bd93f9', '#ff79c6', '#8be9fd', '#ffffff'],
   },
-  termiusDark: {
-    name: 'Graphite 深', appearance: 'dark',
-    term: { background: '#222426', foreground: '#c9c9c9', cursor: '#c9c9c9', selectionBackground: '#3e4142', selectionForeground: '#ffffff' },
-    ansi: ['#333333', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
+  nord: {
+    name: "极地 Nord", appearance: 'dark',
+    term: { background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9', selectionBackground: '#6a707b', selectionForeground: '#d8dee9' },
+    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0', '#373e4d', '#94545d', '#809575', '#b29e75', '#68809a', '#8c738c', '#6d96a5', '#aeb3bb'],
   },
-  termiusLight: {
-    name: 'Mist 浅', appearance: 'light',
-    term: { background: '#f5f5f5', foreground: '#222426', cursor: '#222426', selectionBackground: '#d9dcdE', selectionForeground: '#222426' },
-    ansi: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'],
-  },
-  catppuccinMocha: {
-    name: 'Truffle 摩卡', appearance: 'dark',
-    term: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#45475a', selectionForeground: '#ffffff' },
-    ansi: ['#45475a', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#bac2de', '#585b70', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2e7', '#94e2d5', '#a6adc8'],
+  solarizedDark: {
+    name: "日晒 Solarized Dark", appearance: 'dark',
+    term: { background: '#001e27', foreground: '#9cc2c3', cursor: '#f34b00', selectionBackground: '#37575e', selectionForeground: '#9cc2c3' },
+    ansi: ['#002831', '#d11c24', '#6cbe6c', '#a57706', '#2176c7', '#c61c6f', '#259286', '#eae3cb', '#006488', '#f5163b', '#51ef84', '#b27e28', '#178ec8', '#e24d8e', '#00b39e', '#fcf4dc'],
   },
   gruvboxDark: {
-    name: 'Grove 苔', appearance: 'dark',
-    term: { background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2', selectionBackground: '#3c3836', selectionForeground: '#ffffff' },
-    ansi: ['#282828', '#cc241d', '#98971a', '#d79921', '#458588', '#b16286', '#689d6a', '#a89984', '#928374', '#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#ebdbb2'],
+    name: "格鲁夫 Gruvbox", appearance: 'dark',
+    term: { background: '#1e1e1e', foreground: '#e6d4a3', cursor: '#bbbbbb', selectionBackground: '#645e4d', selectionForeground: '#e6d4a3' },
+    ansi: ['#161819', '#f73028', '#aab01e', '#f7b125', '#719586', '#c77089', '#7db669', '#faefbb', '#7f7061', '#be0f17', '#868715', '#cc881a', '#377375', '#a04b73', '#578e57', '#e6d4a3'],
+  },
+  oneHalfDark: {
+    name: "半深 One Half", appearance: 'dark',
+    term: { background: '#282c34', foreground: '#dcdfe4', cursor: '#a3b3cc', selectionBackground: '#676b72', selectionForeground: '#dcdfe4' },
+    ansi: ['#282c34', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#dcdfe4', '#282c34', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#dcdfe4'],
+  },
+  iceberg: {
+    name: "冰山 Iceberg", appearance: 'dark',
+    term: { background: '#161821', foreground: '#c6c8d1', cursor: '#c6c8d1', selectionBackground: '#54565f', selectionForeground: '#c6c8d1' },
+    ansi: ['#1e2132', '#e27878', '#b4be82', '#e2a478', '#84a0c6', '#a093c7', '#89b8c2', '#c6c8d1', '#6b7089', '#e98989', '#c0ca8e', '#e9b189', '#91acd1', '#ada0d3', '#95c4ce', '#d2d4de'],
   },
   rosePine: {
-    name: '松雾 Rosé Pine', appearance: 'dark',
-    term: { background: '#191724', foreground: '#e0def4', cursor: '#f6c177', selectionBackground: '#2a2837', selectionForeground: '#ffffff' },
+    name: "松雾 Rosé Pine", appearance: 'dark',
+    term: { background: '#191724', foreground: '#e0def4', cursor: '#555169', selectionBackground: '#5f5d6d', selectionForeground: '#e0def4' },
     ansi: ['#26233a', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4', '#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#9ccfd8', '#c4a7e7', '#ebbcba', '#e0def4'],
   },
+  github: {
+    name: "GitHub 浅", appearance: 'light',
+    term: { background: '#f4f4f4', foreground: '#3e3e3e', cursor: '#3f3f3f', selectionBackground: '#b4b4b4', selectionForeground: '#3e3e3e' },
+    ansi: ['#3e3e3e', '#970b16', '#07962a', '#f8eec7', '#003e8a', '#e94691', '#89d1ec', '#ffffff', '#666666', '#de0000', '#87d5a2', '#f1d007', '#2e6cba', '#ffa29f', '#1cfafe', '#ffffff'],
+  },
+  oneHalfLight: {
+    name: "半浅 One Half", appearance: 'light',
+    term: { background: '#fafafa', foreground: '#383a42', cursor: '#bfceff', selectionBackground: '#b6b7ba', selectionForeground: '#383a42' },
+    ansi: ['#383a42', '#e45649', '#50a14f', '#c18401', '#0184bc', '#a626a4', '#0997b3', '#fafafa', '#4f525e', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
+  },
 };
+
+// 旧主题键 → 新主题键(v1.0.8 把 10 套自研配色换成 Tabby/iTerm2 精选配色):
+// 老用户 localStorage 里存的是旧键,这里做一次性映射,避免升级后主题被重置成默认。
+const THEME_ALIASES = {
+  dark: 'tokyonight',        // 原「深空」→ 夜色 Tokyo Night(同为深色默认)
+  light: 'github',           // 原「极简白」→ GitHub 浅
+  termiusDark: 'oneHalfDark',   // 原「Graphite 深」→ 半深 One Half
+  termiusLight: 'oneHalfLight', // 原「Mist 浅」→ 半浅 One Half
+  catppuccinMocha: 'iceberg',   // 原「Truffle 摩卡」→ 冰山 Iceberg
+  // solarizedDark / nord / dracula / gruvboxDark / rosePine:同名保留,无需映射
+};
+const DEFAULT_THEME = 'tokyonight';
+
+// 主题键归一化:旧键 → 新键;未知/已删主题 → 默认主题(不抛错,渲染不被坏配置拖死)
+function normalizeThemeId(id) {
+  if (!id || id === 'auto') return id;
+  if (THEMES[id]) return id;
+  const mapped = THEME_ALIASES[id];
+  if (mapped && THEMES[mapped]) return mapped;
+  return DEFAULT_THEME;
+}
+
+// 当前生效主题对象(所有取配色的地方都走这里,避免漏掉别名迁移)
+function currentTheme() {
+  return THEMES[resolveEffectiveThemeId()] || THEMES[DEFAULT_THEME];
+}
 
 // ---- 颜色工具:hex→rgb→线性插值(Chaterm 参考的 colorUtils) ----
 function hexToRgb(hex) {
@@ -100,17 +130,51 @@ function mix(a, b, t) {
 const darken = (hex, t) => mix(hex, '#000000', t);
 const lighten = (hex, t) => mix(hex, '#ffffff', t);
 
+// WCAG 相对亮度 / 对比度:配色库里有不少"正文偏暗"的配色(Royal、Shaman、C64…),
+// 固定混合比例会让次要文字糊成一片(实测 189 套里 95 套 --text-dim 对比度 < 3)。
+// 所以派生时做一层"保底":正文 ≥ 4.5,次要文字 ≥ 3.0(只调整到刚够,尽量保留原配色观感)。
+function relLum(hex) {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(a, b) {
+  const A = relLum(a), B = relLum(b);
+  return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
+}
+// 把 color 往"远离 bg"的方向推,直到对比度 ≥ target(每步 8%,最多 12 步 —— 近似最小改动)
+function ensureContrast(color, bg, target) {
+  if (contrastRatio(color, bg) >= target) return color;
+  const away = relLum(bg) > 0.35 ? '#000000' : '#ffffff';
+  let c = color;
+  for (let i = 0; i < 12; i++) {
+    c = mix(c, away, 0.08);
+    if (contrastRatio(c, bg) >= target) return c;
+  }
+  return c;
+}
+// 次要文字:从"偏向 bg"的混合色出发,逐步靠回 fg 直到达标(比固定比例更稳)
+function dimTowards(fg, bg, start, target) {
+  let c = mix(fg, bg, start);
+  for (let i = 0; i < 20 && contrastRatio(c, bg) < target; i++) c = mix(c, fg, 0.1);
+  return c;
+}
+
 // 从终端配色派生 9 个 UI 变量(对齐现有 CSS 变量名,变量名不变 → styles.css 零改动)
-// 方向对齐现有预设:dark 面板/边框比 bg 提亮(--border #1d3a66 > bg #070c18),light 则加深
+// 方向:dark 面板/边框比 bg 提亮,light 则加深
 function deriveUiTokens(term, appearance) {
-  const { background: bg, foreground: fg } = term;
+  const bg = term.background;
+  const fg = ensureContrast(term.foreground, bg, 4.5); // 正文保底 WCAG AA
+  const dim = dimTowards(fg, bg, appearance === 'light' ? 0.45 : 0.55, 3.0); // 次要文字保底
   if (appearance === 'light') {
     return {
       '--bg': bg, '--term-bg': bg,
       '--bg-panel': lighten(bg, 0.02), '--bg-panel-2': darken(bg, 0.05),
       '--bg-hover': darken(bg, 0.06), '--border': darken(bg, 0.12),
       '--input-bg': lighten(bg, 0.015),
-      '--text': fg, '--text-dim': mix(fg, bg, 0.45),
+      '--text': fg, '--text-dim': dim,
     };
   }
   return {
@@ -118,7 +182,7 @@ function deriveUiTokens(term, appearance) {
     '--bg-panel': lighten(bg, 0.05), '--bg-panel-2': lighten(bg, 0.09),
     '--bg-hover': lighten(bg, 0.12), '--border': lighten(bg, 0.16),
     '--input-bg': lighten(bg, 0.03),
-    '--text': fg, '--text-dim': mix(fg, bg, 0.55),
+    '--text': fg, '--text-dim': dim,
   };
 }
 
@@ -157,6 +221,8 @@ const els = {
   fPrivateKeyPick: $('f-private-key-pick'),
   fPassphrase: $('f-passphrase'),
   fPassphraseToggle: $('f-passphrase-toggle'),
+  fSuPassword: $('f-su-password'),
+  fSuPasswordToggle: $('f-su-password-toggle'),
   fJumpHost: $('f-jump-host'),
   fJumpPort: $('f-jump-port'),
   fJumpUsername: $('f-jump-username'),
@@ -193,8 +259,21 @@ const els = {
   importBackupFile: $('import-backup-file'),
   importExternal: $('import-external'),
   importExternalFile: $('import-external-file'),
+  importSshConfig: $('import-sshconfig'),
   importTemplate: $('import-template'),
   importOverwrite: $('import-overwrite'),
+
+  // 新手引导向导
+  onboardingModal: $('onboarding-modal'),
+  obBack: $('ob-back'),
+  obSkip: $('ob-skip'),
+  obNext: $('ob-next'),
+  obFinish: $('ob-finish'),
+  obCloseX: $('ob-close-x'),
+  obImportSsh: $('ob-import-ssh'),
+  obImportBatch: $('ob-import-batch'),
+  obNewSession: $('ob-new-session'),
+  obQuick: $('ob-quick'),
 
   // 自定义输入弹窗 + 右键菜单
   promptModal: $('prompt-modal'),
@@ -203,6 +282,10 @@ const els = {
   promptInput: $('prompt-input'),
   promptOk: $('prompt-ok'),
   promptCancel: $('prompt-cancel'),
+  promptPaste: $('prompt-paste'),
+  promptRememberRow: $('prompt-remember-row'),
+  promptRemember: $('prompt-remember'),
+  promptRememberLabel: $('prompt-remember-label'),
   ctxMenu: $('ctx-menu'),
 
   // 连接/中断二合一 + 锁定
@@ -246,6 +329,10 @@ const els = {
   bastionClear: $('bastion-clear'),
   bastionCfg: $('bastion-cfg'),
   bastionEmptyCfg: $('bastion-empty-cfg'),
+  bastionEmptyTitle: $('bastion-empty-title'),
+  bastionEmptySub: $('bastion-empty-sub'),
+  bastionEmptyRetry: $('bastion-empty-retry'),
+  bastionMore: $('bastion-more'),
   bastionCfgModal: $('bastion-cfg-modal'),
   bastionCfgType: $('bastion-cfg-type'),
   bastionCfgName: $('bastion-cfg-name'),
@@ -253,6 +340,7 @@ const els = {
   bastionCfgAccount: $('bastion-cfg-account'),
   bastionCfgPass: $('bastion-cfg-pass'),
   bastionCfgAdd: $('bastion-cfg-add'),
+  bastionCfgX: $('bastion-cfg-x'),
   bastionCfgClose: $('bastion-cfg-close'),
   bastionCfgMsg: $('bastion-cfg-msg'),
   bastionUrl: $('bastion-url'),
@@ -371,6 +459,7 @@ const els = {
   aiKey: $('ai-key'),
   aiVendor: $('ai-vendor'),
   aiVendorSelect: $('ai-vendor-select'),
+  aiVendorPreset: $('ai-vendor-preset'),
   aiVendorNew: $('ai-vendor-new'),
   aiVendorDel: $('ai-vendor-del'),
   aiConfigSave: $('ai-config-save'),
@@ -401,9 +490,8 @@ const els = {
   termSearchCount: $('term-search-count'),
   termSearchClose: $('term-search-close'),
 
-  // SFTP 面板
+  // SFTP(交给本机 WinSCP)
   btnSftpToggle: $('btn-sftp-toggle'),
-  sftpPanel: $('sftp-panel'),
   btnTunnel: $('btn-tunnel'),
   tunnelModal: $('tunnel-modal'),
   tunnelList: $('tunnel-list'),
@@ -419,28 +507,6 @@ const els = {
   tunnelCreate: $('tunnel-create'),
   tunnelFormCancel: $('tunnel-form-cancel'),
   tunnelClose: $('tunnel-close'),
-  sftpPath: $('sftp-path'),
-  sftpConn: $('sftp-conn'),
-  sftpConnMenu: $('sftp-conn-menu'),
-  sftpList: $('sftp-list'),
-  sftpLog: $('sftp-log'),
-  btnSftpUp: $('btn-sftp-up'),
-  btnSftpRefresh: $('btn-sftp-refresh'),
-  btnSftpMkdir: $('btn-sftp-mkdir'),
-  btnSftpUpload: $('btn-sftp-upload'),
-  btnSftpDownload: $('btn-sftp-download'),
-  btnSftpDelete: $('btn-sftp-delete'),
-  btnSftpSelectAll: $('btn-sftp-select-all'),
-  btnSftpEdit: $('btn-sftp-edit'),
-  sftpProgress: $('sftp-progress'),
-  sftpProgressLabel: $('sftp-progress-label'),
-  btnSftpTransfersClear: $('btn-sftp-transfers-clear'),
-  editModal: $('edit-modal'),
-  editPath: $('edit-path'),
-  editContent: $('edit-content'),
-  editSave: $('edit-save'),
-  editCancel: $('edit-cancel'),
-  sftpFooter: $('sftp-footer'),
   btnCmd: $('btn-cmd'),
   cmdPanel: $('cmd-panel'),
   cmdList: $('cmd-list'),
@@ -452,6 +518,7 @@ const els = {
   setCmdRecord: $('set-cmdrecord'),
   setSessionLog: $('set-sessionlog'),
   setAutoFillPw: $('set-autofillpw'),
+  setWinScpProtocol: $('set-winscp-protocol'),
   setLockIdle: $('set-lock-idle'),
   lockNote: $('lock-note'),
   // 智能命令推荐
@@ -508,7 +575,6 @@ const els = {
   // 可拖动分隔条
   sessionPanel: $('session-panel'),
   dividerV: $('divider-v'),
-  dividerH: $('divider-h'),
   dividerBastion: $('divider-bastion'),
   bastionSlot: $('bastion-slot'),
   btnTogglePanel: $('btn-toggle-panel'),
@@ -518,8 +584,6 @@ const els = {
   batchCount: $('batch-count'),
   batchConnect: $('batch-connect'),
   batchClose: $('batch-close'),
-  batchUpload: $('batch-upload'),
-  batchDownload: $('batch-download'),
   batchDelete: $('batch-delete'),
   batchClear: $('batch-clear'),
   btnSelectAllFiltered: $('btn-select-all-filtered'),
@@ -529,6 +593,10 @@ const els = {
   btnAbout: $('btn-about'),
   aboutModal: $('about-modal'),
   aboutVersion: $('about-version'),
+  aboutCheck: $('about-check'),
+  aboutDownload: $('about-download'),
+  aboutRelease: $('about-release'),
+  aboutUpdateMsg: $('about-update-msg'),
   helpCloseX: $('help-close-x'),
   helpClose: $('help-close'),
 };
@@ -552,7 +620,7 @@ const state = {
   activeGroupId: null,   // 当前"选中"的分组(点了某个分组后,全选只针对该组;null=全选所有)
   selectedForBatch: new Set(), // 多选用于批量操作的会话 id 集合
   settings: {            // 应用设置(存 localStorage)
-    theme: 'dark',       // 主题名(对应 THEMES 的键)
+    theme: 'tokyonight', // 主题名(对应 THEMES 的键;旧键经 THEME_ALIASES 迁移)
     highlight: true,     // 终端关键字高亮开关
     highlightKeywords: ['error', 'warning', 'fail', 'failed', 'fatal'],
     outputFilters: [],           // 终端输出过滤条件列表: [{ id, kw, on }],可多选启用
@@ -574,6 +642,7 @@ const state = {
     settingsVersion: 3,         // 设置结构版本(用于一次性的默认值迁移)
     cmdRecord: true,            // 命令记录开关(默认开)
     autoFillPassword: true,     // 自动填充密码:终端出现 Password: 提示时自动发会话保存的密码(默认开)
+    // SFTP = 交给本机 WinSCP(v1.0.25 起无内置面板);winscpProtocol 决定 WinSCP 走 sftp 还是 scp
     lockIdleMin: 5,             // 闲置自动锁定分钟(0=关闭)
     customAnsi: null,           // 终端 ANSI 16 色自定义(null=用默认色板)
     panelCollapsed: false,      // 左侧会话列表是否折叠
@@ -582,6 +651,8 @@ const state = {
     debugPanelPos: null,        // 调试日志面板位置 {x, y}(null=默认右下角)
     bootIntro: 'short',         // 启动过场动画: 'full'完整2.4s | 'short'缩短0.8s | 'skip'跳过
   },
+  winScp: { installed: false, path: '' }, // 本机 WinSCP 探测结果(winScp:detect IPC;没装则不显示入口)
+  h3cClient: { installed: false, handler: '', supported: false }, // H3C AccessClient 探测结果(accessclient://;没装则非 SSH 资产只给说明)
   jmsServers: [],   // JumpServer 服务器列表: [{ id, name, baseUrl, sshHost, sshPort, account, password, token, user, assets, seq }]
   jmsActiveId: null, // 当前正在管理/登录的服务器 id
   jmsSeq: 0,         // 合成会话 id 全局计数器
@@ -607,16 +678,6 @@ const state = {
   bastionSavedAutoExpanded: false, // 首次有已保存连接时自动展开一次(连接项可见,右键可编辑);用户手动折叠后不再干预
   bastionZoom: 1, // 堡垒机画面缩放(0.5~2.5,webview setZoomFactor)
   collapsedJms: new Set(), // 折叠的 JumpServer 服务器 id 集合
-  sftp: {
-    visible: false,  // 面板是否展开
-    sessionId: null, // 正在浏览哪个连接(跟随活动标签)
-    path: '.',       // 当前远程目录
-    selected: null,  // 最近一次点击的条目 { name, isDir, remotePath }(兼容旧逻辑)
-    selectedSet: new Set(), // 多选集合:存的是 remotePath 字符串,点一下加/取消
-    entries: [],     // 当前列表数据
-    log: [],         // 传输记录: [{ time, text, isError }]
-  },
-  sftpUploadFlash: new Set(), // 刚上传成功的条目名:列表刷新后高亮定位(让用户看到传到了哪)
   cmdHistory: {},    // 命令记录: sessionId -> { host, commands: [{ time, command }] }
   cmdArchivesView: null,   // 命令面板视图: null=当前记录, 'files'=归档文件列表
   cmdArchiveFiles: [],     // 归档批次列表
@@ -664,13 +725,14 @@ function saveSettings() {
 // 解析最终生效主题:auto 跟随系统明暗
 function resolveEffectiveThemeId() {
   const t = state.settings.theme;
-  if (t !== 'auto') return THEMES[t] ? t : 'dark';
-  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (t !== 'auto') return normalizeThemeId(t);
+  // 跟随系统:深色走默认深色主题,浅色走 GitHub 浅(键 = 主题表里的真实键,不经别名)
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'tokyonight' : 'github';
 }
 
 // 应用主题:改终端配色 + 应用外壳的 CSS 变量(派生 + 预设 css 覆盖)
 function applyTheme() {
-  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
+  const th = currentTheme();
   const root = document.documentElement.style;
   const css = { ...deriveUiTokens(th.term, th.appearance), ...(th.css || {}) };
   for (const [k, v] of Object.entries(css)) root.setProperty(k, v);
@@ -689,7 +751,7 @@ function applyTheme() {
 }
 
 function openSettingsModal() {
-  // 主题下拉:auto(跟随系统) + 按明暗分组,20 项平铺难扫
+  // 主题下拉:auto(跟随系统) + 按明暗分组(v1.0.8 共 10 套:8 深 2 浅),平铺难扫
   els.setTheme.innerHTML = '';
   const addThemeOpt = (value, text) => {
     const opt = document.createElement('option');
@@ -711,7 +773,7 @@ function openSettingsModal() {
     if (g.children.length) els.setTheme.appendChild(g);
   }
   const cur = state.settings.theme;
-  els.setTheme.value = cur === 'auto' ? 'auto' : (THEMES[cur] ? cur : 'dark');
+  els.setTheme.value = cur === 'auto' ? 'auto' : normalizeThemeId(cur);
   els.setBootIntro.value = ['full', 'short', 'skip'].includes(state.settings.bootIntro) ? state.settings.bootIntro : 'short';
   els.setHighlight.checked = !!state.settings.highlight;
   els.setFontSize.value = state.settings.fontSize || 13;
@@ -724,6 +786,7 @@ function openSettingsModal() {
   els.setCmdRecord.checked = state.settings.cmdRecord !== false;
   els.setSessionLog.checked = state.settings.sessionLog !== false;
   els.setAutoFillPw.checked = state.settings.autoFillPassword !== false;
+  if (els.setWinScpProtocol) els.setWinScpProtocol.value = winScpProtocol();
   els.setLockIdle.value = Number(state.settings.lockIdleMin) > 0 ? state.settings.lockIdleMin : 0;
   renderAnsiEditor();
   refreshLockNote();
@@ -745,7 +808,7 @@ function renderAnsiEditor() {
   const box = els.ansiEditor;
   box.innerHTML = '';
   // 显示当前生效色板(用户自定义优先,否则当前主题自带色板,兜底默认);改动即写入 customAnsi 覆盖主题色
-  const th = THEMES[resolveEffectiveThemeId()] || THEMES.dark;
+  const th = currentTheme();
   const colors = state.settings.customAnsi || th.ansi || DEFAULT_ANSI;
   colors.forEach((hex, i) => {
     const row = document.createElement('label');
@@ -797,6 +860,8 @@ function ensureWindowFocus() {
 function focusModalInput(modalEl, inputEl) {
   if (!modalEl || !inputEl) return;
   const apply = () => {
+    // 锁定期间不把焦点抢去弹窗输入框(否则看起来又是"锁定后输不了密码")
+    if (lockOverlayVisible()) { focusLockInput(); return; }
     if (modalEl.classList.contains('hidden')) return;
     const ae = document.activeElement;
     if (ae && modalEl.contains(ae) && ae !== modalEl) return; // 用户正在弹窗内操作
@@ -882,7 +947,19 @@ async function confirmFilePwd() {
   }
 }
 
-// 从 Xshell/iTerm2 导入:选文件 → 主进程解析 → 预览(密码需重新填,Xshell 加密无法还原)
+// 从 ~/.ssh/config 一键导入:读默认路径 → 主进程解析 → 打开导入弹窗预览(密码/私钥口令需重新填)
+async function importSshConfigSelected() {
+  openImportModal(); // 先打开弹窗(从导入窗内按钮或首次使用空态卡片点都能用)
+  const res = await window.api.importSshConfig();
+  if (res && res.ok) {
+    els.importResult.innerHTML = '';
+    setImportPreview(res.rows);
+  } else {
+    els.importResult.innerHTML = `<span class="bad">${(res && res.error) || '解析失败'}</span>`;
+  }
+}
+
+// 从 Xshell/iTerm2/SSH config 导入:选文件 → 主进程解析 → 预览(密码需重新填,Xshell 加密无法还原)
 async function importExternalSelected() {
   const files = els.importExternalFile.files;
   if (!files || !files.length) return;
@@ -968,6 +1045,40 @@ function migrateAiVendors() {
   }
 }
 
+// 常见服务商的"能直接跑通"配置模板(用户最常见的坑:新加厂商后地址为空 → 静默打到
+// api.anthropic.com 拿 401/404,看起来就是"AI 用不了")。地址按 normalizeAiUrl 的口径填 base_url:
+//   OpenAI 兼容: base 以 /v1 结尾(会自动拼 /chat/completions)
+//   Anthropic : base 不带 /v1(会自动拼 /v1/messages,写成 .../v1 会变成 /v1/v1/messages)
+const AI_VENDOR_PRESETS = {
+  // DeepSeek 官方 OpenAI 兼容接口(推荐):base 以 /v1 结尾,会自动拼 /chat/completions。
+  // 同一把 DeepSeek Key 也能走下面的 Anthropic 兼容端点(格式选错才会 401,不要混用)。
+  deepseek:   { name: 'DeepSeek',  url: 'https://api.deepseek.com/v1', format: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  'deepseek-anthropic': { name: 'DeepSeek', url: 'https://api.deepseek.com/anthropic', format: 'anthropic', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+  openai:     { name: 'OpenAI',    url: 'https://api.openai.com/v1', format: 'openai', models: [] },
+  dashscope:  { name: '通义千问',   url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai', models: [] },
+  zhipu:      { name: '智谱 GLM',  url: 'https://open.bigmodel.cn/api/paas/v4', format: 'openai', models: [] },
+  moonshot:   { name: 'Moonshot',  url: 'https://api.moonshot.cn/v1', format: 'openai', models: [] },
+  anthropic:  { name: 'Anthropic', url: 'https://api.anthropic.com', format: 'anthropic', models: [] },
+  openrouter: { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', format: 'openai', models: [] },
+};
+
+// 把模板应用到"当前激活厂商"(不填 Key,Key 只能用户自己粘)
+function applyAiPreset(key) {
+  const p = AI_VENDOR_PRESETS[key];
+  const v = activeAiVendor();
+  if (!p || !v) return;
+  v.url = p.url;
+  v.format = p.format;
+  if (p.models && p.models.length) { v.models = p.models.slice(); v.model = v.models[0]; }
+  // 厂商名还停留在"默认厂商/自定义"这类占位名字时,顺手改成模板名
+  if (!els.aiVendor.value.trim() || /^(默认厂商|自定义|新建厂商)$/.test(els.aiVendor.value.trim())) {
+    els.aiVendor.value = p.name;
+  }
+  saveSettings();
+  fillAiConfig();
+  setStatus(`已填入「${p.name}」模板:地址 ${p.url} · ${p.format === 'openai' ? 'OpenAI 兼容' : 'Anthropic'} 格式${p.models.length ? ' · 模型 ' + v.model : ' · 模型请用「＋」自己加'}`);
+}
+
 // v3 迁移:默认厂商接入 DeepSeek。旧默认 url 指到 Anthropic 官网,模型却是 deepseek-*(对不上),
 // 这里只修正"没配过 / 还是旧默认地址"的厂商 url,不碰用户自己填的其他厂商。
 function migrateDeepSeekUrl() {
@@ -975,7 +1086,12 @@ function migrateDeepSeekUrl() {
   const OLD_ANTHROPIC = 'https://api.anthropic.com/v1/messages';
   for (const v of Object.values(vendors)) {
     const url = String(v.url || '').trim();
-    if (!url || url === OLD_ANTHROPIC) v.url = 'https://api.deepseek.com/anthropic';
+    if (!url || url === OLD_ANTHROPIC) {
+      // 两个端点的路径不同:OpenAI 兼容是 https://api.deepseek.com/v1(/chat/completions),
+      // Anthropic 兼容是 https://api.deepseek.com/anthropic(/v1/messages)。
+      // 按厂商当前选的「接口格式」补对应地址,否则会出现 .../anthropic/chat/completions 这种 404。
+      v.url = v.format === 'openai' ? 'https://api.deepseek.com/v1' : 'https://api.deepseek.com/anthropic';
+    }
   }
 }
 
@@ -1237,6 +1353,15 @@ async function aiSend() {
     alert('请先在 AI ⚙ 里配置当前厂商的 API Key');
     return;
   }
+  // 地址/模型为空是"AI 用不了"的头号原因(旧版会静默打到官方 Anthropic 地址拿 401/404),
+  // 这里在发请求之前就把该改哪儿说清楚,并顺手展开 ⚙ 面板。
+  if (!String(av.url || '').trim() || !String(av.model || '').trim()) {
+    els.aiConfig.classList.remove('hidden');
+    alert(!String(av.url || '').trim()
+      ? '请先在 AI ⚙ 里填「接口地址」\n\nDeepSeek(OpenAI 兼容): https://api.deepseek.com/v1\nDeepSeek(Anthropic 兼容): https://api.deepseek.com/anthropic\n也可以直接用 ⚙ 顶部的「快速模板」一键填好'
+      : '请先在 AI ⚙ 里的模型下拉选一个模型(下拉为空说明该厂商还没加模型,点「＋」添加,如 deepseek-v4-flash)');
+    return;
+  }
   // 记录发送的提问,供 ↑↓ 调出历史(连续重复只记一条,上限 100)
   if (aiSentHistory[aiSentHistory.length - 1] !== text) {
     aiSentHistory.push(text);
@@ -1335,6 +1460,14 @@ els.aiStop.addEventListener('click', () => {
   if (activeAiStream) window.api.aiStop(activeAiStream.requestId);
 });
 
+// 点进 AI 对话区 → 把焦点交给这个容器(tabindex=-1)。
+// 不 preventDefault:否则拖选文字会失效。插在下面的消息渲染之前即可。
+els.aiChat.addEventListener('mousedown', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('button, a, input, textarea, select')) return; // 别抢按钮/输入框的焦点
+  try { els.aiChat.focus({ preventScroll: true }); } catch { /* ignore */ }
+});
+
 // 把文本填进消息体,解析 ```bash 代码块(带"执行"按钮)
 function fillAiBody(body, text) {
   body.innerHTML = '';
@@ -1348,11 +1481,24 @@ function fillAiBody(body, text) {
       pre.className = 'ai-code';
       pre.textContent = code;
       body.appendChild(pre);
+      const actions = document.createElement('div');
+      actions.className = 'ai-code-actions';
       const btn = document.createElement('button');
       btn.className = 'btn-mini ai-run';
       btn.textContent = '▶ 在当前终端执行';
       btn.addEventListener('click', () => runInActiveTerminal(code));
-      body.appendChild(btn);
+      actions.appendChild(btn);
+      const cbtn = document.createElement('button');
+      cbtn.className = 'btn-mini ai-copy';
+      cbtn.textContent = '📋 复制命令';
+      cbtn.addEventListener('click', () => {
+        window.api.copyText(code);
+        setStatus('已复制命令到剪贴板', 'var(--green)');
+        cbtn.textContent = '✓ 已复制';
+        setTimeout(() => { cbtn.textContent = '📋 复制命令'; }, 1200);
+      });
+      actions.appendChild(cbtn);
+      body.appendChild(actions);
     }
   }
 }
@@ -1363,7 +1509,25 @@ function appendAiMsg(role, text) {
   wrap.className = `ai-msg ${role}`;
   const label = document.createElement('div');
   label.className = 'ai-msg-label';
-  label.textContent = role === 'user' ? '你' : 'AI';
+  const labelText = document.createElement('span');
+  labelText.textContent = role === 'user' ? '你' : 'AI';
+  label.appendChild(labelText);
+  // 一键复制整条消息:选中文字不一定好拖(流式文本边滚边变),给个显式入口
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'ai-msg-copy';
+  copyBtn.title = '复制这条消息(含代码块)';
+  copyBtn.textContent = '📋';
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const body = wrap.querySelector('.ai-msg-body');
+    const txt = (body ? body.innerText : wrap.innerText) || '';
+    if (txt.trim()) window.api.copyText(txt.trim());
+    setStatus('已复制 AI 消息到剪贴板', 'var(--green)');
+    copyBtn.textContent = '✓';
+    setTimeout(() => { copyBtn.textContent = '📋'; }, 1200);
+  });
+  label.appendChild(copyBtn);
   wrap.appendChild(label);
   const body = document.createElement('div');
   body.className = 'ai-msg-body';
@@ -1432,11 +1596,13 @@ async function loadSessions() {
     if (!groupsCollapsedOnBoot) {
       state.collapsedGroups.clear();
       for (const g of state.groups) state.collapsedGroups.add(Number(g.id));
-      state.collapsedTopHost = true;
+      // 无会话时展开「🖥 主机」分组(collapsed=false),露出首次使用空态卡片;有会话则按约定全部收起
+      state.collapsedTopHost = state.sessions.length > 0;
       state.collapsedTopBastion = true;
       groupsCollapsedOnBoot = true;
     }
     renderSessionList(els.inputSessionSearch.value);
+    maybeShowOnboarding(); // 首次使用(无会话且未完成引导)自动弹新手引导
     // 启动延迟加载:堡垒机资产恢复(读库+渲染)不阻塞首屏,等主界面先出来再异步做。
     // 资产含 4 位数+时对首帧无感知需求,晚 300ms 显示不影响使用。
     setTimeout(() => { try { restoreBastionAssets(); } catch { /* ignore */ } }, 300);
@@ -1605,6 +1771,97 @@ function filterSessions(filter) {
 
 // 按视图渲染会话列表:树形(tree)/列表(list)/网格(grid)
 // 顶层分成两个分组:「🖥 主机」(所有普通会话分组)+「🛡 堡垒机」(JMS/H3C 资产)
+// 首次使用者的空态卡片:会话列表为空时给出行动入口(而非光秃秃一句“新建”)
+function buildEmptyHostCard() {
+  const card = document.createElement('div');
+  card.className = 'session-empty-card';
+
+  const title = document.createElement('div');
+  title.className = 'sec-title';
+  title.textContent = '👋 还没有任何会话';
+  const sub = document.createElement('div');
+  sub.className = 'sec-sub';
+  sub.textContent = '从下面的入口开始，数据加密保存在本机，不出网。';
+  const actions = document.createElement('div');
+  actions.className = 'sec-actions';
+
+  const mk = (label, titleAttr, onClick, primary) => {
+    const b = document.createElement('button');
+    b.className = 'btn-mini' + (primary ? ' sec-primary' : '');
+    b.type = 'button';
+    b.textContent = label;
+    if (titleAttr) b.title = titleAttr;
+    b.addEventListener('click', onClick);
+    actions.appendChild(b);
+  };
+  mk('➕ 新建会话', '新建一台主机/堡垒机连接会话', () => openSessionModal(null), true);
+  mk('📄 批量导入', '从 CSV/Excel/备份批量导入主机', () => openImportModal());
+  mk('🔑 导入 ~/.ssh/config', '直接读 ~/.ssh/config 生成会话(密码/口令需重新填)', () => importSshConfigSelected());
+  mk('⚡ 快捷连接', '输入 user@host[:port] 临时直连,不保存会话', () => toggleQuickConnect());
+
+  const guide = document.createElement('button');
+  guide.type = 'button';
+  guide.className = 'ob-guide-link';
+  guide.textContent = '🚀 查看新手引导';
+  guide.addEventListener('click', () => openOnboarding());
+
+  card.appendChild(title);
+  card.appendChild(sub);
+  card.appendChild(actions);
+  card.appendChild(guide);
+  return card;
+}
+
+// ---- 新手引导向导(首次使用自动弹出,三步;空态卡片可重开) ----
+let obStep = 0;
+const OB_STEPS = 3;
+function obStepsEls() { return document.querySelectorAll('.ob-step'); }
+function obDotsEls() { return document.querySelectorAll('.ob-dot'); }
+function obRender() {
+  obStepsEls().forEach((s, i) => s.classList.toggle('hidden', i !== obStep));
+  obDotsEls().forEach((d, i) => d.classList.toggle('active', i === obStep));
+  els.obBack.classList.toggle('hidden', obStep === 0);
+  const last = obStep === OB_STEPS - 1;
+  els.obNext.classList.toggle('hidden', last);
+  els.obNext.textContent = obStep === 0 ? '开始 →' : '下一步 →';
+  els.obFinish.classList.toggle('hidden', !last);
+  els.obSkip.classList.toggle('hidden', last); // 最后一步只剩「开始使用」
+}
+function openOnboarding() {
+  obStep = 0;
+  obRender();
+  els.onboardingModal.classList.remove('hidden');
+}
+function closeOnboarding(markDone = true) {
+  els.onboardingModal.classList.add('hidden');
+  if (markDone && !state.settings.onboardingDone) { state.settings.onboardingDone = true; saveSettings(); }
+}
+function obNext() { if (obStep < OB_STEPS - 1) { obStep++; obRender(); } }
+function obBack() { if (obStep > 0) { obStep--; obRender(); } }
+// 首次使用自动弹出:无会话且未完成过引导时,弹一次(之后从空态卡片重开)。
+function maybeShowOnboarding() {
+  try {
+    if (state.settings.onboardingDone || state.sessions.length > 0) return;
+    const boot = new URLSearchParams(location.search).get('boot') === '1'; // 正式版有开机过场
+    const mode = state.settings.bootIntro || 'short';
+    // 过场动画 z-index 9999 会盖住弹窗,等它播完/被跳过再弹;dev/测试无过场几乎立即弹。
+    const delay = boot ? (mode === 'full' ? 2000 : mode === 'skip' ? 0 : 1400) : 40;
+    let waits = 0;
+    const fire = () => {
+      try {
+        if (state.settings.onboardingDone || state.sessions.length > 0) return;
+        // 已经有别的弹窗开着(新建会话/导入/配置…):不要叠上来抢焦点,等它关掉再弹
+        if (document.querySelector('.modal:not(.hidden)')) {
+          if (waits++ < 5) setTimeout(fire, 1500);
+          return;
+        }
+        openOnboarding();
+      } catch { /* ignore */ }
+    };
+    setTimeout(fire, delay);
+  } catch { /* ignore */ }
+}
+
 function renderSessionList(filter) {
   const kbWasInside = els.sessionTree.contains(document.activeElement); // 重渲染后把键盘焦点还回去
   els.sessionTree.innerHTML = '';
@@ -1662,11 +1919,15 @@ function renderSessionList(filter) {
     els.sessionTree.appendChild(mkTopHead('🖥 主机', 'host'));
     if (!topCollapsed.host) {
       if (sessions.length === 0) {
-        // 无普通会话:主机分组下提示
-        const empty = document.createElement('div');
-        empty.className = 'asset-group';
-        empty.textContent = f ? '没有匹配的会话' : '还没有会话,点右上角"＋ 新建"';
-        hostContainer.appendChild(empty);
+        // 无普通会话:主机分组下提示。无筛选时给首次使用者行动卡片;筛选时只是“没匹配”
+        if (f) {
+          const empty = document.createElement('div');
+          empty.className = 'asset-group';
+          empty.textContent = '没有匹配的会话';
+          hostContainer.appendChild(empty);
+        } else {
+          hostContainer.appendChild(buildEmptyHostCard());
+        }
       } else {
         const view = state.settings.sessionView || 'tree';
         if (view === 'grid') renderSessionsGrid(sessions, hostContainer);
@@ -2333,6 +2594,23 @@ function menuDisconnect() {
   if (!done) alert('当前没有可断开的连接');
 }
 
+// 锁定中?(闲置自动锁定 / 菜单「锁定」都走覆盖层)
+function lockOverlayVisible() {
+  return !!els.lockOverlay && !els.lockOverlay.classList.contains('hidden');
+}
+// 锁定期间把键盘焦点强制抓回密码框:
+// 用户常见的操作是"点一下窗口任意位置再敲密码",点空白处会把 activeElement 变成 body,
+// 而全局 keydown 里有"BODY 兜底转发给终端"的逻辑 → 密码字符被发到远端 shell,界面看起来
+// 就是"输不进密码"(用户报的 bug)。这里三道保险:
+//   ① 全局 keydown 最前面:锁定时一律路由到密码框,绝不进终端/快捷键/命令补全;
+//   ② 密码框 blur 后立刻抓回;
+//   ③ 点覆盖层空白处(非输入框/按钮)不改变焦点。
+function focusLockInput() {
+  try {
+    if (document.activeElement !== els.loPw) els.loPw.focus();
+  } catch { /* ignore */ }
+}
+
 // 锁定覆盖层(临时锁定):铺满主窗口,保留窗口按钮;会话在底层保持,解锁后原样恢复
 function showLockOverlay() {
   els.lockOverlay.classList.remove('hidden');
@@ -2485,51 +2763,10 @@ async function batchDelete() {
   );
 }
 
-// 批量上传:选一个本地文件,传到每个选中主机的远程目录
-function batchUpload() {
-  const list = selectedSessions();
-  if (!list.length) return;
-  showPrompt({
-    title: '批量上传', label: '远程目录(每台主机同一目录,如 /tmp)', value: '/tmp',
-    onOk: async (remoteDir) => {
-      if (!remoteDir) return;
-      const res = await window.api.sftpBatchUpload(list, remoteDir);
-      showBatchResult(res, '上传');
-    },
-  });
-}
-
-// 批量下载:从每个选中主机下载同一远程文件到本地文件夹(按主机名命名)
-function batchDownload() {
-  const list = selectedSessions();
-  if (!list.length) return;
-  showPrompt({
-    title: '批量下载', label: '远程文件路径(每台主机同一路径,如 /var/log/syslog)', value: '',
-    onOk: async (remotePath) => {
-      if (!remotePath) return;
-      const res = await window.api.sftpBatchDownload(list, remotePath);
-      showBatchResult(res, '下载');
-    },
-  });
-}
-
-function showBatchResult(res, label) {
-  if (!res || res.canceled) return;
-  if (!res.ok) { alert(`${label}失败: ${res.error}`); return; }
-  const ok = res.results.filter((r) => r.ok).length;
-  const fail = res.results.filter((r) => !r.ok);
-  let msg = `${label}完成:成功 ${ok} 台,失败 ${fail.length} 台`;
-  if (fail.length) msg += `\n\n${fail.map((r) => `❌ ${r.name}: ${r.error}`).join('\n')}`;
-  if (label === '下载') msg += '\n\n文件保存在所选文件夹,按 主机名_文件名 命名';
-  alert(msg);
-  batchClear();
-}
-
 // 右键菜单:动态填充菜单项(会话的 编辑/删除,分组的 重命名/删除,标签的 关闭/复制/重命名…)
 // items 每项: { label, action, danger? } 或 { separator: true } 分隔线
 let ctxMenuOpenedAt = 0; // 菜单最近打开时间:用于忽略"右键后紧跟的残留 click"
 function showCtxMenu(x, y, items) {
-  ctxMenuOpenedAt = Date.now(); // 记录打开时刻
   els.ctxMenu.innerHTML = '';
   for (const it of items) {
     if (it.separator) {
@@ -2561,6 +2798,9 @@ function showCtxMenu(x, y, items) {
   }
   els.ctxMenu.style.left = `${x}px`;
   els.ctxMenu.style.top = `${y}px`;
+  // 记录打开时刻放在菜单构建/测量之后：250ms 防抖只用于忽略"右键残留 click"，
+  // 不应当把左键按钮打开菜单的同一 click 也算进去（大列表/慢机器上构建可能耗时）。
+  ctxMenuOpenedAt = Date.now();
   els.ctxMenu.classList.remove('hidden');
   // 菜单不能超出视口:搜索出的主机在屏幕最下方/最右侧时,若 x/y 靠近边缘,
   // 菜单会跑到屏幕外 → 用户看不到功能项。测尺寸后往上/往左翻,保证完整可见。
@@ -2585,7 +2825,7 @@ function closeCtxMenu(from) {
 
 // ---------- 终端调试日志 ----------
 // 排查"终端/vim 按键不生效、粘贴后打不出空格"这类问题:常驻记录 按键(含当时焦点)、
-// 焦点迁移、收/发数据、连接状态。工具栏「🧾 调试」打开面板;内容可能含敏感输入,排查完请清空。
+// 焦点迁移、收/发数据、连接状态。菜单栏「调试 → 终端调试日志」打开面板(⌘⇧D 同效);内容可能含敏感输入,排查完请清空。
 const termDebug = { lines: [], max: 2000 };
 // dlog 批量落盘:攒 500ms 的行一次 IPC 发给主进程写文件(高频 dlog 不逐条 IPC,降低开销)
 let dlogFlushTimer = null;
@@ -2623,7 +2863,8 @@ window.addEventListener('unhandledrejection', (e) => {
 function toggleDebugPanel() {
   const hidden = els.debugPanel.classList.contains('hidden');
   els.debugPanel.classList.toggle('hidden', !hidden);
-  els.btnDebug.classList.toggle('active', hidden);
+  // 工具栏按钮已按用户要求移出(改由菜单栏「调试」菜单打开),这里保留空值兜底
+  if (els.btnDebug) els.btnDebug.classList.toggle('active', hidden);
   if (!hidden) {
     positionDebugPanel(); // 打开时放到记忆位置(默认右下角)
     renderDebugBody();
@@ -2682,6 +2923,28 @@ function termElInfo(el) {
   return tag + id + (cls ? '.' + cls.split(/\s+/).join('.') : '');
 }
 
+// ---------- 复制辅助:终端以外的可选中区域(AI 对话 / SFTP 日志 / 调试日志…) ----------
+// 判定"当前有没有终端以外的文字选中":全局按键兜底会 preventDefault(否则 BODY 焦点按键进不了终端),
+// 但那样连 ⌘C 的原生复制也一起吞掉了 —— AI 对话里的文字因此复制不出来。
+function hasSelectionOutsideTerm() {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (!node) return false;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || !el.closest) return false;
+  return !el.closest('.xterm, .xterm-helper-textarea');
+}
+// ⌘A 在 AI 对话区 = 全选整个对话记录(而不是把按键丢给终端)
+function selectAllInRegion(el) {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || !el) return;
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
 // ---------- 全局快捷键:⌘K 命令面板 + 高频面板开关 ----------
 // 必须注册在下方 window keydown(2459)之前:该 handler 在 BODY 焦点会把按键转发给终端,
 // 新快捷键命中组合时要 stopImmediatePropagation 阻断它,否则 ⌘K 等会被当普通键转发。
@@ -2700,7 +2963,7 @@ window.addEventListener('keydown', (e) => {
   if (!e.shiftKey || e.altKey) return; // 以下均为 Cmd/Ctrl+Shift+字母
   const runShortcut = (fn) => { closePalette(); fn(); }; // 命令面板开着时按快捷键 = 关面板并执行
   switch (k) {
-    case 's': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleSftpPanel); break;
+    case 's': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(openSftpEntry); break;
     case 'b': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleBatchPanel); break;
     case 'm': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleCmdPanel); break;
     case 'a': e.preventDefault(); e.stopImmediatePropagation(); runShortcut(toggleAiPanel); break;
@@ -2712,8 +2975,22 @@ window.addEventListener('keydown', (e) => {
 
 // 按键捕获:记录"按键 + 此刻焦点",区分按键正常送达终端(xterm textarea)还是被吞(焦点在 BODY/菜单)。
 // 同时兜底:BODY 焦点(点面板空白/滚动/切面板后焦点被顶掉)时,把按键转发给当前活跃终端,
-// 而不是吞掉 —— 否则"点一下 SFTP 面板空白 → 回终端敲 Cmd+A/普通键"会全部失效。
+// 而不是吞掉 —— 否则"点一下别处(列表/面板/工具栏空白) → 回终端敲 Cmd+A/普通键"会全部失效。
 window.addEventListener('keydown', (e) => {
+  // 本 handler 自己合成的"转发给终端"按键(见下方 BODY 兜底)不要再被自己处理一遍 ——
+  // 否则焦点没真正落到终端(容器不可聚焦/测试桩)时会无限递归转发。
+  if (e.__polarisSynthetic) return;
+  // 锁定中:所有按键只归密码框(哪怕焦点被顶到 body/终端),绝不转发给 SSH 会话或触发快捷键
+  if (lockOverlayVisible()) {
+    if (document.activeElement === els.loPw) return; // 焦点正确 → 交给输入框自己处理
+    e.preventDefault(); // 防止默认动作把字符插到别处
+    focusLockInput();
+    // 把这次按键补进密码框(与 BODY 兜底同思路:焦点刚抓回来,这次 keydown 不会再派发一次)
+    if (e.key === 'Enter') { submitLock(); return; }
+    if (e.key === 'Backspace') { els.loPw.value = els.loPw.value.slice(0, -1); return; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) els.loPw.value += e.key;
+    return;
+  }
   // 弹窗打开时绝不允许按键漏进终端(焦点被抢走 → 用户看到的是“密码框无法输入”)
   // 注意:必须取“最上层”弹窗。导入时导入弹窗仍开着、密码弹窗叠在上面,
   // 用 querySelector 会拿到先出现的导入弹窗,把按键/焦点抢到背后的输入框。
@@ -2734,10 +3011,33 @@ window.addEventListener('keydown', (e) => {
   const inTerm = !!cls && cls.indexOf('xterm-helper-textarea') >= 0;
   const isBody = ae === document.body;
   const onMenu = !!cls && cls.indexOf('ctx-menu') >= 0;
-  if (!inTerm && !isBody && !onMenu) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
+  // AI 对话区(可聚集的滚动容器):点进来后焦点在这里,按键既不该被兜底转给终端,
+  // 也不该把 ⌘C/⌘A 吞掉 —— 见下方 inAiChat 分支。
+  const inAiChat = !!ae && ae.id === 'ai-chat';
+  if (!inTerm && !isBody && !onMenu && !inAiChat) return; // 焦点在普通输入框/按钮等 UI 上,与终端无关,不记
   const mod = (e.ctrlKey ? '^' : '') + (e.altKey ? '⌥' : '') + (e.metaKey ? '⌘' : '') + (e.shiftKey ? '⇧' : '');
   const key = k.length === 1 ? (k === ' ' ? '␣' : k) : k;
-  if (isBody) {
+  const isMod = PLATFORM_IS_MAC ? e.metaKey : e.ctrlKey;
+  // 焦点兜底只为了"按键进终端",复制快捷键(⌘C)例外:界面上已经选中了文字(AI 对话/日志/SFTP 路径)
+  // 就把这次按键原样交给浏览器做原生复制,否则用户永远复制不出 AI 的回答。
+  if ((isBody || inAiChat) && isMod && !e.altKey && !e.shiftKey && k.toLowerCase() === 'c' && hasSelectionOutsideTerm()) {
+    dlog('KEY', `'${key}' ${mod} active=${inAiChat ? 'AI-对话区' : 'BODY'} →有选中文字,放行原生复制`);
+    return; // 不 preventDefault、不转给终端
+  }
+  // AI 对话区:⌘A = 全选这段对话(方便整段复制);其它按键才按"用户其实想敲终端"还给终端
+  if (inAiChat && isMod && !e.altKey && !e.shiftKey && k.toLowerCase() === 'a') {
+    e.preventDefault();
+    selectAllInRegion(ae);
+    dlog('KEY', `'${key}' ${mod} active=AI-对话区 →全选对话内容`);
+    return;
+  }
+  if (isBody || inAiChat) {
+    // AI 对话区里的"组合键"一律留给界面/系统(尤其 Ctrl+C 没选中文字时):否则会静默给远端发 ^C,
+    // 把正在跑的命令打断 —— 用户只是想复制/安静待着。只有普通打字才还给终端(见下)。
+    if (inAiChat && (e.ctrlKey || e.metaKey || e.altKey)) {
+      dlog('KEY', `'${key}' ${mod} active=AI-对话区 →组合键留给界面`);
+      return;
+    }
     // BODY 焦点兜底:把键盘焦点还给当前活跃终端,并阻止默认行为,让按键真正进终端。
     // Cmd+A(全选)在 BODY 上会被浏览器当"全选页面"吞掉,这里显式交给 xterm。
     const t = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
@@ -2756,16 +3056,24 @@ window.addEventListener('keydown', (e) => {
             key: k, code: e.code || '', bubbles: true, cancelable: true,
             ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey,
           });
+          ne.__polarisSynthetic = true; // 防递归(见 handler 开头的同名判断)
+          // 关键:把原事件的 keyCode/which 补回去。KeyboardEvent 构造函数不接受这两个字段,
+          // 不补的话合成事件 keyCode=0(线上日志特征 `KEY 'c' ^ ime=0 kc=0`),xterm 的按键映射
+          // 拿不到键码就直接吞掉 → Ctrl+C/Ctrl+D/Tab 在 BODY 焦点下全部失效(用户报"ctrl+C 不生效")。
+          const kc = e.keyCode || e.which || (k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0);
+          try { Object.defineProperty(ne, 'keyCode', { get: () => kc, configurable: true }); } catch { /* ignore */ }
+          try { Object.defineProperty(ne, 'which', { get: () => kc, configurable: true }); } catch { /* ignore */ }
+          try { Object.defineProperty(ne, 'charCode', { get: () => 0, configurable: true }); } catch { /* ignore */ }
           ta.dispatchEvent(ne);
         }
       } catch { /* ignore */ }
-      dlog('KEY', `'${key}' ${mod || '-'} active=BODY →已兜底转发终端`);
+      dlog('KEY', `'${key}' ${mod || '-'} active=${inAiChat ? 'AI-对话区' : 'BODY'} →已兜底转发终端`);
       return;
     }
     dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ⚠️BODY 按键被吞`);
     return;
   }
-  dlog('KEY', `'${key}' ${mod || '-'} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
+  dlog('KEY', `'${key}' ${mod || '-'} ime=${e.isComposing ? 1 : 0} kc=${e.keyCode || 0} active=${termElInfo(ae)} ${inTerm ? '→终端' : (onMenu ? '⚠️菜单' : '⚠️BODY 按键被吞')}`);
   // 空格键组合卡死防御:vim 等 TUI 退出(备用屏切回)后 xterm 内部 _isComposing 可能残留卡死,
   // 之后的空格被当输入法组合吞掉(现象:打不出空格,其他字符键正常;日志特征:KEY '␣' 出现但无 SEND)。
   // 在 xterm 处理本 keydown 之前(本 handler 是 window 捕获层,先于 textarea)复位组合态,让空格正常输出。
@@ -2774,7 +3082,13 @@ window.addEventListener('keydown', (e) => {
   // 真实中文输入(e.isComposing=true)一律不干预。
   if (inTerm && k === ' ' && !e.isComposing && e.keyCode !== 229) {
     for (const t of state.tabs.values()) {
-      if (t.term && t.term.textarea === e.target) { resetTermComposition(t.term); break; }
+      if (t.term && t.term.textarea === e.target) {
+        // 先按原有逻辑复位“确认卡住”的组合态；若状态检测不到但空格仍被吞，
+        // 由 250ms 看门狗兜底（重建输入法会话），避免每次空格额外发一条空 SEND。
+        resetTermComposition(t.term);
+        armSpaceWatchdog(t);
+        break;
+      }
     }
   }
 }, true);
@@ -2811,13 +3125,30 @@ function termCompositionStuck(term) {
   } catch { /* ignore */ }
   return true; // 两个信号都取不到 → 保守复位(此时 textarea 已清空,不会发脏数据)
 }
-function resetTermComposition(term) {
+function resetTermComposition(term, force) {
   const ta = term && term.textarea;
   if (!ta) return false;
-  if (!termCompositionStuck(term)) return false;
+  if (!force && !termCompositionStuck(term)) return false;
   try { ta.value = ''; } catch { /* ignore */ }
   try { ta.dispatchEvent(new CompositionEvent('compositionend', { data: '', bubbles: true })); return true; } catch { return false; }
 }
+// 空格看门狗：空格 keydown 已到达窗口，但 250ms 内 xterm 一个 onData 都没产生
+// （日志特征：KEY '␣' 有、SEND 没有；失焦再聚焦才恢复）。
+// 说明 xterm/输入法组合态卡住 → 主动重建输入法会话；**不自动补发空格**，避免真组合时双空格。
+function armSpaceWatchdog(tab) {
+  if (!tab || !tab.term) return;
+  const seq = (tab.__spaceSeq = (tab.__spaceSeq || 0) + 1);
+  tab.__spacePending = seq;
+  setTimeout(() => {
+    if (!state.tabs.has(tab.sessionId)) return;
+    if (tab.__spacePending !== seq) return; // 又按了新的空格，交给新的看门狗
+    if ((tab.__spaceHandledSeq || 0) >= seq) return; // 本次空格已产生输入数据
+    try { tab.term.textarea.blur(); tab.term.textarea.focus(); } catch { /* ignore */ }
+    try { resetTermComposition(tab.term, true); } catch { /* ignore */ }
+    dlog('RECOVER', '空格未送达 → 已重建输入法会话');
+  }, 250);
+}
+
 // ---- 中文输入法不定时失效修复 ----
 // 症状:拼音候选窗偶尔弹不出来,按键直接以纯字母形式上屏/发到服务器。
 // 根因:fcitx5/ibus 等输入法在「切标签 / 终端失焦 / 窗口失焦」时不会触发 xterm 隐藏
@@ -2845,6 +3176,7 @@ function setupImeGuard(term) {
   };
   ta.addEventListener('compositionstart', () => {
     composing = true;
+    clearDeadKeys(); // 真组合开始 ⇒ 之前的 229 都是正常输入法,死键统计作废
     clearTimer();
     // 兜底:组合若卡死(长时间无任何输入),10s 后强制复位,避免候选窗永久弹不出。
     // 正常打字时每次 compositionupdate 都会重置计时;10s 足够慢速拼音(边想边打)不被误杀
@@ -2862,31 +3194,60 @@ function setupImeGuard(term) {
   ta.addEventListener('focus', resetStuck);
   // macOS/Windows 输入法"假组合"守卫:key='Process'/keyCode 229 连发,但本终端并没有真正在组合
   // (composing=false,即 compositionstart 从未触发)→ 是输入法残留的死键状态拦截了字符键
-  // (日志:KEY 'Process' 刷屏,命令打不进去,只剩 Enter 能发)。分两档:
-  //   1) 每次死键都派发空 compositionend,让 xterm 的 _isComposing 复位;
-  //   2) 连续 ≥3 个死键仍没恢复(真卡死)→ 强制 blur+focus 重建输入法会话
-  //      (Chromium 向系统申请全新 IME session,OS 层的拦截才真正解除)。
-  // 有真实组合(compositionstart 已触发)时一律不干预,打拼音不受影响。
-  let processBurst = 0;
+  // (日志:KEY 'Process' 刷屏,命令打不进去,只剩 Enter/Backspace 能发)。
+  // 旧实现按"**连续** N 个死键"计数,门槛 3;实测用户是「2 连发 → 敲退格 → 2 连发」,
+  // 计数器被普通按键复位,永远到不了 3 → 死键状态一直挂着、字符一直吞(v1.0.9 线上日志即此)。
+  // 现在改成「**时间窗 + 延迟判定**」:
+  //   ① keydown 时先按老规矩派发空 compositionend(让 xterm 复位);
+  //   ② **150ms 后再确认**:真输入法按下的第一次按键同样带 229,但紧接着就有 compositionstart;
+  //      等不到 compositionstart 才算死键 —— 延迟判定保证正常拼音输入不被误伤;
+  //   ③ 3s 窗口内累计 ≥2 个死键 ⇒ blur+focus 重建输入法会话(Chromium 向系统申请全新 IME
+  //      session,OS 层的拦截才真正解除);跨窗口的死键不累计,避免长期零散死键把会话炸掉。
+  const DEAD_KEY_WINDOW = 3000; // 死键统计窗口(ms)
+  const DEAD_KEY_THRESHOLD = 2; // 窗口内累计到几个就重建(2:一次"连打两键没反应"即救)
+  const DEAD_KEY_SETTLE = 150;  // 延迟判定:这段时间内没来 compositionstart 才算死键
+  const deadKeyHits = [];       // 已确认的死键时间戳
+  const deadKeyProbes = new Set(); // 待结算的死键(每个死键各排一个,连发不会漏计)
   let imeHintShown = false;
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Process' || e.keyCode === 229) {
-      if (composing) { processBurst = 0; return; } // 真实组合中,让 IME 正常走
-      try { resetTermComposition(term); } catch { /* ignore */ }
-      if (++processBurst >= 3) {
-        processBurst = 0;
-        try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
-        // 连续死键说明输入法(IME)持续激活拦截字符键(命令打不进、空格被选字吞)。
-        // 终端里输命令应切英文输入法;提示一次,不刷屏。
-        if (!imeHintShown && navigator.platform.toUpperCase().includes('WIN')) {
-          imeHintShown = true;
-          try { setStatus('⚠️ 检测到输入法(IME)开启,终端输命令请切换英文输入法(Win+Space)', 'var(--orange)'); } catch { /* ignore */ }
-        }
-      }
-    } else {
-      processBurst = 0; // 有真实按键/正常键进来,复位计数
+  const clearDeadKeyProbes = () => {
+    for (const timer of deadKeyProbes) clearTimeout(timer);
+    deadKeyProbes.clear();
+  };
+  const clearDeadKeys = () => { deadKeyHits.length = 0; clearDeadKeyProbes(); };
+  const noteDeadKey = () => {
+    const now = Date.now();
+    // 只保留窗口内的累计:跨窗口的死键不叠加,避免长期零散死键把会话炸掉
+    while (deadKeyHits.length && now - deadKeyHits[0] >= DEAD_KEY_WINDOW) deadKeyHits.shift();
+    deadKeyHits.push(now);
+    if (deadKeyHits.length < DEAD_KEY_THRESHOLD) return;
+    deadKeyHits.length = 0;
+    try { ta.blur(); ta.focus(); } catch { /* ignore */ } // 重建输入法会话
+    dlog('RECOVER', `输入法死键 ×${DEAD_KEY_THRESHOLD}(${DEAD_KEY_WINDOW}ms 内)→ 已重建输入法会话`);
+    // 连续死键说明输入法(IME)持续激活拦截字符键(命令打不进、空格被选字吞)。
+    // 终端里输命令应切英文输入法;每个终端提示一次,不刷屏。
+    if (!imeHintShown) {
+      imeHintShown = true;
+      try { setStatus('⚠️ 输入法一直处于激活状态,字符键被吞了:请切到英文输入法再输命令(⌘/Ctrl+Space)', 'var(--orange)'); } catch { /* ignore */ }
     }
+  };
+  ta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Process' && e.keyCode !== 229) return;
+    if (composing) { clearDeadKeys(); return; } // 真实组合中,让 IME 正常走
+    try { resetTermComposition(term); } catch { /* ignore */ }
+    // 每个死键单独排一个延迟结算:150ms 内没等到 compositionstart 才算真的死键。
+    // 不用单个共享句柄,否则"2 连发"只算 1 次(两次按键落在同一个结算周期里)。
+    const timer = setTimeout(() => {
+      deadKeyProbes.delete(timer);
+      if (composing) return; // 期间来了 compositionstart ⇒ 正常输入法,不是死键
+      noteDeadKey();
+    }, DEAD_KEY_SETTLE);
+    deadKeyProbes.add(timer);
   });
+  // 真实字符到达 ⇒ 这条链路是通的,清空死键统计(避免跨场景累计误触发)。
+  // 不能挂在 ta 的 keydown 上清:普通按键被 xterm 处理完会 stopImmediatePropagation,
+  // 后注册的监听根本收不到(实测:只有 229 能收到),会误以为"一直没通过、一直死键"。
+  // term.onData 对真实字符必定触发(它就是送进 SSH 的那条路),语义正好。
+  try { term.onData(clearDeadKeys); } catch { /* ignore */ }
   return resetStuck;
 }
 
@@ -2993,6 +3354,10 @@ function showTabMenu(e, sessionId) {
   // 已断开的标签:提供"重新连接"
   if (t.status !== 'connected' && t.status !== 'connecting') {
     items.push({ label: '🔃 重新连接', action: () => reconnectTab(sessionId) });
+  }
+  // 用本机 WinSCP 打开这个会话的 SFTP(没装 WinSCP / telnet 时点了给提示)
+  if (state.winScp.installed && t.session && (t.session.protocol || 'ssh') !== 'telnet') {
+    items.push({ label: '🪟 用 WinSCP 打开 SFTP', action: () => openSftpEntry(sessionId) });
   }
   items.push(
     { separator: true },
@@ -3335,6 +3700,7 @@ function openSessionModal(session, presetGroupId) {
   els.fPassword.value = session ? (session.password || '') : '';
   els.fPrivateKey.value = session ? (session.private_key || '') : '';
   els.fPassphrase.value = session ? (session.passphrase || '') : '';
+  els.fSuPassword.value = session ? (session.su_password || '') : '';
   const jump = session && session.jump ? session.jump : null;
   els.fJumpHost.value = jump ? (jump.host || '') : '';
   els.fJumpPort.value = jump ? (jump.port || 22) : 22;
@@ -3349,6 +3715,7 @@ function openSessionModal(session, presetGroupId) {
     (session.protocol && session.protocol !== 'ssh')
     || session.private_key
     || session.passphrase
+    || session.su_password
     || (session.encoding && session.encoding !== 'utf8')
     || session.on_connect
     || (session.jump && session.jump.host)
@@ -3454,6 +3821,7 @@ async function doSaveSession(groupId) {
     password: els.fPassword.value,
     privateKey: els.fPrivateKey.value.trim(),
     passphrase: els.fPassphrase.value,
+    suPassword: els.fSuPassword.value,
     jump: els.fJumpHost.value.trim()
       ? {
           host: els.fJumpHost.value.trim(),
@@ -3538,6 +3906,7 @@ async function cloneSession(s) {
     password: s.password || '',       // 已是解密后的明文,主进程会再加密入库
     privateKey: s.private_key || '',
     passphrase: s.passphrase || '',
+    suPassword: s.su_password || '',  // 切换 root 密码(已解密明文,主进程再加密入库)
     encoding: s.encoding || 'utf8',
     protocol: s.protocol || 'ssh',
     groupId: s.group_id != null ? s.group_id : undefined,
@@ -4565,6 +4934,10 @@ function jmsDoSave() {
   state.jmsActiveId = server.id;
   jmsPersistConfig();
   jmsRenderServerSelect();
+  // 左侧保存后:右侧堡垒机下拉 + 左侧会话列表都要同步(新建时 baseUrl 还是空,会被右侧下拉过滤;
+  // 旧版只刷新左侧 JMS 弹窗下拉,导致右侧一直拿不到左侧刚创建的连接)
+  try { bastionRenderServerSelect(); } catch { /* ignore */ }
+  renderSessionList(els.inputSessionSearch.value);
   showJmsMsg(`✅ 已保存「${name}」(尚未连接,点"连接 JumpServer"登录)`);
 }
 
@@ -4597,6 +4970,7 @@ async function jmsDoLogin() {
       server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
       jmsPersistConfig();
       jmsRenderServerSelect(); // 先刷新下拉(会重置表单),再显示 OTP
+      try { bastionRenderServerSelect(); } catch { /* ignore */ }
       els.jmsOtpWrap.style.display = '';
       els.jmsOtp.value = '';
       els.jmsOtp.focus();
@@ -4617,6 +4991,7 @@ async function jmsDoLogin() {
     state.collapsedJms.add(server.id);
     jmsPersistConfig();
     jmsRenderServerSelect();
+    try { bastionRenderServerSelect(); } catch { /* ignore */ }
     await jmsLoadAssets();
   } catch (e) {
     showJmsMsg('登录异常: ' + ((e && e.message) || '未知错误'));
@@ -4655,6 +5030,7 @@ async function jmsDoMfa() {
     state.collapsedTopBastion = false; // 登录成功 → 展开顶级分组,资产区块头可见
     jmsPersistConfig();
     jmsRenderServerSelect();
+    try { bastionRenderServerSelect(); } catch { /* ignore */ }
     await jmsLoadAssets();
   } catch (e) {
     showJmsMsg('验证异常: ' + ((e && e.message) || '未知错误'));
@@ -4714,6 +5090,7 @@ async function jmsLoadAssets() {
   const r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token, cachedById: jmsCachedById(s) });
   if (!r.ok) { showJmsMsg(`拉取资产失败: ${r.error}`); return; }
   s.assets = r.assets || [];
+  collapseJmsGroupsState(s); // 登录后节点分组默认折叠
   cacheJmsAssets(s, s.assets); // 缓存落 SQLite(整批覆盖,删缓存中已消失的主机)
   els.jmsModal.classList.add('hidden'); // 登录成功 → 资产整合进会话列表
   jmsPersistConfig();
@@ -4768,7 +5145,7 @@ function jmsConnect(serverId, asset, accountName, openSftp, opts) {
     displayPort: (asset.protocols && asset.protocols[0] && asset.protocols[0].port) || 22,
   };
   connectToServer(session, opts);
-  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+  if (openSftp) setTimeout(() => openSftpEntry(), 800);
 }
 
 // 断开该 JumpServer 资产已打开的连接(标签保留,显示"已断开")
@@ -4896,8 +5273,12 @@ function batchBastionConnect(assets) {
   const list = (assets || []).filter(Boolean);
   if (!list.length) return;
   if (!els.bastionWebview || !els.bastionWebview.src) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录'); openBastionPanel(); return; }
-  setStatus(`批量连接 H3C 资产 ${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
+  // 只批量连 SSH/SFTP 资产:RDP/存储 Web 资产扔进批量只会一条条弹「不支持」
+  const sshList = list.filter((a) => bastionAssetSupportsSsh(a));
+  const skipped = list.length - sshList.length;
+  if (!sshList.length) { alert(`选中的 ${list.length} 台资产都不是 SSH 类型(RDP/Web 图形客户端),无法批量连接`); return; }
+  setStatus(`批量连接 H3C 资产 ${sshList.length} 台…${skipped ? `(跳过 ${skipped} 台非 SSH)` : ''}`, 'var(--accent)');
+  sshList.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
 }
 
 // 批量打开连接:依次连接一组「已保存堡垒机连接」的资产(未登录先自动登录)
@@ -5037,6 +5418,7 @@ function makeJmsAssetRow(s, a) {
 async function jmsRefreshServer(serverId) {
   const s = jmsFind(serverId);
   if (!s) return;
+  const wasLoggedIn = !!(s.token && s.user); // 未登录时点刷新=走登录流程 → 登录后分组折叠
   setStatus(`刷新「${s.name}」资产…`, 'var(--accent)');
   let r = s.token ? await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }) : { ok: false };
   // token 失效/未登录 → 用保存的密码静默重登后再拉(否则刷新会静默失败,用户以为没生效)
@@ -5048,6 +5430,10 @@ async function jmsRefreshServer(serverId) {
   }
   if (r.ok) {
     s.assets = r.assets || [];
+    if (!wasLoggedIn) { // 本次是登录(而非普通刷新):服务器区块 + 节点分组都回到默认折叠
+      state.collapsedJms.add(s.id);
+      collapseJmsGroupsState(s);
+    }
     renderSessionList(els.inputSessionSearch.value);
     setStatus(`已刷新「${s.name}」资产(${s.assets.length} 台)`, 'var(--green)');
   } else {
@@ -5095,6 +5481,8 @@ function jmsDeleteServerCompletely(serverId) {
   state.jmsServers = state.jmsServers.filter((x) => x.id !== serverId);
   if (state.jmsActiveId === serverId) state.jmsActiveId = state.jmsServers.length ? state.jmsServers[0].id : null;
   jmsPersistConfig(); // localStorage + jms-servers.json 同步删除
+  jmsRenderServerSelect();
+  try { bastionRenderServerSelect(); } catch { /* ignore */ }
   renderSessionList(els.inputSessionSearch.value);
   // 3. 清除浏览器登录态 + 持久化资产(该站点 origin)
   const origin = (() => { try { return base ? new URL(base).origin : ''; } catch { return ''; } })();
@@ -5172,6 +5560,7 @@ async function jmsRestore() {
         state.collapsedJms.add(s.id);
         const ar = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
         if (ar.ok) s.assets = ar.assets || [];
+        collapseJmsGroupsState(s); // 重登成功 → 节点分组默认折叠
       }
       // MFA 账号:静默登录返回 mfa_required,不打扰用户,等手动登录
     } catch { /* 网络/超时,忽略 */ }
@@ -5197,14 +5586,10 @@ function applyBastionDefaultWidth() {
   if (saved >= 300) els.bastionPanel.style.width = `${Math.min(saved, maxW)}px`;
   else els.bastionPanel.style.width = `${Math.min(Math.max(420, Math.round(window.innerWidth * 0.5)), maxW)}px`;
 }
-// 会话列表宽度 / SFTP 面板高度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
+// 会话列表宽度:拖动后持久化,启动时恢复(与堡垒机宽度持久化一致)
 function applySessionPanelWidth() {
   const saved = Number(state.settings.sessionPanelWidth) || 0;
   if (saved >= 160) els.sessionPanel.style.width = `${saved}px`;
-}
-function applySftpPanelHeight() {
-  const saved = Number(state.settings.sftpPanelHeight) || 0;
-  if (saved >= 120) els.sftpPanel.style.height = `${saved}px`;
 }
 function openBastionPanel() {
   els.bastionSlot.classList.remove('hidden');
@@ -5364,7 +5749,12 @@ async function bastionRemoveTab(id) {
   if (bastionActiveTabId === id) {
     bastionActiveTabId = bastionServers().length ? bastionServers()[0].id : null;
     if (bastionActiveTabId) bastionSwitchTab(bastionActiveTabId);
-    else { els.bastionWebview.src = 'about:blank'; els.bastionCurrent.textContent = ''; }
+    else {
+      els.bastionWebview.src = 'about:blank';
+      els.bastionCurrent.textContent = '';
+      els.bastionLoading.classList.add('hidden');
+      setBastionEmptyState('idle', '堡垒机浏览器', '在上方选择/输入堡垒机 Web 地址,点「打开」开始');
+    }
   }
   bastionRenderTabs();
   bastionRenderServerSelect();
@@ -5373,7 +5763,9 @@ async function bastionRemoveTab(id) {
 }
 
 // 渲染地址栏的服务器下拉
-// 右侧堡垒机下拉可选的站点:已保存的堡垒机配置 + 左侧创建的 JumpServer 服务器(需求:下拉选左侧信息)
+// 可以“选一个站点并加载”的来源(内部统一清单,双击资产/代码路径都用它):
+//   ① 已保存的堡垒机配置(cfg)② 左侧建的 JumpServer 服务器(jms)③ 库里已有资产的堡垒机 URL(url)
+// 下拉里**只展示 ②③**:① 已由上方标签栏覆盖,不再重复列一遍(同一批站点在三处各摆一份 → A2 冗余)。
 function bastionSelectableServers() {
   const list = [];
   for (const s of bastionServers()) {
@@ -5399,17 +5791,33 @@ function bastionSelectableServers() {
 function bastionRenderServerSelect() {
   const sel = els.bastionServerSelect;
   sel.innerHTML = '';
-  // 手动输入地址放最前(默认选中):避免"打开"误用第一个已保存堡垒机,而忽略用户手输的地址
-  const empty = document.createElement('option');
-  empty.value = '';
-  empty.textContent = '(手动输入地址)';
-  sel.appendChild(empty);
-  for (const s of bastionSelectableServers()) {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.name;
-    sel.appendChild(opt);
-  }
+  // 已保存的堡垒机配置由上方标签栏(tabs)直接覆盖 → 下拉只放标签栏覆盖不到的站点:
+  //   ① 左侧建的 JumpServer 服务器 ② 库里已有资产、但没建“保存连接”的堡垒机 URL。
+  // 占位选项放最前(默认选中):避免“打开”误用第一个站点而忽略用户手输的地址。
+  const all = bastionSelectableServers();
+  const jms = all.filter((s) => s.src === 'jms');
+  const urls = all.filter((s) => s.src === 'url');
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '其他站点…';
+  sel.appendChild(placeholder);
+  const addGroup = (label, items) => {
+    if (!items.length) return;
+    const og = document.createElement('optgroup');
+    og.label = label;
+    for (const s of items) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  };
+  addGroup('JumpServer（左侧服务器）', jms);
+  addGroup('已有资产的堡垒机', urls);
+  // 两个分组都空 → 整个下拉收起(标签栏 + 地址栏已够用,不再摆一个只有占位项的空下拉)
+  sel.classList.toggle('hidden', !(jms.length + urls.length));
+  sel.value = '';
 }
 
 // 选择保存的服务器 → 填地址并加载(页面加载完自动填充账号密码)
@@ -5422,6 +5830,13 @@ function bastionSelectServer(id) {
   // JMS 服务器用其保存的账号密码自动登录;堡垒机配置同前
   startBastionAutoFill((s.account || s.password) ? { url: s.url, account: s.account, password: s.password } : null);
   closeBastionCfg();
+  // 选的是已保存的堡垒机配置 → 同步标签栏高亮(双击资产/下拉进入时标签与内容保持一致)
+  if (s.src === 'cfg') {
+    const cfgId = String(id).slice(2); // 'B:' + id
+    if (bastionActiveTabId !== cfgId) { bastionActiveTabId = cfgId; bastionRenderTabs(); }
+  }
+  // 下拉复位到占位项:下次还能重复选同一个站点(否则 value 未变不触发 change)
+  try { els.bastionServerSelect.value = ''; } catch { /* ignore */ }
 }
 
 // 工具栏「加载」:加载当前选中的已保存堡垒机并自动填充账号密码;无选中则加载地址栏输入的地址
@@ -5503,6 +5918,16 @@ function startBastionAutoFill(s) {
   attempt();
 }
 
+// webview 是 Electron guest view，会覆盖宿主 DOM（弹窗/下拉等）。打开配置弹窗时先隐藏，
+// 关闭时若没有其它可见弹窗再恢复，避免弹窗被 webview 盖住（尤其是右上角 ✕ 和底部按钮）。
+function setBastionWebviewForModal(hide) {
+  try {
+    if (!els.bastionWebview) return;
+    if (hide) { els.bastionWebview.style.visibility = 'hidden'; return; }
+    if (document.querySelector('.modal:not(.hidden)')) return; // 还有别的弹窗开着
+    els.bastionWebview.style.visibility = '';
+  } catch { /* ignore */ }
+}
 function openBastionCfg() {
   els.bastionCfgName.value = '';
   els.bastionCfgUrl.value = '';
@@ -5515,8 +5940,12 @@ function openBastionCfg() {
   delete els.bastionCfgAdd.dataset.editingId;
   els.bastionCfgAdd.textContent = '＋ 保存堡垒机';
   els.bastionCfgModal.classList.remove('hidden');
+  setBastionWebviewForModal(true);
 }
-function closeBastionCfg() { els.bastionCfgModal.classList.add('hidden'); }
+function closeBastionCfg() {
+  els.bastionCfgModal.classList.add('hidden');
+  setBastionWebviewForModal(false);
+}
 
 // 配置弹窗里的服务器列表已移除(已保存堡垒机连接现在展示在左侧堡垒机分组根目录下)
 
@@ -5685,14 +6114,25 @@ function bastionParseDevs(j, paths) {
       out.push(...j.content.map((c) => {
         const d = c.dev || {};
         const srv = (d.services && d.services.services) || {};
+        // services 的键**就是** H3C 的 proto 名(ssh / rdp / Device_Storage_web …),
+        // 以前只认 srv.ssh / srv.sftp,其余类型(RDP、存储 Web 客户端)一律被当成 ssh:
+        // 点这种资产会拿 proto='ssh' 去请求 accessUrl → 堡垒机报协议不匹配,或回一个
+        // 没有 pw/pn 的图形客户端凭证,前端只能报「连接信息不完整」(真实 HAR 见 -5.har)。
+        const svcKeys = Object.keys(srv).filter(Boolean);
+        const sshKey = svcKeys.find((k) => /^ssh$/i.test(k)) || svcKeys.find((k) => /^sftp$/i.test(k)) || '';
+        const webKey = svcKeys.find((k) => /web/i.test(k)) || '';
         const accts = ((d.accounts && d.accounts.accounts) || []).map((a) => a.name).filter(Boolean);
         const d2 = {
           name: d.name || c.name,
           ip: d.ip || '',
           id: d.id || c.id || '',
           devId: String(d.id != null ? d.id : c.id || ''),
-          port: (srv.ssh && srv.ssh.port) || 22,
-          proto: srv.ssh ? 'ssh' : (srv.sftp ? 'sftp' : 'ssh'),
+          port: (sshKey && srv[sshKey] && srv[sshKey].port) || 22,
+          proto: sshKey || svcKeys[0] || 'ssh',
+          // 全部可用协议(H3C 原始键,如 ['ssh'] / ['rdp'] / ['Device_Storage_web'])
+          protocols: svcKeys.length ? svcKeys : ['ssh'],
+          // 存储/Web 类资产带浏览器入口(services.<web>.url),可在系统浏览器直接打开
+          webUrl: (webKey && srv[webKey] && /^https?:\/\//i.test(String(srv[webKey].url || '')) ? String(srv[webKey].url) : ''),
           accounts: accts,
           recentAccount: (c.recent && c.recent.account) || '',
           favorite: false, dir: '', dirs: [],
@@ -5704,13 +6144,61 @@ function bastionParseDevs(j, paths) {
       (function walk(nodes) {
         for (let i = 0; i < (nodes || []).length; i++) {
           const n = nodes[i];
-          if (n.ip) { const d3 = { name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] }; bastionTagPaths(d3, paths); out.push(d3); }
+          if (n.ip) { const d3 = { name: n.name, ip: n.ip, id: n.id, devId: String(n.id != null ? n.id : ''), port: 22, proto: 'ssh', protocols: ['ssh'], webUrl: '', accounts: [], recentAccount: '', favorite: false, dir: '', dirs: [] }; bastionTagPaths(d3, paths); out.push(d3); }
           if (n.children) walk(n.children);
         }
       })(j.children);
     }
   } catch { /* ignore */ }
   return out;
+}
+
+// ---------- 资产协议识别(H3C services 键 = proto 名) ----------
+// 只有含 ssh/sftp 服务的资产能交给 Polaris 终端;RDP(mstsc)、存储 Web 客户端等图形
+// 会话没有 SSH 网关凭证(pw/pn),强行请求只会得到「连接信息不完整」的误报。
+function bastionAssetProtos(a) {
+  const p = (a && a.protocols && a.protocols.length) ? a.protocols : [(a && a.proto) || 'ssh'];
+  return p.map((k) => String(k)).filter(Boolean);
+}
+function bastionAssetSupportsSsh(a) {
+  return bastionAssetProtos(a).some((k) => /^(ssh|sftp)$/i.test(k));
+}
+// 列表行标签:SSH 不标(默认;标了反而噪声),非终端资产标 RDP / Web / 原始键
+function bastionProtoLabels(a) {
+  const out = [];
+  for (const k of bastionAssetProtos(a)) {
+    const label = /^(ssh|sftp)$/i.test(k) ? 'SSH' : (/rdp|mstsc/i.test(k) ? 'RDP' : (/web/i.test(k) ? 'Web' : k));
+    if (out.indexOf(label) === -1) out.push(label);
+  }
+  return out;
+}
+// 非 SSH 资产的说明文案(告诉用户为什么点不动、替代路径是什么)
+function bastionUnsupportedAssetMsg(a, opts) {
+  const o = opts || {};
+  const labels = bastionProtoLabels(a).join('/') || '非 SSH';
+  const lines = [`「${a && a.name || ''}」是通过 ${labels} 接入的资产,Polaris 只能打开 SSH/SFTP 终端。`];
+  if (o.clientMissing) {
+    lines.push('本机没有检测到 H3C 堡垒机客户端(AccessClient.exe),没法直接把这类会话交给它;可以先在 H3C 控制台页面安装,再回来双击打开。');
+  }
+  if (a && a.webUrl) lines.push(`也可以在右键菜单「🌐 用系统浏览器打开」里直接访问: ${a.webUrl}`);
+  else lines.push('请在 H3C 堡垒机网页里打开它。');
+  return lines.join('\n');
+}
+// 非 SSH 资产的入口文案(装了 H3C 客户端 = 直接交给它打开;没装 = 查看说明)
+function bastionNonSshEntry(a, clientInstalled) {
+  const labels = bastionProtoLabels(a).join('/') || '非 SSH';
+  return clientInstalled
+    ? { menu: `🖥 用堡垒机客户端打开(${labels})`, title: `用 H3C 客户端打开(${labels})` }
+    : { menu: `ℹ️ 非 SSH 资产(${labels}),点此查看说明`, title: `查看说明(${labels} 资产)` };
+}
+// accessclient token 类型:ssh(可接管) / graphic(RDP、VNC 等图形客户端) / incomplete
+// 真实 HAR(bastion-5.har)里 RDP token 形如 {app:'mstsc', fa:'网关:3389', as:'…OTP:…'},
+// 没有 pw/pn —— 旧代码会落到「堡垒机连接信息不完整」,用户完全不知道是资产类型不支持。
+function accessClientSessionKind(info) {
+  const app = String((info && info.app) || '').toLowerCase();
+  if (/mstsc|rdp|vnc|guacamole|xfreerdp|spice/.test(app)) return { kind: 'graphic', app: app };
+  if (!info || !info.pw || !(info.hn || info.pn)) return { kind: 'incomplete', app: app };
+  return { kind: 'ssh', app: app };
 }
 // 合并:按 devId 去重(保留已有 dir/收藏标记,新数据覆盖),返回新数组
 function bastionMergeDevs(prevList, list) {
@@ -5811,6 +6299,9 @@ function bastionHandleLoginSignal({ needLogin, ok }) {
   if (ok && bastionLoginState !== 'loggedIn') {
     bastionLoginState = 'loggedIn';
     bastionNeedLoginNotified = false; // 登录成功 → 下次过期可再提示
+    // 登录成功:分组默认折叠(含缓存里已有的资产目录),避免登录瞬间一屏铺开几百台
+    collapseBastionGroupsState();
+    try { renderSessionList(els.inputSessionSearch.value); } catch { /* 列表未就绪,忽略 */ }
     // 自动最小化:仅"登录模式"+ 面板当前可见 + 本次登录未收过。首次登录(unknown→loggedIn)
     // 与重新登录(loggedOut→loggedIn)都算;已登录用户主动开面板浏览(登录模式=false)不收起。
     if (bastionLoginMode && !els.bastionSlot.classList.contains('hidden') && !bastionAutoMinimized) {
@@ -6085,9 +6576,9 @@ function pollBastionAssets(force) {
     if (assetsChanged) {
       bastionLastRenderedJson = j2;
       if (!hadAssets && state.bastionAssets.length) {
-        state.collapsedTopBastion = false;
-        state.bastionCollapsed = true;
-        state.bastionDirCollapsed.add('__fav__');
+        state.collapsedTopBastion = false; // 顶级「🛡 堡垒机」展开:区块头(含资产数)可见
+        state.bastionCollapsed = true;     // 区块内部收起,不自动铺开资产列表
+        collapseBastionGroupsState();      // 登录后分组默认全部折叠(原先只折叠收藏组)
       }
       if (state.bastionAssets.length) persistBastionAssets(); // 异步持久化,不阻塞渲染
       console.log('[堡垒机] 已刷新会话列表,资产数:', state.bastionAssets.length);
@@ -6397,9 +6888,13 @@ async function batchFavoriteAssets(assets) {
 
 function makeBastionAssetItem(a) {
   const item = document.createElement('div');
-  item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '');
+  const sshOk = bastionAssetSupportsSsh(a);
+  const protoLabels = bastionProtoLabels(a);
+  item.className = 'asset-item jms-asset-item' + (a.favorite ? ' bastion-fav' : '') + (sshOk ? '' : ' asset-nonssh');
   const acctHint = (a.accounts && a.accounts.length) ? a.accounts.join('/') : (a.recentAccount || '');
-  item.title = `双击连 SSH → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}`;
+  // 非 SSH 资产的入口文案跟着「本机有没有 H3C 客户端」走(装了 = 交给它打开)
+  const nonSshEntry = bastionNonSshEntry(a, state.h3cClient.installed);
+  item.title = `双击${sshOk ? '连 SSH' : nonSshEntry.title} → ${a.ip}${acctHint ? '(' + acctHint + ')' : ''}${a.dir ? '\n目录: ' + a.dir : ''}${a.favorite ? '\n⭐ 收藏设备' : ''}${sshOk ? '' : '\n协议: ' + protoLabels.join('/') + (state.h3cClient.installed ? '(交给 H3C 客户端打开)' : '(Polaris 只能打开 SSH/SFTP 终端)')}`;
   const icon = document.createElement('span');
   icon.className = 'icon';
   icon.textContent = a.favorite ? '⭐' : '🖥';
@@ -6412,19 +6907,35 @@ function makeBastionAssetItem(a) {
   item.appendChild(icon);
   item.appendChild(name);
   item.appendChild(addr);
+  // 非 SSH 资产标出真实协议(RDP/Web):不标的话双击后只能看到一句“不支持”,
+  // 列表里也分不出哪些能连、哪些不能
+  if (!sshOk) {
+    const badge = document.createElement('span');
+    badge.className = 'asset-proto';
+    badge.textContent = protoLabels.join('/') || '?';
+    item.appendChild(badge);
+  }
   item.addEventListener('dblclick', () => bastionConnect(a));
   item.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const items = [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }];
+    const items = sshOk
+      ? [{ label: `🔗 连接 SSH`, action: () => bastionConnect(a) }]
+      : [{ label: nonSshEntry.menu, action: () => bastionConnect(a) }];
     const accts = (a.accounts || []).filter(Boolean);
-    if (accts.length > 1) {
+    if (sshOk && accts.length > 1) {
       items.push({ label: '账号', separatorLabel: true });
       for (const un of accts) items.push({ label: `🔑 ${un}`, action: () => bastionConnect(a, un) });
     }
-    items.push({ separator: true });
-    items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
-    items.push({ separator: true });
-    items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    if (a.webUrl) {
+      items.push({ separator: true });
+      items.push({ label: '🌐 用系统浏览器打开', action: () => openExternalUrl(a.webUrl) });
+    }
+    if (sshOk) {
+      items.push({ separator: true });
+      items.push({ label: '🔌 断开连接', action: () => bastionDisconnect(a) });
+      items.push({ separator: true });
+      items.push({ label: '📁 打开 SFTP', action: () => bastionConnect(a, null, 'ssh', true) });
+    }
     items.push({ separator: true });
     // 手动收藏:加入分组 / 移出收藏
     if (a.favorite || a.favGroup) {
@@ -6825,9 +7336,9 @@ function promptJmsMfa(s, { cookie, challengeUrl, choices, username, password }) 
   attempt();
 }
 
-// 「收起全部分组」:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠
-// (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
-function collapseAllBastionGroups() {
+// 「收起全部分组」的纯状态部分:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠。
+// 不渲染(登录成功等场景直接复用,由调用方决定何时 renderSessionList)。
+function collapseBastionGroupsState() {
   const s = state.bastionDirCollapsed;
   s.add('__fav__');
   s.add('__ungrouped__');
@@ -6841,6 +7352,24 @@ function collapseAllBastionGroups() {
       for (const seg of parts) { p = p ? p + '/' + seg : seg; s.add('__fav__' + p); }
     }
   }
+  // 标记"分组已初始化":避免首渲染逻辑再跑一次(结果相同,省一次遍历)
+  state.bastionDirsInit = true;
+}
+
+// JMS 服务器的节点分组默认折叠(登录成功后调用):key 与 renderJmsInSessionList 一致
+function collapseJmsGroupsState(s) {
+  if (!s || !s.id) return;
+  const col = state.bastionDirCollapsed;
+  col.add('jms:' + s.id + ':__ungrouped__');
+  for (const a of (s.assets || [])) {
+    for (const n of (a.nodes || [])) if (n && n.name) col.add('jms:' + s.id + ':' + n.name);
+  }
+}
+
+// 「收起全部分组」:把收藏/业务根/根目录/全部业务目录/收藏子组都加入折叠
+// (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
+function collapseAllBastionGroups() {
+  collapseBastionGroupsState();
   renderSessionList(els.inputSessionSearch.value);
 }
 
@@ -7125,12 +7654,16 @@ function renderBastionInSessionList(container, f) {
 async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   const dev = asset.devId || asset.id || '';
   if (!dev) { alert('该资产缺少设备 ID,无法发起连接'); return; }
+  // 非 SSH 资产(RDP / 存储 Web 客户端)在终端里根本打不开:装了就交给 H3C 客户端,
+  // 没装就给可读提示 —— 都**不拿 proto='ssh' 去请求 accessUrl**(那会在堡垒机侧留一条
+  // 失败访问记录,前端也只能报「连接信息不完整」)。
+  if (!bastionAssetSupportsSsh(asset)) { bastionConnectNonSsh(asset, accountName); return; }
   const baseUrl = bastionNativeBaseUrl();
   if (!baseUrl) { alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)'); openBastionPanel(); return; }
   const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
   bastionLog({ ev: 'accessUrl-req', asset: asset.name, dev, account, baseUrl });
   setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
-  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto: proto || 'ssh' }).catch((e) => ({ ok: false, error: e && e.message }));
+  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto: proto || asset.proto || 'ssh' }).catch((e) => ({ ok: false, error: e && e.message }));
   bastionLog({ ev: 'accessUrl-res', asset: asset.name, ok: !!(r && r.ok), needLogin: !!(r && r.needLogin), status: r && r.status, error: r && r.error });
   if (!r || !r.ok) {
     if (r && r.needLogin) {
@@ -7149,6 +7682,69 @@ async function bastionConnect(asset, accountName, proto, openSftp, opts) {
   }
   bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, token: url.slice(0, 60) + '…' });
   handleAccessClientUrl(url, openSftp, dev, opts);
+}
+
+// 非 SSH 资产(RDP / 存储 Web):把堡垒机签发的 accessclient:// 会话原样交给本机
+// H3C 客户端(AccessClient.exe 注册的 URL scheme 会拉起 mstsc / 浏览器)。
+// 见 docs/decision-rdp-support.md:v1.0.19 取「不自己实现 RDP 协议栈,只做会话透传」。
+async function bastionConnectNonSsh(asset, accountName) {
+  const dev = asset.devId || asset.id || '';
+  const protocols = bastionAssetProtos(asset).join(',');
+  if (!state.h3cClient.installed) {
+    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols, reason: 'no-h3c-client' });
+    alert(bastionUnsupportedAssetMsg(asset, { clientMissing: true }));
+    return;
+  }
+  const baseUrl = bastionNativeBaseUrl();
+  if (!baseUrl) {
+    bastionLog({ ev: 'accessUrl-skip', asset: asset.name, dev, protocols, reason: 'no-bastion-base' });
+    alert('请先在堡垒机浏览器打开 H3C 控制台并登录(🛡 → 🌐 堡垒机)');
+    openBastionPanel();
+    return;
+  }
+  const account = accountName || asset.recentAccount || (asset.accounts && asset.accounts[0]) || '*root';
+  const proto = asset.proto || (asset.protocols && asset.protocols[0]) || 'ssh';
+  bastionLog({ ev: 'accessUrl-req', asset: asset.name, dev, account, proto, baseUrl, handoff: 'accessclient' });
+  setStatus(`请求堡垒机连接 ${asset.name}(${account})…`, 'var(--accent)');
+  const r = await window.api.h3cAccessUrl({ baseUrl, dev, account, proto }).catch((e) => ({ ok: false, error: e && e.message }));
+  bastionLog({ ev: 'accessUrl-res', asset: asset.name, ok: !!(r && r.ok), needLogin: !!(r && r.needLogin), status: r && r.status, error: r && r.error });
+  if (!r || !r.ok) {
+    if (r && r.needLogin) {
+      bastionHandleLoginSignal(r);
+      alert('堡垒机未返回连接信息(可能已退出登录),请先在控制台重新登录');
+    } else {
+      alert('请求堡垒机连接失败: ' + ((r && r.error) || '未知错误'));
+    }
+    return;
+  }
+  const url = String((r.data && r.data.url) || '');
+  if (url.indexOf('accessclient://') !== 0) {
+    bastionLog({ ev: 'accessUrl-bad', asset: asset.name, protocols });
+    alert('堡垒机未返回有效的客户端地址');
+    return;
+  }
+  bastionLog({ ev: 'accessUrl-ok', asset: asset.name, dev, account, proto, tokenLen: url.length, handoff: 'accessclient' });
+  bastionOpenAccessClient(url, asset);
+}
+
+// 把 accessclient:// 交出去(openExternalUrl 是渲染层唯一外链出口,测试可替换它断言传了什么)
+async function bastionOpenAccessClient(acUrl, asset) {
+  const name = (asset && asset.name) || '';
+  bastionLog({ ev: 'accessclient-open', asset: name, tokenLen: String(acUrl || '').length });
+  const res = await openExternalUrl(acUrl);
+  // openExternalUrl 正常返回 boolean;回归脚本会把它替换成返回 {ok} 的桩,两种都认
+  const okOpen = !!(res && (typeof res === 'object' ? res.ok : res));
+  if (okOpen) {
+    setStatus(`已交给 H3C 客户端打开${name ? '「' + name + '」' : ''}(RDP/Web 会话不在终端里)`, 'var(--green)');
+    return true;
+  }
+  const reason = (res && typeof res === 'object' && res.error) || state.lastOpenExternalError || '未知错误';
+  bastionLog({ ev: 'accessclient-open-fail', asset: name, reason });
+  // 失败不能静默:状态栏也改回失败,避免上一句成功文案留在那里误导
+  setStatus('交给 H3C 客户端失败: ' + reason, 'var(--red)');
+  alert('打开 H3C 客户端失败: ' + reason +
+    '\n没装 H3C 堡垒机客户端(AccessClient.exe)?可以在 H3C 控制台页面安装,或改用右键「🌐 用系统浏览器打开」。');
+  return false;
 }
 
 // 断开该 H3C 资产已打开的连接(标签保留,显示"已断开")
@@ -7216,6 +7812,17 @@ function updateBastionSavedBadges() {
   }
 }
 
+// 堡垒机浏览器的空态/加载/错误状态。不要把 textContent 写到容器上(会毁掉按钮和结构)
+function setBastionEmptyState(kind, title, sub) {
+  if (!els.bastionEmpty) return;
+  els.bastionEmpty.classList.remove('hidden');
+  if (els.bastionEmptyTitle) els.bastionEmptyTitle.textContent = title || '';
+  if (els.bastionEmptySub) els.bastionEmptySub.textContent = sub || '';
+  if (els.bastionEmptyRetry) els.bastionEmptyRetry.classList.toggle('hidden', kind !== 'error');
+  if (els.bastionEmptyCfg) els.bastionEmptyCfg.classList.toggle('hidden', kind === 'error');
+}
+function hideBastionEmpty() { if (els.bastionEmpty) els.bastionEmpty.classList.add('hidden'); }
+
 function loadBastion(url) {
   if (!url) { alert('请填堡垒机 Web 地址'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
@@ -7229,8 +7836,7 @@ function loadBastion(url) {
   state.bastionAutoFetchFails = 0;
   bastionFetchOkNotified = false;
   bastionFetchFailNotified = false;
-  els.bastionEmpty.classList.remove('hidden');
-  els.bastionEmpty.textContent = '加载中…';
+  hideBastionEmpty();
   els.bastionLoading.classList.remove('hidden');
   els.bastionCurrent.textContent = url;
   els.bastionWebview.src = url;
@@ -7267,12 +7873,31 @@ function setBastionZoom(delta) {
 }
 
 // 处理 accessclient:// —— 解码 token(H3C 单点登录凭证) → 用 Polaris 终端连 SSH
-// openSftp:连上后顺带打开 SFTP 面板;devId:标记来源资产(供会话列表按资产断开)
+// openSftp:连上后顺带拉起 WinSCP(v1.0.25 起没有内置面板);devId:标记来源资产(供会话列表按资产断开)
 async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   bastionLog({ ev: 'token-decode', token: acUrl.slice(0, 60) + '…' });
   const r = await window.api.bastionDecode(acUrl);
   if (!r.ok) { bastionLog({ ev: 'token-decode-fail', error: r.error }); alert('解码堡垒机连接失败: ' + r.error); return; }
   const info = r.info;
+  // 先分辨 token 类型:SSH(可接管) / 图形客户端(RDP、VNC…)。图形 token 没有 pw/pn
+  // (真实 HAR: {app:'mstsc', fa:'网关:3389', as:'…OTP:…'}),直接当 SSH 连只会报
+  // 「连接信息不完整」,用户不知道是资产类型不支持。
+  const kind = accessClientSessionKind(info);
+  if (kind.kind !== 'ssh') {
+    bastionLog({ ev: 'token-not-ssh', kind: kind.kind, app: kind.app, fa: info && info.fa, sn: info && info.sn, st: info && info.st });
+    if (kind.kind === 'graphic') {
+      // 装了 H3C 客户端就直接把这枚 token 交出去(RDP/Web 会话一次性覆盖);没装才只剩说明
+      if (state.h3cClient.installed) {
+        const okHand = await bastionOpenAccessClient(acUrl, { name: (info && (info.sn || info.st)) || '' });
+        if (okHand) return;
+      }
+      alert(`这个会话是 H3C「${kind.app || '图形客户端'}」接入(RDP/VNC 等图形会话),` +
+        'Polaris 只能打开 SSH/SFTP 终端,无法接管。\n请在 H3C 堡垒机网页里打开它。');
+    } else {
+      alert('堡垒机连接信息不完整(这个资产很可能不是 SSH 会话,请在堡垒机网页里打开)');
+    }
+    return;
+  }
   // hn = 堡垒机 SSH 网关(TERM-SSHD,实测监听 hn:pn;probe 证实目标机 sh 被防火墙丢弃不可直连)。
   // 无论 direct/代理模式,SSH 都经网关:连 hn:pn,用户名=目标账号 sa,密码=一次性密码 OTP,网关按 OTP 路由到目标。
   const gw = info.hn && String(info.hn).trim();
@@ -7311,7 +7936,7 @@ async function handleAccessClientUrl(acUrl, openSftp, devId, opts) {
   if (!(opts && opts.background)) setStatus(`堡垒机直连: ${session.name}`, 'var(--green)');
   // 连接成功 → 最小化到会话列表,终端在前台(SSH 连接独立,不受页面收起影响)
   minimizeBastion();
-  if (openSftp) setTimeout(() => toggleSftpPanel(), 800);
+  if (openSftp) setTimeout(() => openSftpEntry(), 800);
 }
 
 // 拦截堡垒机触发的 accessclient://(外部工具/单点登录)
@@ -7335,13 +7960,12 @@ function initBastionWebview() {
   wv.addEventListener('did-start-loading', () => {
     bastionPageStableTs = 0; // 开始导航 → 页面不再视为稳定
     els.bastionLoading.classList.remove('hidden');
-    els.bastionEmpty.classList.remove('hidden');
-    els.bastionEmpty.textContent = '加载中…';
+    hideBastionEmpty(); // 只显示转圈,不再在空态里重复写"加载中…"
   });
   wv.addEventListener('did-stop-loading', () => {
     bastionPageStableTs = Date.now(); // 停止加载 → 记稳定起点(2s 内不注入/轮询)
     els.bastionLoading.classList.add('hidden');
-    els.bastionEmpty.classList.add('hidden');
+    hideBastionEmpty();
     try { if (wv.getURL && wv.getURL()) els.bastionCurrent.textContent = wv.getURL(); } catch { /* ignore */ }
     // 页面加载完:注入焦点桥(资产已原生拉取,不再注入资产捕获钩子)+ 自动适配面板宽度。
     // 登录页会连续跳转(每次 did-stop-loading 都触发注入),而导航切换瞬间 executeJavaScript
@@ -7391,10 +8015,10 @@ function initBastionWebview() {
   wv.addEventListener('did-fail-load', (e) => {
     if (e && e.isMainFrame === false) return; // 子资源失败不提示
     els.bastionLoading.classList.add('hidden');
-    els.bastionEmpty.classList.remove('hidden');
     const code = e.errorCode || '未知';
     const desc = (e.errorDescription || '').replace(/^ERR_/, '');
-    els.bastionEmpty.textContent = `⚠️ 加载失败(${code}${desc ? ' ' + desc : ''})\n请检查堡垒机地址或网络,可点右上角 ↻ 重试`;
+    setBastionEmptyState('error', '加载失败',
+      `(${code}${desc ? ' ' + desc : ''}) 请检查堡垒机地址或网络,可点「重试」或工具栏 ↻`);
   });
 }
 
@@ -7512,7 +8136,6 @@ function renderBatchResults(results) {
 
 // 横向工具栏开关按钮的激活态:面板打开 → 按钮高亮
 function syncPanelButtons() {
-  els.btnSftpToggle.classList.toggle('active', state.sftp.visible);
   els.btnAi.classList.toggle('active', !els.aiPanel.classList.contains('hidden'));
   els.btnCmd.classList.toggle('active', !els.cmdPanel.classList.contains('hidden'));
   els.btnBatch.classList.toggle('active', !els.batchPanel.classList.contains('hidden'));
@@ -7900,7 +8523,7 @@ async function openReplay(recordId) {
   // 回放终端:尺寸按录制时的来,画面跟直播一致;不进 state.tabs,只在弹窗里
   const termEl = els.replayTerm;
   termEl.innerHTML = ''; // 清掉上一次回放留下的终端
-  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const curTheme = currentTheme();
   const term = new XTermClass({
     fontFamily: state.settings.fontFamily,
     fontSize: state.settings.fontSize,
@@ -8099,21 +8722,26 @@ async function connectToServer(session, opts) {
   paneEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const sel = term.getSelection();
+    const selUrl = (sel || '').trim();
     showCtxMenu(e.clientX, e.clientY, [
       { label: '📋 复制', action: () => { const s = term.getSelection(); if (s) window.api.copyText(s); } },
+      // 选中就是一条链接(或整行只有一条链接)时,给一个明确的打开入口:
+      // 折行/被截断的长 URL 用 Cmd+点击不一定点得准,这里有兜底。
+      ...(isOpenableUrl(selUrl) ? [{ label: '🔗 在系统浏览器打开', action: () => openExternalUrl(selUrl) }] : []),
       { label: '📥 粘贴', action: () => {
         const t = window.api.readClipboard();
         if (t) term.paste(t);
         refocusTerminal(sessionId); // 菜单是 <div>,点击会把 textarea 焦点顶掉(落到 body),
         // 用户接着敲的字(含空格)会全被吞掉直到再点终端 —— 粘贴完立刻把焦点还回终端。
       } },
+      { label: '🔐 切换 root（su - root）', action: () => switchToRoot(sessionId) },
       { label: '全选', action: () => { try { term.selectAll(); } catch { /* xterm 某些版本无 selectAll */ } } },
     ]);
   });
 
   // ---- xterm 终端 ----
   // 直接用当前主题配色创建(否则新终端永远用写死的深色)
-  const curTheme = THEMES[state.settings.theme] || THEMES.dark;
+  const curTheme = currentTheme();
   const term = new XTermClass({
     fontFamily: state.settings.fontFamily || '"SF Mono", Menlo, Consolas, "Courier New", monospace',
     fontSize: state.settings.fontSize || 13,
@@ -8137,9 +8765,15 @@ async function connectToServer(session, opts) {
   }
   term.open(paneEl);
   fit.fit();
+  // 终端里的 URL:Cmd/Ctrl+点击 → 系统浏览器。注意 `tab` 对象在本函数后面才创建(会踩 TDZ),
+  // 所以这里先拿句柄,等 tab 建好再挂上去。
+  let linkProvider = null;
+  try { linkProvider = registerTermLinks(term); } catch { /* 链接识别失败不影响终端 */ }
 
   // 键盘输入 → SSH(term.onData 会在每个按键/粘贴时触发)
   term.onData((data) => {
+    // 空格看门狗：xterm 产生了输入数据（含空格）→ 本次空格已送达，取消自动恢复
+    if (tab.__spacePending && String(data).includes(' ')) tab.__spaceHandledSeq = tab.__spacePending;
     // 在下面可能重置 atPasswordPrompt 之前快照:本次输入若是密码(服务器刚提示 password:),
     // 必须整段按敏感输入处理 —— 手敲密码是逐键发送的,主进程 isSecretInput 用单字符
     // 匹配完整密码永远不会命中,旧版会把密码逐字符落进会话日志/录制。
@@ -8218,8 +8852,8 @@ async function connectToServer(session, opts) {
         // 还原失败(还没学到提示符)时退回当前行原文(含提示符,危险正则照样能命中)
         effectiveCmd = recalled || lastBufferLineText(term) || lineOnEnter;
       }
-      // 跟踪 cd 命令 → 更新 shell 当前目录(供 SFTP 面板打开时定位到终端所在目录;
-      // 与"命令记录"开关无关,SFTP 定位总是需要)
+      // 跟踪 cd 命令 → 更新 shell 当前目录(作为 WinSCP 打开时的起始目录 / RemoteDirectory;
+      // 与"命令记录"开关无关,这个定位总是需要)
       if (effectiveCmd) trackShellCwd(tab, effectiveCmd);
       // 命令记录:开关开启时才记。
       if (state.settings.cmdRecord !== false) {
@@ -8300,8 +8934,7 @@ async function connectToServer(session, opts) {
     titleSpan,               // 标签上的标题元素(重命名标签时改它)
     customTitle: null,       // 用户改的标签名(null=用会话名)
     status: 'connecting',
-    sftpOpen: false,         // 该标签自己的 SFTP 开关(各标签独立,切换标签时恢复各自状态)
-    sftpPath: '.',           // 该标签 SFTP 浏览到的目录
+    noLogin: false,          // 远端账号 nologin(检测到后停止自动重连并给提示)
     shellCwd: null,          // 该标签交互 shell 的当前目录(跟踪 cd 命令;null=未知,SFTP 用默认)
     reconnectAttempts: 0,   // 已自动重连次数
     reconnectTimer: null,   // 重连定时器
@@ -8315,6 +8948,7 @@ async function connectToServer(session, opts) {
     cmdCompCmds: [],        // 该主机历史高频命令(首词),补全候选之一
     cmdCompQuick: [],       // 快捷命令,补全候选之一
   };
+  tab.linkProvider = linkProvider; // 终端链接识别句柄(回归用例可直取;dispose 随 tab 一起)
   state.tabs.set(sessionId, tab);
   // 命令补全候选:异步加载(该主机历史高频 + 快捷命令),一次缓存,不阻塞连接
   try { window.api.recommendCmds(cmdHostKey(session)).then((r) => { if (Array.isArray(r)) tab.cmdCompCmds = r.map((x) => ({ cmd: String(x.command || '').trim().split(/\s+/)[0], desc: x.desc || '' })).filter((x) => x.cmd); }).catch(() => {}); } catch { /* ignore */ }
@@ -8475,6 +9109,7 @@ function connectInto(tab, session, isReconnect) {
 const MAX_RECONNECT = 5;
 function scheduleReconnect(t) {
   if (state.settings.autoReconnect === false) return; // 设置里关闭了自动重连
+  if (t.noLogin) return; // 账号 nologin:重试无意义,已给出提示
   if (t.userClosed || !state.tabs.has(t.sessionId)) return;
   clearTimeout(t.reconnectClearTimer); // 连接没能稳定(瞬连瞬断),挂起的"清零重连计数"作废
   if (t.reconnectTimer) return; // 已有定时器,不重复安排
@@ -8526,30 +9161,6 @@ function activateTab(sessionId) {
     if (!typingElsewhere && at && at.term) at.term.focus();
   } catch { /* ignore */ }
 
-  // SFTP 按标签各自的状态:每个标签记住自己是否开了 SFTP、浏览到哪个目录。
-  // 选中"未打开 SFTP 的标签页"→ 面板收起、按钮不亮;切回开过的标签 → 恢复它的文件列表。
-  applySftpForTab(state.tabs.get(sessionId));
-}
-
-// 应用某标签的 SFTP 状态(切换标签/关闭标签后调用):开了就展开面板并加载它的目录,没开就收起
-function applySftpForTab(t) {
-  if (!t) return;
-  state.sftp.sessionId = t.sessionId;
-  if (t.sftpOpen) {
-    state.sftp.visible = true;
-    state.sftp.path = t.sftpPath || '.';
-    state.sftp.selected = null;
-    els.sftpPanel.classList.remove('hidden');
-    els.dividerH.classList.remove('hidden');
-    setSftpConnLabel(t.sessionId);
-    loadSftpList();
-  } else {
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-  }
-  syncPanelButtons();
 }
 
 // 断开当前终端连接,但保留标签(显示"已断开",可右键重新连接);不像关闭标签那样移除
@@ -8581,7 +9192,6 @@ function closeTab(sessionId) {
   state.recording.delete(sessionId); // 若在录制,主进程 ssh:close 会自动收尾保存
   updateRecordBtn();
   window.api.sshClose(sessionId);
-  clearSftpTransfers(sessionId); // 只清这个会话的传输记录(其他会话可能还在传)
   kbdCancelSession(sessionId); // 关标签时取消该会话挂起的 keyboard-interactive 认证挑战
   // 批量/AI 面板里残留该标签的勾选与分屏尺寸,一并清掉,避免计数虚高/集合增长
   state.batchHosts.delete(sessionId);
@@ -8599,16 +9209,9 @@ function closeTab(sessionId) {
     state.splitMode = null;
     state.splitZoom = null;
     setStatus('就绪');
-    // 没有标签了:SFTP 面板一并收起
-    state.sftp.visible = false;
-    state.sftp.sessionId = null;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-    syncPanelButtons();
   } else if (state.activeSessionId === sessionId) {
     const keys = [...state.tabs.keys()];
-    activateTab(keys[keys.length - 1]); // 会自动应用新标签自己的 SFTP 状态
+    activateTab(keys[keys.length - 1]);
   }
   renderLayout();
 }
@@ -8977,15 +9580,8 @@ function scrollActiveTabIntoView() {
 }
 
 // =====================================================================
-// SFTP 文件面板
+// SFTP 路径工具(只剩"跟踪终端 cd 目录,给 WinSCP 起始目录用")
 // =====================================================================
-// ---- 工具函数 ----
-
-// 面板当前对应的会话 id(面板跟着活动标签走)
-function sftpSession() {
-  if (state.sftp.sessionId && state.tabs.has(state.sftp.sessionId)) return state.sftp.sessionId;
-  return state.activeSessionId;
-}
 
 // 把路径规范化:合并 . / .. ,去掉结尾 / (根目录保留 /)
 function normPath(p) {
@@ -9002,9 +9598,8 @@ function normPath(p) {
 }
 
 // 跟踪交互 shell 的 cd 命令,更新 tab.shellCwd(终端当前目录)。
-// SFTP 通道没有"当前目录"(每次操作都走绝对路径),它从登录目录开始;
-// 而交互 shell 的 cd 只影响 shell 自己 → 打开 SFTP 面板时若不知道终端在哪,
-// 路径就停在默认目录。这里监听 cd 命令维护每个标签的"当前目录",SFTP 打开时用它定位。
+// 用本机 WinSCP 拉起会话时把绝对路径作为 RemoteDirectory 传过去(避免 WinSCP 自己去探 '.'),
+// 所以这里持续记录每个标签的"当前目录";不知道就交给主进程现探家目录。
 function trackShellCwd(tab, cmdLine) {
   try {
     if (!tab) return;
@@ -9031,60 +9626,7 @@ function trackShellCwd(tab, cmdLine) {
   } catch { /* ignore */ }
 }
 
-// 把名字拼进当前目录,得到完整远程路径。
-// 目录自身以 / 结尾时不再补分隔符 —— 根 "/" 与设备文件系统根 "flash:/" 都属于这种
-// (旧版只特判 "/",flash:/ 会拼成 flash://x,进目录/上传/删除路径全错)
-function sftpJoin(name) {
-  const p = String(state.sftp.path || '/');
-  return p.endsWith('/') ? `${p}${name}` : `${p}/${name}`;
-}
-
-// 多选集合 → 当前目录里真正选中的条目列表(按 remotePath 匹配)
-function sftpSelectedEntries() {
-  return state.sftp.entries.filter((e) => state.sftp.selectedSet.has(sftpJoin(e.name)));
-}
-
-// 刷新选中高亮 + 底部"已选 N 项"提示(不重绘整列,快)
-function updateSftpSelection() {
-  for (const row of els.sftpList.querySelectorAll('.sftp-row')) {
-    row.classList.toggle('selected', state.sftp.selectedSet.has(row.dataset.path));
-  }
-  const n = state.sftp.selectedSet.size;
-  els.sftpFooter.classList.toggle('dim', n === 0);
-  els.sftpFooter.textContent = n > 0
-    ? `已选 ${n} 项(再点可取消) · 点「下载/删除」批量操作 · 点「全选」取消全选`
-    : `双击进入目录 · 单击选中(可多选,再点取消) · 点「全选」一次选完后下载/删除`;
-}
-
-// 「全选」按钮:全部选中 ↔ 全部取消(开关)
-function sftpToggleSelectAll() {
-  if (state.sftp.entries.length === 0) return;
-  const all = state.sftp.entries.map((e) => sftpJoin(e.name));
-  const allSelected = all.every((p) => state.sftp.selectedSet.has(p));
-  if (allSelected) state.sftp.selectedSet.clear();
-  else all.forEach((p) => state.sftp.selectedSet.add(p));
-  state.sftp.selected = null;
-  renderSftpList(); // 重绘会顺带刷新高亮和底部提示
-}
-
-// 计算上一级路径:/a/b/c → /a ; /a → / ; 设备文件系统根(flash:/a/b → flash:/a)也认
-function sftpParent(p) {
-  const clean = String(p || '/').replace(/\/+$/, '');
-  if (!clean) return '/';
-  // H3C Comware 等设备用 flash:/、cfcard:/ 这类文件系统根:路径不是从 / 起算,
-  // 直接按 / 切会算成 "flash:" 这种不存在的路径(点"上一级"后列表读取失败/像没反应)。
-  const m = /^([A-Za-z][A-Za-z0-9_-]*:)(\/.*)?$/.exec(clean);
-  if (m) {
-    const rest = m[2] || '';
-    if (!rest || rest === '/') return `${m[1]}/`; // flash:/ 已是根,再上一级还是它
-    const i = rest.lastIndexOf('/');
-    return i <= 0 ? `${m[1]}/` : m[1] + rest.slice(0, i);
-  }
-  const idx = clean.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return clean.slice(0, idx);
-}
-
+// 字节数 → 人类可读(1024 → 1.0 KB)
 // 字节数 → 人类可读(1024 → 1.0 KB)
 function formatSize(n) {
   if (!n) return '';
@@ -9093,553 +9635,282 @@ function formatSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// 毫秒时间戳 → "YYYY-MM-DD HH:mm"
-function formatTime(ms) {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (x) => String(x).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+// =====================================================================
+// 终端里的链接:Cmd/Ctrl + 点击 → 系统默认浏览器打开
+// 需求来源:用户问「能否支持打开浏览器链接」。此前终端里 URL 只是死文本,
+// 只能手动拖选再复制到浏览器,查资产/看日志里的文档链接很别扭。
+// 设计约束:
+//   ① 只有 http/https 才认(避免 javascript:/file: 被当成链接;主进程 IPC 也有白名单双保险);
+//   ② 默认必须带修饰键(mac ⌘ / win·linux Ctrl)才打开 —— 裸点击要留给"拖选文本";
+//   ③ 行宽窄时 URL 会折行,provideLinks 只给单行,这里自己按 isWrapped 把折行拼回来。
+// =====================================================================
+// 尽量宽松地抓 URL,尾部标点单独裁掉(中文句号/逗号、英文句号、右括号、引号等)
+const TERM_URL_RE = /https?:\/\/[^\s<>"'`，。；、（）【】「」]+/gi;
+function trimUrlTail(u) {
+  let out = u;
+  // 尾部成对括号只裁掉"多出来的那半":.../a_(b) 保留,http://x/y) 裁掉
+  for (;;) {
+    const last = out.slice(-1);
+    if (!last) break;
+    if (/[.,;:!?'"”’、，。；：！？]/.test(last)) { out = out.slice(0, -1); continue; }
+    if (last === ')') {
+      const open = (out.match(/\(/g) || []).length;
+      const close = (out.match(/\)/g) || []).length;
+      if (close > open) { out = out.slice(0, -1); continue; }
+    }
+    if (last === ']') {
+      const open = (out.match(/\[/g) || []).length;
+      const close = (out.match(/\]/g) || []).length;
+      if (close > open) { out = out.slice(0, -1); continue; }
+    }
+    break;
+  }
+  return out;
+}
+// 纯函数:从一行文本里抽出所有 URL(带起始列,便于建 range;回归用例直接测它)
+function extractTermUrls(text) {
+  const out = [];
+  if (!text) return out;
+  TERM_URL_RE.lastIndex = 0;
+  let m;
+  while ((m = TERM_URL_RE.exec(text))) {
+    const url = trimUrlTail(m[0]);
+    if (!/^https?:\/\/[^/?#\s]+$/i.test(url.replace(/\/$/, '')) && !/^https?:\/\/[^/?#\s]+[/?#]/i.test(url)) continue; // 至少要有主机名
+    out.push({ url, index: m.index, length: url.length });
+  }
+  return out;
+}
+// URL 是否允许打开(与主进程 app:openExternal 的白名单保持一致)
+function isOpenableUrl(u) {
+  const raw = String(u || '').trim();
+  // H3C 客户端协议(v1.0.19):不能交给 new URL() 判定(自定义 scheme 的 token 会被重新编码),
+  // 合法性由主进程 lib/h3c-client.js 用同一套正则复核。
+  if (raw.toLowerCase().indexOf('accessclient://') === 0) return true;
+  try {
+    const p = new URL(raw).protocol;
+    return p === 'http:' || p === 'https:';
+  } catch { return false; }
+}
+// 打开外链:统一走主进程 IPC(http/https / accessclient 白名单在那边再校验一次)
+async function openExternalUrl(url) {
+  const isH3cClient = String(url || '').trim().toLowerCase().indexOf('accessclient://') === 0;
+  if (!isOpenableUrl(url)) { setStatus('只支持打开 http/https 链接', 'var(--orange)'); return false; }
+  try {
+    const res = await window.api.openExternal(url);
+    if (!res || !res.ok) {
+      state.lastOpenExternalError = (res && res.error) || '未知错误';
+      setStatus((isH3cClient ? '交给 H3C 客户端失败: ' : '打开浏览器失败: ') + state.lastOpenExternalError, 'var(--red)');
+      return false;
+    }
+    state.lastOpenExternalError = '';
+    setStatus(isH3cClient ? '已交给 H3C 客户端打开' : '已在系统浏览器打开:' + url, 'var(--green)');
+    return true;
+  } catch (e) {
+    state.lastOpenExternalError = (e && e.message) || String(e);
+    setStatus('打开浏览器失败: ' + state.lastOpenExternalError, 'var(--red)');
+    return false;
+  }
+}
+// 给终端注册链接识别器(xterm 5.x:registerLinkProvider)
+// 返回 provider 句柄(dispose 用),同时挂在 tab 上方便回归用例直接取
+function registerTermLinks(term) {
+  if (!term || typeof term.registerLinkProvider !== 'function') return null;
+  const buffer = () => term.buffer && term.buffer.active;
+  // 把"折行块"拼成一行:text + 每个字符对应的 (bufferLineNumber, col) 映射
+  function readWrappedLine(lineNo) {
+    const b = buffer();
+    if (!b) return null;
+    let start = lineNo;
+    // bufferLineNumber 是 1-based;向上找到非继续行
+    for (let guard = 0; guard < 200; guard++) {
+      const ln = b.getLine(start - 1);
+      if (!ln || !ln.isWrapped) break;
+      start -= 1;
+    }
+    let text = '';
+    const cells = [];
+    const cols = term.cols || 80;
+    let cur = start;
+    for (let guard = 0; guard < 200; guard++) {
+      const ln = b.getLine(cur - 1);
+      if (!ln) break;
+      // 按"单元格"取字符:中文/emoji 占两列(getWidth()===2),用字符串下标当列号会让
+      // range 在含 CJK 的行上整体偏移,链接点不准。cells 里每个可见字符记真实列号。
+      let lineText = '';
+      for (let x = 1; x <= cols; x++) {
+        const cell = ln.getCell(x - 1);
+        if (!cell) break;
+        const w = cell.getWidth();
+        if (w === 0) continue; // 双宽字符的右半格:跳过,不重复计字符
+        const ch = cell.getChars() || ' ';
+        lineText += ch;
+        cells.push({ line: cur, col: x });
+      }
+      text += lineText.replace(/\s+$/, (m) => (ln.isWrapped ? m : '')); // 非折行行尾空白不参与匹配
+      const next = b.getLine(cur);
+      if (!next || !next.isWrapped) break;
+      cur += 1;
+    }
+    return { text, cells };
+  }
+  const provider = {
+    provideLinks(bufferLineNumber, callback) {
+      let info;
+      try { info = readWrappedLine(bufferLineNumber); } catch { info = null; }
+      if (!info || !info.text) { callback(undefined); return; }
+      const found = extractTermUrls(info.text);
+      if (!found.length) { callback(undefined); return; }
+      const links = found.map((f) => {
+        const first = info.cells[f.index];
+        const last = info.cells[f.index + f.length - 1];
+        if (!first || !last) return null;
+        return {
+          range: { start: { x: first.col, y: first.line }, end: { x: last.col, y: last.line } },
+          text: f.url,
+          decorations: { underline: true, pointerCursor: true },
+          activate: (event) => {
+            // 必须带修饰键:mac ⌘ / 其他 Ctrl(裸点击留给拖选)
+            const mod = event && (event.metaKey || event.ctrlKey);
+            if (!mod) { setStatus('按住 ' + (navigator.platform.indexOf('Mac') >= 0 ? '⌘' : 'Ctrl') + ' 再点击可打开:' + f.url, 'var(--text-dim)'); return; }
+            openExternalUrl(f.url);
+          },
+          hover: () => setStatus('🔗 ' + f.url + '(按住 ' + (navigator.platform.indexOf('Mac') >= 0 ? '⌘' : 'Ctrl') + ' 点击打开)', 'var(--text-dim)'),
+          leave: () => setStatus('', 'var(--text-dim)'),
+        };
+      }).filter(Boolean);
+      callback(links.length ? links : undefined);
+    },
+  };
+  // 返回 { provideLinks, dispose }:既方便回归用例直接按行号取链接,也保留 dispose 随 tab 释放
+  try {
+    const disposable = term.registerLinkProvider(provider);
+    return {
+      provideLinks: provider.provideLinks,
+      dispose: () => { try { disposable.dispose(); } catch { /* ignore */ } },
+    };
+  } catch { return null; }
 }
 
-// 终端右键菜单粘贴后把焦点还回终端:ctx 菜单是 <div>,点击它会把 textarea 的焦点顶掉
-// (落到 body),用户接着敲的字会全被吞掉直到再次点击终端 —— 表现就是"粘贴后打不出字/空格"。
 function refocusTerminal(sessionId) {
+  if (lockOverlayVisible()) { focusLockInput(); return; } // 锁定中:焦点只归密码框
   const ae = document.activeElement;
   if (ae && ae.tagName === 'BUTTON') { try { ae.blur(); } catch { /* ignore */ } }
   const t = state.tabs.get(sessionId);
   if (t) { try { t.term.focus(); } catch { /* ignore */ } }
 }
 
-// SFTP 工具栏按钮操作完,把焦点还给终端:原生 <button> 点击后一直占着焦点,
-// 用户接着敲空格会被按钮当"激活键"吞掉(打不出空格 / 误触发按钮)。先 blur 按钮再聚焦终端。
-function sftpRefocusTerminal() {
-  const el = document.activeElement;
-  if (el && el.tagName === 'BUTTON') el.blur();
-  const t = state.tabs.get(state.activeSessionId);
-  if (t) { try { t.term.focus(); } catch { /* ignore */ } }
+// =====================================================================
+// 用本机 WinSCP 打开会话(SFTP)
+// —— 见 docs/decision-winscp-integration.md:WinSCP 是 Windows-only 原生程序(GPLv3)
+//    无库 API,所以不"集成引擎",只把"主机/账号/密码"拼成一条 SFTP 会话 URL 外链拉起。
+// 前提:本机装了 WinSCP(state.winScp.installed);没装时入口点了给提示(v1.0.25 起没有内置面板)。
+// 安全:密码只交给主进程拼 argv / 会话 URL,不落盘、不写日志(日志里一律 ***)。
+// =====================================================================
+// SFTP 只有一个入口:本机 WinSCP(v1.0.25 起内置面板整套删除)。
+// 没装 WinSCP / 非 Windows 时入口点了给提示,不存在"面板回落"这套分支。
+// WinSCP 会话协议:'sftp'(默认) | 'scp'(绕过 SFTP 子系统,给老设备留路)
+function winScpProtocol() {
+  return state.settings.winscpProtocol === 'scp' ? 'scp' : 'sftp';
 }
 
-// ---- 加载 & 渲染 ----
-async function loadSftpList() {
-  const sessionId = sftpSession();
-  if (!sessionId) return;
-  const reqPath = state.sftp.path; // 请求时的目录;响应回来若会话/路径已变 → 过期结果丢弃(防快速切换目录串台)
-  // 立刻给反馈:设备慢(某些 H3C 设备 readdir 要几十秒甚至超时)时,列表要等很久才变,
-  // 旧版这段时间界面毫无动静,用户以为"点了没反应"。这里先上状态栏提示,回来再报结果。
-  setStatus(`正在读取 ${reqPath} …`, 'var(--accent)');
-  const res = await window.api.sftpList(sessionId, reqPath);
-  if (state.sftp.sessionId !== sessionId || state.sftp.path !== reqPath) return;
-  if (!res.ok) {
-    els.sftpList.innerHTML = `<div class="sftp-empty">读取失败: ${res.error}</div>`;
-    setStatus(`读取 ${reqPath} 失败: ${res.error}`, 'var(--orange)');
-    return;
-  }
-  // 用 realpath 解析出的绝对路径替换路径栏 —— 仅当请求的是相对路径('.')时。
-  // 请求绝对路径(如家目录探测结果 /root)时保留请求路径:某些堡垒机网关(SFTP 子系统
-  // chroot)会把任意路径的 realpath 返回 '/'或默认目录,覆盖掉会显示错、上传也走错目录。
-  state.sftp.path = (reqPath === '.' || reqPath === '') ? (res.cwd || state.sftp.path) : (reqPath || state.sftp.path);
-  // 第一次拿到登录目录(绝对路径)→ 作为 shell 当前目录的初始值(cd 跟踪的起点)
-  const t0 = state.tabs.get(state.sftp.sessionId);
-  if (t0 && res.cwd && !t0.shellCwd) t0.shellCwd = res.cwd;
-  state.sftp.entries = res.entries;
-  state.sftp.selected = null;
-  state.sftp.selectedSet.clear(); // 换了目录,之前的选中作废
-  // 目录变化记回标签自己的状态(切换标签回来时恢复浏览位置)
-  const t = state.tabs.get(state.sftp.sessionId);
-  if (t) t.sftpPath = state.sftp.path;
-  renderSftpList();
-  // 读取完成:把开头那句"正在读取…"换成结果;期间别的操作占了状态栏就不动它
-  if (els.toolbarStatus && els.toolbarStatus.textContent === `正在读取 ${reqPath} …`) {
-    setStatus(`已读取 ${state.sftp.path}(${(res.entries || []).length} 项)`, 'var(--text-dim)');
-  }
+async function detectWinScp() {
+  const r = await window.api.winScpDetect().catch(() => null);
+  state.winScp = { installed: !!(r && r.ok && r.installed), path: (r && r.path) || '' };
+  syncSftpEntryButton();
+  return state.winScp;
 }
 
-// 渲染路径栏为可点击面包屑:每段一个按钮,点击直接跳到该目录;
-// 完整路径始终可见(横向滚动,不省略),悬停 title 显示完整路径。
-function renderSftpPath(path) {
-  const el = els.sftpPath;
-  el.innerHTML = '';
-  const full = String(path || '/');
-  // 设备文件系统根(H3C Comware 的 flash:/、cfcard:/):"x:/" 整体当根段,后续段按 / 累加。
-  // 旧版按 "/" 盲切,flash:/ 会被渲染成 "/flash:"(点它跳到不存在的路径)。
-  const devRoot = /^([A-Za-z][A-Za-z0-9_-]*:)\//.exec(full);
-  const rootLabel = devRoot ? devRoot[1] + '/' : '/';
-  const rest = devRoot ? full.slice(rootLabel.length) : full.replace(/^\/+/, '');
-  const segs = rest.split('/').filter(Boolean); // 拆段;根目录 = 空
-  // 根段:unix 是 "/",设备是 "flash:/";无子段时它自己就是"当前目录"
-  const root = document.createElement('button');
-  root.className = 'sftp-path-seg root' + (segs.length ? '' : ' active');
-  root.textContent = rootLabel;
-  root.title = `跳转到 ${rootLabel}`;
-  root.addEventListener('click', () => { if (state.sftp.path !== rootLabel) { state.sftp.path = rootLabel; loadSftpList(); } });
-  el.appendChild(root);
-  // 逐段累加(每段都是可直接跳转的完整路径);根段自带结尾 "/",故首个子段前不再插分隔符
-  let acc = rootLabel;
-  let prevEndsSlash = true;
-  for (const seg of segs) {
-    if (!prevEndsSlash) {
-      const sep = document.createElement('span');
-      sep.className = 'sftp-path-sep';
-      sep.textContent = '/';
-      el.appendChild(sep);
-    }
-    acc = acc.endsWith('/') ? acc + seg : acc + '/' + seg;
-    const target = acc;
-    const btn = document.createElement('button');
-    btn.className = 'sftp-path-seg';
-    btn.textContent = seg;
-    btn.title = `跳转到 ${target}`;
-    btn.addEventListener('click', () => { if (state.sftp.path !== target) { state.sftp.path = target; loadSftpList(); } });
-    el.appendChild(btn);
-    prevEndsSlash = false;
-  }
-  // 当前完整路径高亮最后一段
-  const last = el.querySelector('.sftp-path-seg:last-of-type');
-  if (last) last.classList.add('active');
-  el.title = `当前目录: ${full}\n(点路径段可直接跳转)`;
-  el.scrollLeft = el.scrollWidth; // 滚动到末尾,总是看到当前所在目录
+// 探测本机是否装了 H3C 堡垒机客户端(AccessClient.exe)。装了才把 RDP/存储 Web 资产交给它
+// (accessclient:// 透传);没装则列表里只给说明 + 浏览器直达,不请求 accessUrl。
+async function detectH3cClient() {
+  let r = null;
+  try { r = await window.api.h3cClientDetect(); } catch { r = null; }
+  state.h3cClient = {
+    installed: !!(r && r.ok && r.installed),
+    handler: (r && r.handler) || '',
+    supported: !!(r && r.supported),
+  };
+  // 资产行的提示/右键文案依赖它,探测完重画一次列表(探测失败也只是回落到"查看说明")
+  try { renderSessionList(); } catch { /* 列表还没就绪 */ }
+  return state.h3cClient;
 }
 
-function renderSftpList() {
-  renderSftpPath(state.sftp.path);
-  els.sftpList.innerHTML = '';
-  if (state.sftp.entries.length === 0) {
-    els.sftpList.innerHTML = '<div class="sftp-empty">(空目录)</div>';
-    return;
-  }
-  // 目录排在前面,各自按名称排序
-  const sorted = [...state.sftp.entries].sort((a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  for (const e of sorted) {
-    const row = document.createElement('div');
-    row.className = 'sftp-row';
-    row.title = e.name;
-    const remotePath = sftpJoin(e.name);
-    row.dataset.path = remotePath; // 记住路径,多选高亮/查找都靠它
-    if (state.sftp.selectedSet.has(remotePath)) row.classList.add('selected');
-    // 刚上传成功的条目:高亮闪烁,让用户一眼看到"传到了哪"(上传目标是路径栏当前目录)
-    if (state.sftpUploadFlash && state.sftpUploadFlash.has(e.name)) {
-      row.classList.add('upload-flash');
-      row.scrollIntoView({ block: 'nearest' });
-    }
-
-    const icon = document.createElement('span');
-    icon.className = `sftp-icon ${e.isDir ? 'dir' : 'file'}`;
-    icon.textContent = e.isDir ? '📁' : '📄';
-
-    const name = document.createElement('span');
-    name.className = 'sftp-name';
-    name.textContent = e.isDir ? `${e.name}/` : e.name;
-
-    const size = document.createElement('span');
-    size.className = 'sftp-size';
-    size.textContent = e.isDir ? '' : formatSize(e.size);
-
-    const mtime = document.createElement('span');
-    mtime.className = 'sftp-mtime';
-    mtime.textContent = formatTime(e.mtime);
-
-    row.append(icon, name, size, mtime);
-
-    // 单击 = 选中/取消选中(多选:点几个选几个,再点一下取消)
-    row.addEventListener('click', () => {
-      const p = remotePath;
-      if (state.sftp.selectedSet.has(p)) state.sftp.selectedSet.delete(p);
-      else state.sftp.selectedSet.add(p);
-      state.sftp.selected = { name: e.name, isDir: e.isDir, remotePath: p };
-      updateSftpSelection(); // 只刷新高亮和底部提示,不用整列重绘
-    });
-    // 双击:目录 → 进入;文件 → 打开远程编辑器(直接改,保存即上传)
-    row.addEventListener('dblclick', () => {
-      if (e.isDir) {
-        state.sftp.path = remotePath;
-        loadSftpList();
-      } else {
-        openRemoteEditor(remotePath);
-      }
-    });
-
-    // 右键:文件/目录操作菜单(下载、编辑、重命名、复制路径、删除等)
-    row.addEventListener('contextmenu', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation(); // 别冒泡到窗口的 contextmenu/click 逻辑
-      const items = [];
-      if (e.isDir) {
-        items.push({ label: `📂 进入「${e.name}」`, action: () => { state.sftp.path = remotePath; loadSftpList(); } });
-        items.push({ separator: true });
-      }
-      items.push({ label: '⬇ 下载', action: () => downloadSftpEntry(remotePath, e.isDir) });
-      if (!e.isDir) items.push({ label: '✏ 编辑', action: () => openRemoteEditor(remotePath) });
-      items.push({ label: '✂ 重命名', action: () => renameSftpEntry(remotePath, e.name) });
-      items.push({ separator: true });
-      items.push({ label: '📋 复制路径', action: () => { window.api.copyText(remotePath); setStatus(`已复制路径: ${remotePath}`, 'var(--green)'); } });
-      items.push({ label: '🗑 删除', danger: true, action: () => deleteSftpEntry(remotePath, e.name) });
-      showCtxMenu(ev.clientX, ev.clientY, items);
-    });
-
-    els.sftpList.appendChild(row);
-  }
-  updateSftpSelection(); // 渲染完统一刷新选中高亮 + 底部已选数量提示
-}
-
-// ---- 传输记录(第 5 课)----
-// 每次上传/下载/新建/删除都留一行记录,让用户看得见"刚才发生了什么"。
-function addLog(text, isError) {
-  const now = new Date();
-  const p = (x) => String(x).padStart(2, '0');
-  const time = `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
-  state.sftp.log.push({ time, text, isError: !!isError });
-  if (state.sftp.log.length > 50) state.sftp.log.shift(); // 最多留 50 条
-  renderSftpLog();
-}
-
-// ---------- SFTP 远程文件编辑(双击文件 / 点"✏ 编辑") ----------
-let editRemotePath = null; // 正在编辑的远程文件路径
-
-// 打开远程文件到编辑弹窗(读内容 → 显示 → 保存写回)
-async function openRemoteEditor(remotePath) {
-  const sid = state.sftp.sessionId;
-  if (!sid) return;
-  const res = await window.api.sftpReadFile(sid, remotePath);
-  if (!res || !res.ok) { alert(res && res.error ? res.error : '读取失败'); return; }
-  editRemotePath = remotePath;
-  els.editPath.textContent = remotePath;
-  els.editContent.value = res.content;
-  els.editModal.classList.remove('hidden');
-  els.editContent.focus();
-}
-
-function closeEditor() {
-  editRemotePath = null;
-  els.editModal.classList.add('hidden');
-}
-
-// 保存:把编辑框内容写回远程文件 → 刷新 SFTP 列表
-async function saveRemoteFile() {
-  if (!editRemotePath) return;
-  const sid = state.sftp.sessionId;
-  if (!sid) return;
-  const target = editRemotePath; // 先存下路径(closeEditor 会把 editRemotePath 清空,别让提示信息显示成 null)
-  const res = await window.api.sftpWriteFile(sid, target, els.editContent.value);
-  if (res && res.ok) {
-    closeEditor();
-    addLog(`已保存远程文件: ${target}`, false);
-    loadSftpList(); // 文件大小/时间变了,刷新
-    setStatus(`已保存: ${target}`, 'var(--green)');
-  } else {
-    alert(res && res.error ? `保存失败: ${res.error}` : '保存失败');
-  }
-}
-
-// 工具栏"✏ 编辑"按钮:编辑当前选中的那个文件(选了目录/没选则提示)
-function editSelectedFile() {
-  const sel = state.sftp.selected;
-  if (!sel || !sel.remotePath) { alert('先在文件列表里选中一个文件(单击)'); return; }
-  if (sel.isDir) { alert('这是目录,只能编辑文件'); return; }
-  openRemoteEditor(sel.remotePath);
-}
-
-function renderSftpLog() {
-  if (state.sftp.log.length === 0) {
-    els.sftpLog.classList.add('hidden');
-    return;
-  }
-  els.sftpLog.classList.remove('hidden');
-  els.sftpLog.innerHTML = state.sftp.log
-    .map((l) => `<div class="sftp-log-item ${l.isError ? 'err' : ''}"><span class="sftp-log-time">${l.time}</span>${l.text}</div>`)
-    .join('');
-  els.sftpLog.scrollTop = els.sftpLog.scrollHeight; // 滚动到底,看最新一条
-}
-
-// SFTP 工具栏连接标签:显示当前连接的名称 + IP(无连接/面板清空时置空)
-function setSftpConnLabel(sessionId) {
-  const t = sessionId ? state.tabs.get(sessionId) : null;
+// 取某个标签页会话的连接参数(给 WinSCP 用)。注意堡垒机会话:
+//   host/port 是堡垒机网关(KoKo 2222)、username 是复合用户名(jms@ssh@账号@资产IP),
+//   这正是 Polaris 自己连接时用的口径,原样交给 WinSCP 就行。
+//   session.displayHost 只是"展示用"的真实资产地址,不能用来连。
+function winScpPayloadFor(sessionId) {
+  const t = state.tabs.get(sessionId);
   const s = t && t.session;
-  els.sftpConn.textContent = t ? sftpSessionText(t) : '';
-  els.sftpConn.title = s
-    ? (s.displayHost
-      ? `SFTP 浏览: ${s.name} · 经堡垒机 ${s.host}:${s.port} → 目标 ${s.displayHost}`
-      : `SFTP 浏览: ${s.name} · ${s.host}:${s.port}`)
-    : '点击切换浏览哪台已连接主机的文件';
+  if (!s) return { error: '找不到该会话的连接信息(先连上这台主机再试)' };
+  if ((s.protocol || 'ssh') === 'telnet') return { error: 'Telnet 会话没有 SFTP,不能交给 WinSCP' };
+  // 起始目录:只用终端跟踪到的绝对路径(cd 跟踪);没有就留空,交给主进程现探家目录
+  const remotePath = t.shellCwd || '';
+  return {
+    sessionId,                       // 起始目录未知时主进程用它现探一次家目录(exec pwd)
+    protocol: 'ssh',
+    winscpProtocol: winScpProtocol(), // 交给 WinSCP 的协议(sftp/scp);与上面的会话协议无关
+    host: s.host || '',
+    port: s.port || 22,
+    username: s.username || '',
+    password: s.password || '',
+    privateKey: s.private_key || '',   // Polaris 存的是私钥路径,WinSCP 可直接用
+    passphrase: s.passphrase || '',
+    name: s.name || '',
+    remotePath: /^\//.test(remotePath) ? remotePath : '',
+  };
 }
 
-// 会话在 SFTP 面板/下拉里的展示文本。
-// 堡垒机会话的 host/port 是堡垒机网关地址,同堡垒机所有主机都一样 → 必须用真实目标主机(资产地址)区分。
-// 真实目标优先取会话记录的 displayHost;老会话(记录缺失)从 jmsKey(serverId|资产地址|账号)
-// 或 username(用户@协议@账号@资产地址)反推。
-// 目标 IP 放最前:标签/下拉空间不足被截断时,丢掉的是主机名而不是区分用的 IP。
-function sftpSessionText(t) {
-  const s = t && t.session;
-  if (!s) return '';
-  let host = s.displayHost || '';
-  let account = '';
-  const kp = s.jmsKey ? String(s.jmsKey).split('|') : [];
-  if (!host && kp[1]) host = kp[1]; // jmsKey = serverId|资产地址|账号
-  if (kp[2]) account = kp[2];
-  const up = String(s.username).split(/[@#]/).filter(Boolean);
-  if (!account && up.length >= 3) account = up[up.length - 2];
-  if (!host && up.length >= 4) host = up[up.length - 1];
-  if (host) {
-    // H3C 会话 username 就是账号(不含 @)
-    if (!account && !String(s.username).includes('@') && !String(s.username).includes('#')) account = s.username;
-    const port = s.displayPort || 22;
-    return `${host} · ${s.name}${account ? '(' + account + ')' : ''}${port && port !== 22 ? ':' + port : ''}`;
+async function openSessionInWinScp(sessionId) {
+  const sid = sessionId || state.activeSessionId;
+  const payload = winScpPayloadFor(sid);
+  if (payload.error) { setStatus(payload.error, 'var(--orange)'); return false; }
+  if (!state.winScp.installed) {
+    dlog('WINSCP', '本机未检测到 WinSCP,放弃拉起');
+    setStatus('本机没装 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)', 'var(--orange)');
+    return false;
   }
-  return `${s.name} · ${s.host}:${s.port}`;
+  // 面板里留一行“交给谁、落在哪”:WinSCP 是否真带上 SFTPRealPath=off 看主进程的 [WINSCP] 行
+  dlog('WINSCP', `交给 WinSCP: ${payload.username}@${payload.host}:${payload.port} 起始目录=${payload.remotePath || '(未定,由 WinSCP 自己落位)'}`);
+  const r = await window.api.winScpOpen(payload).catch((e) => ({ ok: false, error: e && e.message }));
+  if (!r || !r.ok) {
+    dlog('WINSCP·错误', (r && r.error) || '打开失败');
+    setStatus('WinSCP: ' + ((r && r.error) || '打开失败'), 'var(--orange)');
+    return false;
+  }
+  if (r.command) dlog('WINSCP', `已拉起: ${r.command}`);
+  const t = state.tabs.get(sid);
+  setStatus(`已用 WinSCP 打开「${(t && t.title) || payload.host}」`, 'var(--green)');
+  return true;
 }
 
-// 收起当前标签的 SFTP 面板(并记住它已关闭;别的标签的 SFTP 状态不受影响)
-function closeSftpPanel() {
-  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
-  if (active) active.sftpOpen = false;
-  state.sftp.visible = false;
-  state.sftp.sessionId = null;
-  els.sftpPanel.classList.add('hidden');
-  els.dividerH.classList.add('hidden');
-  els.btnSftpToggle.classList.remove('active');
-  setSftpConnLabel(null);
-  refitAll();
-  syncPanelButtons();
-}
-
-// ---- 面板开关:只开关"当前激活标签"自己的 SFTP(各标签独立) ----
-function toggleSftpPanel() {
-  const active = state.activeSessionId ? state.tabs.get(state.activeSessionId) : null;
-  // Telnet 会话没有 SFTP 通道(仅 SSH 协议能力):提醒后不开面板
-  if (active && active.session && (active.session.protocol || 'ssh') === 'telnet') {
-    addLog('📁 SFTP 仅支持 SSH 会话', true);
+// 工具栏按钮 / ⌘⇧S / 菜单「SFTP」的唯一实现:把当前会话交给 WinSCP
+async function openSftpEntry(sessionId) {
+  const t = (sessionId ? state.tabs.get(sessionId) : null)
+    || (state.activeSessionId ? state.tabs.get(state.activeSessionId) : null);
+  if (!t) { setStatus('先连接一台主机,再用 WinSCP 打开 SFTP', 'var(--orange)'); return; }
+  if ((t.session && (t.session.protocol || 'ssh')) === 'telnet') {
+    setStatus('SFTP 仅支持 SSH 会话(Telnet 没有 SFTP)', 'var(--orange)');
     return;
   }
-  if (!active) {
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    syncPanelButtons();
+  if (!state.winScp.installed) {
+    dlog('WINSCP', '本机未检测到 WinSCP,SFTP 入口不可用');
+    setStatus('本机没装 WinSCP,无法打开 SFTP(装好后重开本窗口;自定义安装路径可设 POLARIS_WINSCP_PATH)', 'var(--orange)');
     return;
   }
-  if (active.sftpOpen) {
-    // 关闭:只关当前标签的 SFTP(别的标签开没开互不影响)
-    active.sftpOpen = false;
-    state.sftp.visible = false;
-    els.sftpPanel.classList.add('hidden');
-    els.dividerH.classList.add('hidden');
-    setSftpConnLabel(null);
-  } else {
-    // 打开:记录到当前标签,浏览它的目录
-    active.sftpOpen = true;
-    state.sftp.visible = true;
-    state.sftp.sessionId = active.sessionId;
-    // 优先定位到终端当前目录(跟踪 cd 的结果);终端目录未知时,探测默认家目录
-    // (规则:当前用户家目录优先,无家目录则 /tmp),再退回上次浏览/默认
-    const sid = active.sessionId;
-    state.sftp.selected = null;
-    els.sftpPanel.classList.remove('hidden');
-    els.dividerH.classList.remove('hidden');
-    setSftpConnLabel(sid);
-    if (active.shellCwd) {
-      state.sftp.path = active.shellCwd;
-      loadSftpList();
-    } else if (active.sftpPath && active.sftpPath !== '.') {
-      state.sftp.path = active.sftpPath;
-      loadSftpList();
-    } else {
-      // 探测默认家目录(主进程:realpath '.' 非根 → 用它;否则找 /root、/home/<user>,都没有 → /tmp)
-      state.sftp.path = '.';
-      window.api.sftpHome(sid).then((r) => {
-        if (state.sftp.sessionId !== sid || !state.sftp.visible) return; // 已切换/关闭
-        if (r && r.ok && r.home) state.sftp.path = r.home;
-        loadSftpList();
-      }).catch(() => loadSftpList());
-    }
-  }
-  refitAll(); // 终端区域高度变了,重新适配
-  syncPanelButtons();
+  await openSessionInWinScp(t.sessionId);
 }
 
-// ---- SFTP 连接切换下拉:列出所有已连接的 SSH 会话,点选 = 切到该标签并打开它的 SFTP ----
-function toggleSftpConnMenu() {
-  const menu = els.sftpConnMenu;
-  if (!menu.classList.contains('hidden')) { menu.classList.add('hidden'); return; }
-  menu.textContent = '';
-  const conns = [...state.tabs.values()]
-    .filter((t) => t.status === 'connected' && (t.session.protocol || 'ssh') !== 'telnet')
-    .sort((a, b) => (a.session.name || '').localeCompare(b.session.name || ''));
-  if (!conns.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ctx-item dim';
-    empty.textContent = '没有已连接的 SSH 会话';
-    menu.appendChild(empty);
-  }
-  for (const t of conns) {
-    const item = document.createElement('div');
-    item.className = 'ctx-item' + (t.sessionId === state.sftp.sessionId && state.sftp.visible ? ' active' : '');
-    // 堡垒机会话显示真实目标主机(资产地址),避免同堡垒机的多台主机都显示网关地址分不清
-    item.textContent = sftpSessionText(t);
-    item.title = t.session.displayHost
-      ? `堡垒机 ${t.session.host}:${t.session.port} → 目标 ${t.session.displayHost}`
-      : `${t.session.username}@${t.session.host}:${t.session.port}`;
-    item.addEventListener('click', () => {
-      menu.classList.add('hidden');
-      if (state.activeSessionId !== t.sessionId) activateTab(t.sessionId); // 应用该标签自己的 SFTP 状态
-      if (!t.sftpOpen) toggleSftpPanel(); // 该标签还没开 SFTP → 顺手打开
-      setStatus(`SFTP 已切换到「${t.session.name}」`, 'var(--green)');
-    });
-    menu.appendChild(item);
-  }
-  const rect = els.sftpConn.getBoundingClientRect();
-  menu.style.left = `${Math.max(8, rect.left)}px`;
-  menu.style.top = `${rect.bottom + 4}px`;
-  menu.classList.remove('hidden');
+// 工具栏 SFTP 按钮:没装 WinSCP 时标灰(点了给提示,不做"假入口")
+function syncSftpEntryButton() {
+  const btn = els.btnSftpToggle;
+  if (!btn) return;
+  const ok = !!state.winScp.installed;
+  btn.classList.toggle('dim', !ok);
+  btn.title = ok
+    ? '用本机 WinSCP 打开当前会话的 SFTP(主机/账号/密码自动带过去) ⌘⇧S'
+    : '本机未检测到 WinSCP —— SFTP 由 WinSCP 打开,装好后重开窗口即可';
 }
-
-// ---- 工具按钮 ----
-async function sftpGoUp() {
-  const cur = state.sftp.path || '/';
-  const up = sftpParent(cur);
-  // 已经在根目录:再点也不会变(旧版仍去读一次同目录 —— 慢设备上要等 40s 超时,表现为"点了没反应")
-  if (up === cur) {
-    setStatus(`已在根目录 ${cur},无法再上一级`, 'var(--orange)');
-    return;
-  }
-  state.sftp.path = up;
-  loadSftpList();
-}
-
-function sftpMakeDir() {
-  // 用自定义输入弹窗代替 window.prompt(新版 Chromium 不支持 prompt)
-  showPrompt({
-    title: '新建目录',
-    label: '目录名',
-    value: 'new-folder',
-    onOk: async (name) => {
-      if (!name) return;
-      const target = sftpJoin(name);
-      const res = await window.api.sftpMkdir(sftpSession(), target);
-      if (!res.ok) { addLog(`➕ 新建目录失败 ${target}: ${res.error}`, true); alert(`新建失败: ${res.error}`); return; }
-      addLog(`➕ 新建目录 ${target} ✅`);
-      loadSftpList();
-      sftpRefocusTerminal(); // 弹窗确认按钮也别占焦点,还回终端(否则敲空格被吞)
-    },
-  });
-}
-
-// ---- 右键菜单操作:单条目下载 / 重命名 / 删除 ----
-// 下载单个文件/目录:单文件走保存对话框(能看见目标路径),目录走"选文件夹"递归下载
-// 仿 WinSCP:发起即返回,后台跑,完成/进度由事件驱动
-async function downloadSftpEntry(remotePath, isDir) {
-  const sid = sftpSession();
-  const res = isDir
-    ? await window.api.sftpDownloadMany(sid, [{ remotePath, isDir: true }])
-    : await window.api.sftpDownload(sid, remotePath);
-  sftpRefocusTerminal();
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') { addLog(`⬇ 下载失败 ${remotePath}: ${res.error}`, true); alert(`下载失败: ${res.error}`); }
-    return;
-  }
-  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
-}
-
-// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
-function renameSftpEntry(remotePath, name) {
-  showPrompt({
-    title: '重命名',
-    label: '新名称',
-    value: name,
-    onOk: async (newName) => {
-      if (!newName || newName === name) return;
-      const dir = remotePath.slice(0, remotePath.lastIndexOf('/'));
-      const to = dir === '/' ? `/${newName}` : `${dir}/${newName}`;
-      const res = await window.api.sftpRename(sftpSession(), remotePath, to);
-      if (!res.ok) { alert(`重命名失败: ${res.error}`); addLog(`✂ 重命名失败 ${remotePath} → ${to}: ${res.error}`, true); return; }
-      addLog(`✂ 重命名 ${remotePath} → ${to} ✅`);
-      setStatus(`已重命名 → ${to}`, 'var(--green)');
-      loadSftpList();
-      sftpRefocusTerminal();
-    },
-  });
-}
-
-// 删除单个文件/目录(目录递归删空内容)
-function deleteSftpEntry(remotePath, name) {
-  const isDir = remotePath.endsWith('/') || state.sftp.entries.find((x) => sftpJoin(x.name) === remotePath)?.isDir;
-  const tip = isDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
-  if (!confirm(`确定删除「${remotePath}」吗?${tip}`)) return;
-  (async () => {
-    const sid = sftpSession();
-    const res = await window.api[isDir ? 'sftpRmdir' : 'sftpDelete'](sid, remotePath);
-    if (!res.ok) { addLog(`🗑 删除失败 ${remotePath}: ${res.error}`, true); alert(`删除失败: ${res.error}`); return; }
-    addLog(`🗑 删除 ${remotePath} ✅`);
-    setStatus(`已删除 ${remotePath}`, 'var(--orange)');
-    loadSftpList();
-    sftpRefocusTerminal();
-  })();
-}
-
-async function sftpDeleteSelected() {
-  const list = sftpSelectedEntries();
-  if (list.length === 0) { alert('先选中要删除的文件/目录(可点「全选」一次选完)'); return; }
-  const hasDir = list.some((e) => e.isDir);
-  const tip = hasDir ? '\n(目录会连同里面的所有文件/子目录一起删除)' : '';
-  const names = list.map((e) => `${e.isDir ? '📁' : '📄'} ${sftpJoin(e.name)}`).join('\n');
-  if (!confirm(`确定删除以下 ${list.length} 项吗?${tip}\n\n${names}`)) return;
-  for (const e of list) {
-    const path = sftpJoin(e.name); // 条目没有 remotePath,用 sftpJoin(name) 拼出完整路径
-    const res = await window.api[e.isDir ? 'sftpRmdir' : 'sftpDelete'](sftpSession(), path);
-    if (!res.ok) { addLog(`🗑 删除失败 ${path}: ${res.error}`, true); alert(`删除失败 ${path}: ${res.error}`); continue; }
-    addLog(`🗑 删除 ${path} ✅`);
-  }
-  loadSftpList();
-  sftpRefocusTerminal(); // 删除完焦点还给终端(按钮占焦点会吞空格)
-}
-
-async function sftpUpload(mode) {
-  // macOS 对话框 openFile+openDirectory 同开会退化成只能选文件夹 → 先让用户选文件/文件夹,
-  // 各用单一属性打开(mode: 'file' 只选文件 | 'dir' 只选文件夹 | 省略=都允许,兼容旧调用)
-  // 仿 WinSCP:对话框选完后立即返回(job 后台跑),进度/完成/取消由事件驱动
-  const res = await window.api.sftpUpload(sftpSession(), state.sftp.path, mode);
-  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') {
-      addLog(`⬆ 上传失败: ${res.error}`, true);
-      alert(`上传失败: ${res.error}`);
-      // alert 是原生模态框,关闭后焦点/输入法状态可能被打乱(日志:上传失败后终端空格全吞、
-      // 死键刷屏、只剩回车能发)。强制把焦点和 IME 状态还给终端,否则上传失败后终端没法打字。
-      sftpRefocusTerminal();
-      const tt = state.tabs.get(state.activeSessionId);
-      if (tt && tt.__imeReset) try { tt.__imeReset(); } catch { /* ignore */ }
-    }
-    return;
-  }
-  // job 已启动,立即反馈"已开始";完成/失败/取消由 onSftpDone 处理(刷新+标记+状态)
-  setStatus(`上传已开始 → ${state.sftp.path}…`, 'var(--accent)');
-}
-
-async function sftpDownload() {
-  // 文件 + 目录都能选:目录递归下载到本地同名子文件夹
-  // 仿 WinSCP:对话框选完即返回,后台跑,进度/完成/取消由事件驱动
-  const selected = sftpSelectedEntries();
-  if (selected.length === 0) { alert('先选中要下载的文件/目录(可点「全选」一次选完)'); return; }
-  const res = (selected.length === 1 && !selected[0].isDir)
-    ? await window.api.sftpDownload(sftpSession(), sftpJoin(selected[0].name))
-    : await window.api.sftpDownloadMany(sftpSession(), selected.map((f) => ({ remotePath: sftpJoin(f.name), isDir: !!f.isDir })));
-  sftpRefocusTerminal(); // 工具栏按钮别占着焦点,否则接着敲空格会被按钮吞掉
-  if (!res || !res.ok) {
-    if (res && res.error && res.error !== '已取消') {
-      addLog(`⬇ 下载失败: ${res.error}`, true);
-      const permTip = /EPERM|EACCES|operation not permitted|permission denied/i.test(res.error)
-        ? '\n\n⚠️ 保存位置无写入权限(macOS 系统保护):换个普通文件夹,或在 系统设置→隐私与安全性→完全磁盘访问权限 里添加 Polaris(Electron)'
-        : '';
-      alert(`下载失败: ${res.error}${permTip}`);
-    }
-    return;
-  }
-  setStatus('下载已开始…', 'var(--accent)'); // 完成/失败由 onSftpDone 更新
-}
-
-// 重命名文件/目录:弹输入框,默认填原名;改名后刷新列表
 
 // =====================================================================
 // 窗口尺寸变化 → 所有终端重新适配
@@ -9735,13 +10006,6 @@ makeResizer(els.dividerV, 'x',
   160, 500, false,
   () => { state.settings.sessionPanelWidth = els.sessionPanel.offsetWidth; saveSettings(); });
 
-// 上下分隔条:调 SFTP 面板高度(范围 120~450px),高度持久化
-makeResizer(els.dividerH, 'y',
-  () => els.sftpPanel.offsetHeight,
-  (h) => { els.sftpPanel.style.height = `${h}px`; },
-  120, 450, false,
-  () => { state.settings.sftpPanelHeight = els.sftpPanel.offsetHeight; saveSettings(); });
-
 // 堡垒机 webview 的 guest view 会盖住相邻分隔条,并吞掉进入其矩形内的鼠标事件(宿主 CSS 无法干预):
 // 拖拽期间临时 visibility:hidden(不重载画面),松开恢复 —— 否则横分隔条收不到 mousedown、拖动进入 webview 区域时 mousemove 断流。
 const wvHideWhileDrag = () => { els.bastionWebview.style.visibility = 'hidden'; };
@@ -9750,13 +10014,18 @@ const wvShowAfterDrag = () => { els.bastionWebview.style.visibility = ''; };
 // 堡垒机面板分隔条:拖动左右调面板宽度(范围 300~1200px),宽度持久化
 // reverse=true:面板在分隔条右侧 → 往左拖 = 面板变宽(符合直觉)
 applyBastionDefaultWidth();
-applySessionPanelWidth(); // 会话列表宽度 / SFTP 面板高度持久化恢复
-applySftpPanelHeight();
+applySessionPanelWidth(); // 会话列表宽度持久化恢复
 makeResizer(els.dividerBastion, 'x',
   () => els.bastionPanel.offsetWidth,
   (w) => { els.bastionPanel.style.width = `${w}px`; },
   300, bastionMaxWidth, true,
-  () => { wvShowAfterDrag(); state.settings.bastionWidth = els.bastionPanel.offsetWidth; saveSettings(); },
+  () => {
+    wvShowAfterDrag();
+    state.settings.bastionWidth = els.bastionPanel.offsetWidth;
+    saveSettings();
+    // 面板宽度变了 → 未手动缩放时重新适配页面宽度
+    if (!bastionManualZoom) setTimeout(bastionFitToWidth, 80);
+  },
   wvHideWhileDrag);
 
 // 堡垒机面板高度:固定撑满整个区域(不再提供横分隔条上下拖动)
@@ -9781,13 +10050,18 @@ function toggleBroadcast() {
 // 自定义输入弹窗(替代 window.prompt,新版 Chromium 已不支持 prompt)
 // =====================================================================
 let promptCallback = null; // 点"确定"后要执行的回调
+let promptCancelCb = null; // 点"取消"后要执行的回调(可选:切换 root 等需要取消时中止远端命令)
 
-function showPrompt({ title, label, value, onOk, password }) {
+function showPrompt({ title, label, value, onOk, onCancel, password, rememberLabel }) {
   els.promptTitle.textContent = title || '输入';
   els.promptLabel.textContent = label || '内容';
   els.promptInput.value = value || '';
   els.promptInput.type = password ? 'password' : 'text'; // 快捷连接问密码时隐藏明文
+  els.promptRemember.checked = false;
+  els.promptRememberLabel.textContent = rememberLabel || '记住到本会话';
+  els.promptRememberRow.classList.toggle('hidden', !rememberLabel);
   promptCallback = onOk;
+  promptCancelCb = onCancel || null;
   els.promptModal.classList.remove('hidden');
   focusModalInput(els.promptModal, els.promptInput);
   try { els.promptInput.select(); } catch { /* ignore */ }
@@ -9795,17 +10069,100 @@ function showPrompt({ title, label, value, onOk, password }) {
 
 function closePrompt() {
   promptCallback = null;
+  promptCancelCb = null;
+  els.promptRememberRow.classList.add('hidden'); // 默认不显示"记住"勾选,除非调用方传了 rememberLabel
   els.promptModal.classList.add('hidden');
 }
 
 els.promptOk.addEventListener('click', () => {
   const v = els.promptInput.value.trim();
+  const remember = els.promptRemember.checked;
   const cb = promptCallback;
   closePrompt();
-  if (cb) cb(v); // 把输入值交给调用方
+  if (cb) cb(v, remember); // 把输入值和"是否记住"交给调用方
 });
-els.promptCancel.addEventListener('click', closePrompt);
+els.promptCancel.addEventListener('click', () => {
+  const cb = promptCancelCb;
+  closePrompt();
+  if (cb) cb();
+});
 els.promptInput.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) els.promptOk.click(); });
+
+// 📋 粘贴按钮:直接把剪贴板内容填进输入框(密码提示时也能安全粘贴,不落日志/不截留)
+els.promptPaste.addEventListener('click', () => {
+  try {
+    const t = window.api.readClipboard();
+    if (t) {
+      els.promptInput.value = t;
+      els.promptInput.focus();
+      try { els.promptInput.select(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+});
+
+// 🔐 切换 root(su - root)+ 密码粘贴/自动切换。
+// - 会话已保存 root 密码(su_password) → 直接发送 su - root,检测到 Password: 后自动发 root 密码,不弹框。
+// - 未保存 → 弹密码框,粘贴/输入;勾选"记住"则回写保存到本会话,下次一键自动切换。
+//  送达期间抑制 autoFillPassword —— 否则它会把"登录密码"错发给 su 的 Password: 提示,导致切换失败。
+function switchToRoot(sessionId) {
+  let tab = sessionId ? state.tabs.get(sessionId) : (state.activeSessionId ? state.tabs.get(state.activeSessionId) : null);
+  if (!tab) tab = [...state.tabs.values()].find((td) => td.status === 'connected');
+  if (!tab) { setStatus('没有已连接的会话,无法切换 root', 'var(--red)'); return; }
+  if (tab.status !== 'connected') { setStatus('当前会话未连接,无法切换 root', 'var(--red)'); return; }
+  if ((tab.session.protocol || 'ssh') === 'telnet') { setStatus('Telnet 会话不支持 su 切换', 'var(--red)'); return; }
+  const targetId = tab.sessionId;
+  const savedPw = tab.session && tab.session.su_password ? tab.session.su_password : '';
+  tab.suPending = true; // 抑制 autoFillPassword:su 要的是 root 密码,不是登录密码
+  sendOneShotCommand(tab, 'su - root'); // 先 Ctrl+U/Ctrl+K 清掉远端当前行,再发命令
+  if (savedPw) {
+    // 已保存 root 密码:交给负责检测 Password: 的回收逻辑自动发送,不再弹框打断
+    tab.suAutoPw = savedPw;
+    tab.suAutoPassSent = false;
+    tab.suAutoBuf = '';
+    setStatus('已发送 su - root(将自动使用已保存的 root 密码)', 'var(--accent)');
+    return;
+  }
+  setStatus('已发送 su - root,请输入 root 密码', 'var(--accent)');
+  showPrompt({
+    title: '切换 root（su - root）',
+    label: 'root 密码（可直接 Ctrl/Cmd+V 粘贴,或点「📋 粘贴」）',
+    password: true,
+    rememberLabel: '记住到本会话（下次一键自动切换）',
+    onOk: (pw, remember) => {
+      tab.suPending = false;
+      if (pw) window.api.sshWrite(targetId, pw + '\r', { noLog: true }); // 密码不进会话日志/录制
+      if (remember && pw) saveSuPassword(tab.session, pw, tab); // 勾选“记住”→ 保存到会话(加密入库)
+    },
+    onCancel: () => {
+      tab.suPending = false;
+      window.api.sshWrite(targetId, '\x03'); // 用户取消 → Ctrl+C 中止 su,不留密码提示卡在终端
+      setStatus('已取消切换 root', 'var(--text-dim)');
+    },
+  });
+}
+
+// 把 root 密码保存到会话(勾选"记住"后调用):用会话现有配置构造完整 payload 走 updateSession,
+// 主进程会像登录密码一样加密(su_password)入库;成功后同步内存,之后 switchToRoot 直接走自动通道。
+async function saveSuPassword(session, pw, tab) {
+  const data = {
+    name: session.name, host: session.host,
+    port: session.port || 22, username: session.username,
+    password: session.password || '',
+    privateKey: session.private_key || '',
+    passphrase: session.passphrase || '',
+    jump: session.jump && session.jump.host ? session.jump : null,
+    encoding: session.encoding || 'utf8',
+    onConnect: session.on_connect || '',
+    protocol: session.protocol || 'ssh',
+    groupId: session.group_id != null ? session.group_id : null,
+    suPassword: pw,
+  };
+  const res = await window.api.updateSession(session.id, data);
+  if (!res.ok) { alert(`保存 root 密码失败: ${res.error}`); return; }
+  session.su_password = pw; // 同步内存,下次切换直接用
+  if (tab) tab.session.su_password = pw;
+  setStatus('已保存 root 密码,下次切换将自动使用', 'var(--green)');
+}
 
 // =====================================================================
 // 右键菜单:菜单项各自绑定 action;点别处 / 失焦 关闭
@@ -9901,9 +10258,10 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:toggle-panel') toggleSessionPanel();
   else if (ch === 'menu:settings') openSettingsModal();
   else if (ch === 'menu:about') openAbout();
+  else if (ch === 'menu:check-update') { openAbout(); checkUpdate(); }
   else if (ch === 'menu:split-v') splitActivePane('v');
   else if (ch === 'menu:split-h') splitActivePane('h');
-  else if (ch === 'menu:sftp') toggleSftpPanel();
+  else if (ch === 'menu:sftp') openSftpEntry();
   else if (ch === 'menu:tunnel') openTunnelModal();
   else if (ch === 'menu:batch') toggleBatchPanel();
   else if (ch === 'menu:quick') openQuickModal();
@@ -9911,14 +10269,14 @@ window.api.onMenu((ch) => {
   else if (ch === 'menu:record-toggle') toggleRecord();
   else if (ch === 'menu:record-list') openRecordingsModal();
   else if (ch === 'menu:log-open') window.api.logOpenDir();
+  else if (ch === 'menu:debug-toggle') toggleDebugPanel();
+  else if (ch === 'menu:debug-download') els.debugDownload.click();
+  else if (ch === 'menu:debug-clear') { termDebug.lines.length = 0; renderDebugBody(); setStatus('调试日志已清空'); }
   else if (ch === 'menu:ai') toggleAiPanel();
   else if (ch === 'menu:connect') menuConnect();
   else if (ch === 'menu:disconnect') menuDisconnect();
   else if (ch === 'menu:lock') requestLock();
   else if (ch === 'menu:jms') openJmsModal();
-  else if (ch === 'menu:about') {
-    alert('Polaris\n类 Xshell 的 SSH/SFTP 终端\n\nElectron + xterm.js + ssh2 + SQLite\n纯本地,无服务器');
-  }
 });
 
 // =====================================================================
@@ -9964,8 +10322,6 @@ els.vsTree.addEventListener('click', () => setSessionView('tree')); // 树形视
 // 批量操作
 els.batchConnect.addEventListener('click', batchConnect);
 els.batchClose.addEventListener('click', batchClose);
-els.batchUpload.addEventListener('click', batchUpload);
-els.batchDownload.addEventListener('click', batchDownload);
 els.batchDelete.addEventListener('click', batchDelete);
 els.batchClear.addEventListener('click', batchClear);
 
@@ -10038,6 +10394,17 @@ els.importBackupFile.addEventListener('change', importBackupSelected);
 // 从 Xshell/iTerm2 导入
 els.importExternal.addEventListener('click', () => els.importExternalFile.click());
 els.importExternalFile.addEventListener('change', importExternalSelected);
+els.importSshConfig.addEventListener('click', importSshConfigSelected);
+// 新手引导向导
+els.obNext.addEventListener('click', obNext);
+els.obBack.addEventListener('click', obBack);
+els.obSkip.addEventListener('click', () => closeOnboarding(true));
+els.obFinish.addEventListener('click', () => closeOnboarding(true));
+els.obCloseX.addEventListener('click', () => closeOnboarding(true));
+els.obImportSsh.addEventListener('click', () => { closeOnboarding(true); importSshConfigSelected(); });
+els.obImportBatch.addEventListener('click', () => { closeOnboarding(true); openImportModal(); });
+els.obNewSession.addEventListener('click', () => { closeOnboarding(true); openSessionModal(null); });
+els.obQuick.addEventListener('click', () => { closeOnboarding(true); toggleQuickConnect(); });
 // 备份文件密码弹窗
 els.filePwdOk.addEventListener('click', confirmFilePwd);
 els.filePwdCancel.addEventListener('click', closeFilePwd);
@@ -10047,6 +10414,9 @@ els.filePwdInput2.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) { e
 // 弹窗焦点锁:任何弹窗打开期间,焦点被终端/原生菜单/堡垒机 webview 抢回时,
 // 自动拉回最上层弹窗里的第一个可输入元素(否则按键会漏进终端,密码框永远为空)。
 document.addEventListener('focusin', () => {
+  // 锁定优先于弹窗焦点锁:自动锁定时若正开着设置/导入弹窗,弹窗锁会把焦点从密码框抢回去
+  // → 用户看到的正是「自动锁定后无法输入密码」。锁定时一切焦点都归密码框。
+  if (lockOverlayVisible()) { focusLockInput(); return; }
   const modal = topVisibleModal();
   if (!modal) return;
   const ae = document.activeElement;
@@ -10059,6 +10429,7 @@ document.addEventListener('focusin', () => {
 // 弹窗内控件之间切换不受影响(activeElement 仍在 modal 内则直接返回)。
 document.addEventListener('focusout', () => {
   setTimeout(() => {
+    if (lockOverlayVisible()) { focusLockInput(); return; }
     const modal = topVisibleModal();
     if (!modal) return;
     const ae = document.activeElement;
@@ -10094,6 +10465,8 @@ els.bastionClear.addEventListener('click', async () => {
     try { els.bastionWebview.src = 'about:blank'; } catch { /* ignore */ }
     els.bastionCurrent.textContent = '';
     els.bastionUrl.value = '';
+    els.bastionLoading.classList.add('hidden');
+    setBastionEmptyState('idle', '堡垒机浏览器', '在上方选择/输入堡垒机 Web 地址,点「打开」开始');
     // 清持久化默认地址:否则重启后 restoreBastion 又自动打开并加载旧地址
     state.settings.bastionUrl = '';
     saveSettings();
@@ -10107,7 +10480,53 @@ els.bastionClear.addEventListener('click', async () => {
   }
 });
 els.bastionEmptyCfg.addEventListener('click', openBastionCfg);
+// 空态「重试」:重新加载地址栏/上次保存的地址
+els.bastionEmptyRetry.addEventListener('click', () => {
+  const url = (els.bastionUrl.value || '').trim() || state.settings.bastionUrl || '';
+  if (url) loadBastion(url);
+});
+// 双击缩放百分比 → 恢复 100% 并重新开启自动适配
+els.bastionZoomLabel.addEventListener('dblclick', () => {
+  bastionManualZoom = false;
+  state.bastionZoom = 1;
+  applyBastionZoom();
+  saveSettings();
+  bastionFitToWidth();
+});
+// 「⋯」更多操作:系统浏览器打开 / 复制地址 / 重置缩放 / 清除历史
+function bastionCurrentUrl() {
+  try {
+    if (els.bastionWebview && els.bastionWebview.getURL && els.bastionWebview.getURL()) return els.bastionWebview.getURL();
+  } catch { /* ignore */ }
+  return (els.bastionUrl.value || '').trim();
+}
+els.bastionMore.addEventListener('click', () => {
+  const r = els.bastionMore.getBoundingClientRect();
+  const url = bastionCurrentUrl();
+  showCtxMenu(Math.round(r.left), Math.round(r.bottom + 4), [
+    { label: '🌐 在系统浏览器打开', action: async () => {
+      if (!url || /^about:/i.test(url)) { setStatus('当前没有可打开的网页地址', 'var(--orange)'); return; }
+      const res = await window.api.openExternal(url);
+      if (!res || !res.ok) setStatus('打开系统浏览器失败: ' + ((res && res.error) || '未知错误'), 'var(--red)');
+    } },
+    { label: '📋 复制当前地址', action: () => {
+      if (!url) return;
+      window.api.copyText(url);
+      setStatus('已复制堡垒机地址', 'var(--green)');
+    } },
+    { separator: true },
+    { label: '↻ 重置缩放(100%)', action: () => {
+      bastionManualZoom = false;
+      state.bastionZoom = 1;
+      applyBastionZoom();
+      saveSettings();
+      bastionFitToWidth();
+    } },
+    { label: '🧹 清除堡垒机历史', action: () => els.bastionClear.click() },
+  ]);
+});
 els.bastionCfgClose.addEventListener('click', closeBastionCfg);
+els.bastionCfgX.addEventListener('click', closeBastionCfg);
 els.bastionCfgAdd.addEventListener('click', bastionCfgAdd);
 els.bastionServerSelect.addEventListener('change', () => { if (els.bastionServerSelect.value) bastionSelectServer(els.bastionServerSelect.value); });
 els.bastionGo.addEventListener('click', bastionLoadSelected); // 打开:优先用下拉选中的堡垒机(带账号密码自动填充),否则加载地址栏输入的地址
@@ -10245,6 +10664,20 @@ els.jmsAdvToggle.addEventListener('click', () => {
 });
 els.loBtn.addEventListener('click', submitLock); // 锁定覆盖层:解锁按钮
 els.loPw.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) submitLock(); });
+// 锁定期间:密码框被点走/被代码 blur → 立刻抓回(避免"输入不了密码")
+els.loPw.addEventListener('blur', () => {
+  if (!lockOverlayVisible()) return;
+  setTimeout(() => { if (lockOverlayVisible()) focusLockInput(); }, 0);
+});
+// 点覆盖层空白处不改变焦点(点输入框/按钮仍按原样)
+els.lockOverlay.addEventListener('mousedown', (e) => {
+  if (e.target !== els.loPw && e.target !== els.loBtn) {
+    e.preventDefault();
+    focusLockInput();
+  }
+}, true);
+// 窗口重新获得焦点(切回来/从别的 App 回来)→ 焦点必须在密码框
+window.addEventListener('focus', () => { if (lockOverlayVisible()) focusLockInput(); });
 // 视图下拉菜单:垂直/横向分屏
 els.btnView.addEventListener('click', toggleViewMenu);
 els.viewMenu.addEventListener('click', onViewMenuClick);
@@ -10348,8 +10781,11 @@ els.filterClear.addEventListener('click', () => {
 els.filterCloseX.addEventListener('click', closeFilterModal);
 // 终端调试日志面板
 initDebugPanelDrag(); // 面板头部可拖动 + 位置记忆
-els.btnDebug.addEventListener('click', toggleDebugPanel);
-els.debugClose.addEventListener('click', () => { els.debugPanel.classList.add('hidden'); els.btnDebug.classList.remove('active'); });
+if (els.btnDebug) els.btnDebug.addEventListener('click', toggleDebugPanel);
+els.debugClose.addEventListener('click', () => {
+  els.debugPanel.classList.add('hidden');
+  if (els.btnDebug) els.btnDebug.classList.remove('active');
+});
 els.debugClear.addEventListener('click', () => { termDebug.lines.length = 0; renderDebugBody(); });
 els.debugCopy.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(termDebug.lines.join('\n')); setStatus('调试日志已复制到剪贴板'); }
@@ -10470,6 +10906,16 @@ els.setAutoFillPw.addEventListener('change', () => {
   state.settings.autoFillPassword = els.setAutoFillPw.checked;
   saveSettings();
 });
+// WinSCP 协议(SFTP / SCP):只影响下次拉起 WinSCP(不用重连)
+if (els.setWinScpProtocol) {
+  els.setWinScpProtocol.addEventListener('change', () => {
+    state.settings.winscpProtocol = els.setWinScpProtocol.value === 'scp' ? 'scp' : 'sftp';
+    saveSettings();
+    setStatus(winScpProtocol() === 'scp'
+      ? '以后用 WinSCP 打开会走 SCP(绕过 SFTP 子系统,给老设备/受限设备用)'
+      : '以后用 WinSCP 打开走 SFTP(标准协议)', 'var(--text-dim)');
+  });
+}
 els.setLockIdle.addEventListener('change', () => {
   state.settings.lockIdleMin = Math.max(0, parseInt(els.setLockIdle.value, 10) || 0);
   saveSettings();
@@ -10496,6 +10942,13 @@ els.aiFormat.addEventListener('change', () => {
 });
 // 头部厂商下拉框:切换激活厂商
 els.aiVendorSelect.addEventListener('change', () => selectAiVendor(els.aiVendorSelect.value));
+// 「快速模板」:选中即把地址/协议/模型填进当前厂商并落盘(Key 仍需用户自己填)
+els.aiVendorPreset.addEventListener('change', () => {
+  const key = els.aiVendorPreset.value;
+  if (!key) return;
+  applyAiPreset(key);
+  try { els.aiVendorPreset.value = ''; } catch { /* ignore */ } // 复位成"自定义",下次还能选同一家
+});
 
 // 「保存配置」:编辑的是"当前激活厂商"。
 // 改厂商名 = 给当前厂商改名(配置跟着走,不产生孤儿);新增用「＋ 新增厂商」。
@@ -10537,7 +10990,12 @@ els.aiVendorNew.addEventListener('click', () => {
       if (!name) return;
       const vendors = state.settings.aiVendors || (state.settings.aiVendors = {});
       if (vendors[name]) { alert('该厂商已存在,直接编辑即可'); selectAiVendor(name); return; }
-      vendors[name] = { url: '', key: '', format: 'anthropic', model: '', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] };
+      // 默认就给 DeepSeek 的可跑通配置(地址+模型),用户只需粘 Key 就能发消息;
+      // 想换别的服务商,用 ⚙ 顶部的「快速模板」一键换。
+      vendors[name] = {
+        url: 'https://api.deepseek.com/v1', key: '', format: 'openai',
+        model: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      };
       state.settings.aiActiveVendor = name;
       saveSettings();
       fillVendorSelect();
@@ -10841,72 +11299,12 @@ els.kbAiToggle.addEventListener('change', () => {
 function syncKbToggle() {
   els.kbAiToggle.checked = state.settings.kbEnabled !== false;
 }
-els.btnSftpToggle.addEventListener('click', toggleSftpPanel);
-// SFTP 连接切换下拉:点连接名弹出/收起,点外面收起
-els.sftpConn.addEventListener('click', (e) => { e.stopPropagation(); toggleSftpConnMenu(); });
-document.addEventListener('click', (e) => {
-  if (!els.sftpConnMenu.contains(e.target) && !els.sftpConn.contains(e.target)) els.sftpConnMenu.classList.add('hidden');
-});
-els.btnSftpUp.addEventListener('click', sftpGoUp);
-// 刷新目录:重新读当前目录(编辑保存/外部改动后看最新);顺便清掉过期选中
-els.btnSftpRefresh.addEventListener('click', () => { loadSftpList(); setStatus('已刷新目录', 'var(--green)'); });
-// 路径栏右键:复制完整路径 / 粘贴路径并跳转(SFTP 界面复制粘贴;粘贴任意远程路径直接导航过去)
-els.sftpPath.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  const cur = state.sftp.path || '/';
-  showCtxMenu(e.clientX, e.clientY, [
-    { label: '📋 复制完整路径', action: () => { window.api.copyText(cur); setStatus(`已复制路径: ${cur}`, 'var(--green)'); } },
-    { separator: true },
-    { label: '📥 粘贴路径并跳转…', action: () => showPrompt({
-      title: '跳转到远程目录', label: '远程路径(可直接粘贴)', value: cur, password: false,
-      onOk: (p) => { const np = String(p || '').trim(); if (np) { state.sftp.path = normPath(np); loadSftpList(); } },
-    }) },
-  ]);
-});
-els.btnSftpMkdir.addEventListener('click', sftpMakeDir);
-// 拖拽上传(仿 WinSCP):本地文件/文件夹拖进 SFTP 面板 → 传到当前目录
-els.sftpList.addEventListener('dragover', (e) => {
-  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    els.sftpPanel.classList.add('sftp-drop-over');
-  }
-});
-els.sftpList.addEventListener('dragleave', () => els.sftpPanel.classList.remove('sftp-drop-over'));
-els.sftpList.addEventListener('drop', async (e) => {
-  e.preventDefault();
-  els.sftpPanel.classList.remove('sftp-drop-over');
-  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-  if (!files.length) return;
-  // contextIsolation 下 webUtils.getPathForFile 经 preload 桥拿真实路径
-  const paths = [];
-  for (const f of files) {
-    try { const p = await window.api.getPathForFile(f); if (p) paths.push(p); } catch { /* 忽略单个失败 */ }
-  }
-  if (!paths.length) { setStatus('未能读取拖入文件的路径', 'var(--red)'); return; }
-  const target = state.sftp.path || '/';
-  setStatus(`正在上传 ${paths.length} 个本地项到 ${target}…`, 'var(--accent)');
-  const res = await window.api.sftpUploadPaths(sftpSession(), target, paths);
-  // 上传已改为后台 job:这里只返回 {ok, jobId},完成/失败/刷新由 sftp:done 统一处理。
-  // 旧版按同步返回值读 res.count → 立刻显示"上传完成: undefined 个",而且此时文件还没开始传。
-  if (res && res.ok) setStatus(`上传已开始(${paths.length} 个)→ ${target}`, 'var(--accent)');
-  else setStatus(`上传失败: ${(res && res.error) || '未知错误'}`, 'var(--red)');
-});
-els.btnSftpUpload.addEventListener('click', (e) => {
-  // 上传分「文件/文件夹」两个入口:macOS 对话框混开只能选文件夹,分开各选各的
-  showCtxMenu(e.clientX, e.clientY, [
-    { label: '📄 上传文件…', action: () => sftpUpload('file') },
-    { label: '📁 上传文件夹…', action: () => sftpUpload('dir') },
-  ]);
-});
-els.btnSftpDownload.addEventListener('click', sftpDownload);
-els.btnSftpDelete.addEventListener('click', sftpDeleteSelected);
-els.btnSftpSelectAll.addEventListener('click', sftpToggleSelectAll);
-els.btnSftpTransfersClear.addEventListener('click', clearSftpTransfers); // 清空传输历史(本次会话)
-// SFTP 远程编辑
-els.btnSftpEdit.addEventListener('click', editSelectedFile);
-els.editSave.addEventListener('click', saveRemoteFile);
-els.editCancel.addEventListener('click', closeEditor);
+// 工具栏「SFTP」= 用本机 WinSCP 打开当前会话(唯一入口)
+els.btnSftpToggle.addEventListener('click', () => openSftpEntry());
+// 启动时探测一次本机有没有装 WinSCP(决定所有入口显不显示)
+detectWinScp();
+// 启动时探测一次 H3C 客户端(决定非 SSH 资产双击是"交给客户端打开"还是"查看说明")
+detectH3cClient();
 // 批量执行面板
 els.btnBatch.addEventListener('click', toggleBatchPanel);
 els.batchPanelClose.addEventListener('click', () => { els.batchPanel.classList.add('hidden'); syncPanelButtons(); refitAll(); });
@@ -10948,19 +11346,6 @@ els.sessionTree.addEventListener('click', (e) => {
     renderSessionList(els.inputSessionSearch.value);
   }
 });
-// SFTP 面板是浏览操作区,不该抢键盘焦点:点击面板任意处(文件行/空白/工具栏非输入框)
-// 后把焦点还给当前活跃终端。否则点一下文件行 → 焦点落 BODY → 回终端敲 Cmd+A/普通键全被吞。
-// 例外:点击地址/搜索等 INPUT 时保留焦点(用户在输文字);按钮点击由各操作完成后再归还。
-els.sftpPanel.addEventListener('mousedown', (e) => {
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-  const sid = state.activeSessionId;
-  const tab = sid ? state.tabs.get(sid) : null;
-  if (tab && tab.term) {
-    // 让浏览器先完成本次点击的默认聚焦,再归还终端(否则 mousedown 立即 focus 会打断按钮 click)
-    setTimeout(() => { try { tab.term.focus(); } catch { /* ignore */ } }, 0);
-  }
-});
 // 密码/私钥口令 显示/隐藏切换(点眼睛按钮)
 function togglePwdEye(inputId, btnId) {
   const inp = document.getElementById(inputId);
@@ -10971,6 +11356,7 @@ function togglePwdEye(inputId, btnId) {
 els.fPasswordToggle.addEventListener('click', () => togglePwdEye('f-password', 'f-password-toggle'));
 els.fPassphraseToggle.addEventListener('click', () => togglePwdEye('f-passphrase', 'f-passphrase-toggle'));
 els.fJumpPasswordToggle.addEventListener('click', () => togglePwdEye('f-jump-password', 'f-jump-password-toggle'));
+els.fSuPasswordToggle.addEventListener('click', () => togglePwdEye('f-su-password', 'f-su-password-toggle'));
 // 弹窗回车即保存
 for (const f of [els.fName, els.fHost, els.fPassword]) {
   f.addEventListener('keydown', (e) => { if (isEnterSubmit(e)) saveSession(); });
@@ -10999,6 +11385,18 @@ async function detectOsForTab(t) {
 
 // 主进程日志 → 调试面板(MAIN/MAIN·错误 前缀;主进程启动、SSH 连接、异常等)
 window.api.onMainLog((level, msg) => dlog(level === 'error' ? 'MAIN·错误' : 'MAIN', msg));
+
+// 主机指纹:用户在信任框选「信任并记住所有主机」→ 打开设置里的 autoTrustHostKey 并落盘
+window.api.onTrustAll(() => {
+  state.settings.autoTrustHostKey = true;
+  saveSettings();
+  try { els.setAutoTrust.checked = true; } catch { /* ignore */ }
+  setStatus('已开启「自动信任新主机指纹」:之后连新主机不再弹「信任并连接」', 'var(--accent)');
+});
+// 指纹写不进数据目录(目录只读/被清理)→ 明确告知,否则只表现为“每次连接都弹信任框”
+window.api.onTrustPersistFail((id, where) => {
+  setStatus(`${id || '主机'} 的指纹没能保存到 ${where || '数据目录'} → 下次连接仍会询问(检查目录是否可写)`, 'var(--red)');
+});
 
 // ---- 字符集自动探测:连接后发 OSC-0(标题)探针取服务器 $LANG,自动切编码 ----
 // 只在会话是默认 utf8(用户没手动指定编码)时探测;SSH 会话才探(Telnet 网络设备多无 $LANG)。
@@ -11083,7 +11481,7 @@ window.api.onSshData((sessionId, data) => {
   // 只对 SSH 会话启用(Telnet 的 login:/password: 自动登录已在主进程处理,避免重复发密码);
   // 密码只发送、绝不写入调试日志/命令记录。
   if ((t.session.protocol || 'ssh') !== 'telnet' && t.session && t.session.password &&
-      state.settings.autoFillPassword !== false) {
+      state.settings.autoFillPassword !== false && !t.suPending) {
     const raw = typeof data === 'string' ? data : (t.autoPwDec || (t.autoPwDec = new TextDecoder())).decode(new Uint8Array(data), { stream: true });
     if (raw) {
       // 剥 ANSI 转义(颜色/光标)+ 回车,避免打断"以 password: 结尾"的匹配
@@ -11099,6 +11497,22 @@ window.api.onSshData((sessionId, data) => {
       }
     }
   }
+  // ---- 切换 root(su):已保存 root 密码时,检测到 Password: 自动发送 root 密码 ----
+  // 与上面 autoFillPassword 独立:savedPw 触发“不弹框”的自动切换,密码是 su_password(不是登录密码)。
+  if (t.suAutoPw && !t.suAutoPassSent) {
+    const raw = typeof data === 'string' ? data : (t.autoPwDec || (t.autoPwDec = new TextDecoder())).decode(new Uint8Array(data), { stream: true });
+    if (raw) {
+      t.suAutoBuf = ((t.suAutoBuf || '') + raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\r/g, '')).slice(-120);
+      if (/(?:^|[^\w])(?:[Pp]assword|[Pp]asswd)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.suAutoBuf)) {
+        t.suAutoPassSent = true;
+        t.suPending = false; // 密码已发送,解除抑制(恢复后续正常的 autoFillPassword)
+        const pw = t.suAutoPw;
+        t.suAutoPw = null; // 本次已消费,避免重复发送
+        dlog('SUAUTO', `${sessionId} 检测到 su 的密码提示,自动发送已保存的 root 密码(长度 ${pw.length},不记明文)`);
+        window.api.sshWrite(sessionId, pw + '\r', { noLog: true });
+      }
+    }
+  }
   let out = (typeof data === 'string') ? data : t.decoder.decode(new Uint8Array(data), { stream: true });
   // ---- 密码提示检测(所有 SSH 会话,不依赖是否保存了密码)----
   // 在 password:/passphrase: 提示后用户键入的是密码,不是命令:此时必须停掉命令补全。
@@ -11111,6 +11525,13 @@ window.api.onSshData((sessionId, data) => {
       .replace(/\r/g, '');
     t.outTail = ((t.outTail || '') + plain).slice(-200);
     t.atPasswordPrompt = /(?:^|[^\w])(?:[Pp]assword|[Pp]asswd|[Pp]assphrase)\s*(?:for\s+\S+)?\s*[:：]\s*$/.test(t.outTail);
+    // 远端账号 nologin:Linux 会回 "This account is currently not available." 并立刻关闭连接。
+    // 认证本身成功 → 不是网络/堡垒机问题;标记后停止自动重连,给出可操作提示。
+    if (!t.noLogin && /This account is currently not available|account is currently not available/i.test(t.outTail)) {
+      t.noLogin = true;
+      dlog('NOLOGIN', `${sessionId} 远端账号没有登录 shell (nologin)`);
+      setStatus('远端账号没有登录 shell(nologin),请换有 shell 的账号', 'var(--red)');
+    }
   } catch { /* ignore */ }
   // 高亮(关键词着色);主进程已把 GBK/GB2312 转成 UTF-8 字符串
   if (state.settings.highlight) out = highlightString(out);
@@ -11138,201 +11559,6 @@ function filterWrite(text) {
   return filtered + (filtered && last ? '\n' : '') + last;
 }
 
-// ---------- SFTP 传输进度(Xshell 式:每个文件一行+独立进度条) ----------
-// 完成的行留在列表里当"本次会话的传输历史",可单条删除/一键清空;只存在内存里,关 app 即自动清除。
-const sftpTransfer = { rows: new Map(), jobs: new Map(), jobSession: new Map() };
-// rows: 行键 → { el, fill, meta, setLocal, file, sessionId }。行键 = jobId\0远程路径:
-//   旧版只用远程路径做 key → 同一文件重传/重试时复用上一批的行(取消按钮闭包是旧 jobId、
-//   已完成状态/✓ 累加、方向图标互相覆盖),正是 v1.0.44 想支持的"失败后重试"场景。
-// jobs: jobId → Set<行键>;jobSession: jobId → sessionId(关会话时只清本会话的传输记录)
-const sftpRowKey = (p) => `${p.jobId || ''}\u0000${p.file || ''}`;
-function makeSftpTransferRow(p) {
-  const key = sftpRowKey(p);
-  const el = document.createElement('div');
-  el.className = 'sftp-transfer-row active';
-  // 第一行:方向 / 远程名 / 进度条 / 进度 / 取消 / 删除
-  const main = document.createElement('div'); main.className = 'st-main';
-  const dir = document.createElement('span'); dir.className = 'st-dir'; dir.textContent = p.op === 'upload' ? '⬆' : '⬇';
-  const name = document.createElement('span'); name.className = 'st-name'; name.textContent = String(p.file || '').split('/').filter(Boolean).pop() || p.file; name.title = p.file || '';
-  const track = document.createElement('div'); track.className = 'st-track';
-  const fill = document.createElement('div'); fill.className = 'st-fill';
-  track.appendChild(fill);
-  const meta = document.createElement('span'); meta.className = 'st-meta'; meta.textContent = '0B';
-  // 取消按钮(仿 WinSCP):传输中显示,点击中止该 job;完成后自动隐藏
-  const cancel = document.createElement('button'); cancel.className = 'st-cancel'; cancel.title = '取消该传输'; cancel.textContent = '⏹';
-  cancel.addEventListener('click', () => { if (p.jobId) { window.api.sftpCancel(p.jobId); cancel.disabled = true; cancel.textContent = '…'; } });
-  const del = document.createElement('button'); del.className = 'st-del'; del.title = '删除这条传输记录'; del.textContent = '×';
-  del.addEventListener('click', () => { sftpTransfer.rows.delete(key); el.remove(); });
-  main.append(dir, name, track, meta, cancel, del);
-  // 第二行:本地保存路径 + 「📂 打开所在文件夹」(仅下载完成后盖上去,上传不显示)
-  const localRow = document.createElement('div'); localRow.className = 'st-local-row hidden';
-  const open = document.createElement('button'); open.className = 'st-open'; open.title = '在文件管理器中显示'; open.textContent = '📂';
-  const local = document.createElement('span'); local.className = 'st-local'; local.textContent = ''; local.title = '';
-  let _localPath = '';
-  open.addEventListener('click', () => { if (_localPath) window.api.revealInFolder(_localPath); });
-  localRow.append(open, local);
-  el.append(main, localRow);
-  const setLocal = (lp) => {
-    _localPath = lp;
-    local.textContent = lp;
-    local.title = lp;
-    localRow.classList.remove('hidden');
-  };
-  return { el, fill, meta, setLocal, cancel, jobId: p.jobId, key, file: p.file, sessionId: p.sessionId || '', op: p.op };
-}
-window.api.onSftpProgress((p) => {
-  if (!p || !els.sftpProgress) return;
-  const list = document.getElementById('sftp-transfers-list');
-  if (!list) return;
-  els.sftpProgress.classList.remove('hidden');
-  const key = sftpRowKey(p);
-  let row = sftpTransfer.rows.get(key);
-  if (!row) { row = makeSftpTransferRow(p); sftpTransfer.rows.set(key, row); list.prepend(row.el); } // 新的在最上面
-  // 按 jobId 记录该批次的行键(完成/取消时只标记本批次的行,避免重叠批次误标记)
-  if (p.jobId) {
-    if (!sftpTransfer.jobs.has(p.jobId)) sftpTransfer.jobs.set(p.jobId, new Set());
-    sftpTransfer.jobs.get(p.jobId).add(key);
-    if (p.sessionId) sftpTransfer.jobSession.set(p.jobId, p.sessionId);
-  }
-  const fpct = p.fileTotal > 0 ? Math.min(100, Math.round((p.fileDone / p.fileTotal) * 100)) : 100;
-  row.fill.style.width = fpct + '%';
-  row.meta.textContent = `${formatSize(p.fileDone)}/${formatSize(p.fileTotal)} · ${fpct}%`;
-  const bpct = p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 100;
-  const dir = p.op === 'upload' ? '⬆ 上传' : '⬇ 下载';
-  els.sftpProgressLabel.textContent = `${dir} ${p.filesDone}/${p.filesTotal} 个文件 · ${bpct}%`;
-});
-// 批次结束(仿 WinSCP):后台 job 完成 → 把该批次的行标 完成/失败/已取消,刷新列表
-window.api.onSftpDone((d) => {
-  if (!d || !d.jobId) return;
-  const keys = sftpTransfer.jobs.get(d.jobId) || [];
-  sftpTransfer.jobs.delete(d.jobId);
-  sftpTransfer.jobSession.delete(d.jobId);
-  // ---- 逐文件结果(批次级 ok 只表示"有没有成功的",不能拿来标每一行)----
-  // 旧版:下载部分失败(d.ok=true)会把失败文件的行也标 ✓;上传部分失败(d.ok=false)会把
-  // 所有成功行都标 ✗;取消时已完成的行也被标"已取消"。
-  const okPaths = new Set();
-  const failByPath = new Map(); // 远程路径 → 错误原因
-  const cancelPaths = new Set();
-  const noteResult = (rp, ok, err) => {
-    if (!rp) return;
-    if (ok) okPaths.add(rp);
-    else if (d.cancelled || err === '已取消') cancelPaths.add(rp);
-    else failByPath.set(rp, err || '未知错误');
-  };
-  if (Array.isArray(d.results)) for (const r of d.results) { if (r) noteResult(r.remotePath, r.ok, r.error); }
-  if (Array.isArray(d.uploaded)) for (const rp of d.uploaded) noteResult(rp, true);
-  if (Array.isArray(d.failed)) for (const f of d.failed) { if (f) noteResult(f.remotePath || f.rp, false, f.error); }
-  // 下载成功 → 本地路径:单文件用 d.localPath,批量用 d.results[].localPath
-  const localByPath = new Map();
-  if (d.op === 'download' && Array.isArray(d.results)) {
-    d.results.filter((r) => r && r.ok && r.localPath).forEach((r) => localByPath.set(r.remotePath, r.localPath));
-  }
-  for (const key of keys) {
-    const row = sftpTransfer.rows.get(key);
-    if (!row) continue;
-    const file = row.file;
-    row.el.classList.remove('active', 'done', 'fail');
-    if (row.cancel) row.cancel.style.display = 'none'; // 传输结束,隐藏取消按钮
-    if (failByPath.has(file)) {
-      row.el.classList.add('fail');
-      row.meta.textContent = '✗ 失败';
-      row.el.title = `${file}\n${failByPath.get(file)}`;
-    } else if (cancelPaths.has(file) || (d.cancelled && !okPaths.has(file))) {
-      row.el.classList.add('fail');
-      row.meta.textContent = '已取消';
-    } else if (okPaths.has(file) || (d.ok && !failByPath.size)) {
-      row.el.classList.add('done');
-      // 去掉可能已存在的 ✓ 再加,避免重传/重试后累加成 "✓ ✓"
-      row.meta.textContent = String(row.meta.textContent || '').replace(/\s*✓\s*$/, '') + ' ✓';
-      if (row.setLocal) {
-        const lp = d.localPath && !d.results ? d.localPath : (localByPath.get(file) || '');
-        if (lp) row.setLocal(lp);
-      }
-    } else {
-      row.el.classList.add('fail');
-      row.meta.textContent = '✗ 失败';
-    }
-  }
-  // 失败补行:失败文件若一次进度事件都没产生,就不会有传输行(行是首个 progress 创建的)
-  // → 用户只看到"点了没反应"。上传和下载都要补(旧版只补下载,单文件下载失败也漏)。
-  // 取消项不补行(批量取消会产生成百上千条,状态栏已统一说明)。
-  const list = document.getElementById('sftp-transfers-list');
-  if (list) {
-    for (const [rp, err] of failByPath) {
-      const key = sftpRowKey({ jobId: d.jobId, file: rp });
-      if (sftpTransfer.rows.has(key)) continue; // 已有行(有过进度)交给上面的逐行标记
-      const row = makeSftpTransferRow({ op: d.op, file: rp, jobId: d.jobId, sessionId: d.sessionId });
-      row.el.classList.remove('active');
-      row.el.classList.add('fail');
-      if (row.cancel) row.cancel.style.display = 'none';
-      row.meta.textContent = '✗ 失败';
-      row.el.title = `${rp}\n${err}`;
-      const errEl = document.createElement('div');
-      errEl.className = 'st-local-row';
-      errEl.textContent = '✗ ' + err;
-      errEl.style.color = 'var(--red)';
-      row.el.appendChild(errEl);
-      sftpTransfer.rows.set(key, row);
-      list.prepend(row.el);
-      els.sftpProgress.classList.remove('hidden');
-    }
-  }
-  // 上传有成功项 → 刷新列表 + 高亮定位(部分失败时成功项也要出现/高亮)
-  if (!d.cancelled && d.op === 'upload' && (d.uploaded || []).length) {
-    // 高亮定位:把本次上传的条目名交给列表渲染(刷新后闪烁 + 滚到可见)。
-    const names = (d.uploaded || []).map((rp) => String(rp).split('/').filter(Boolean).pop()).filter(Boolean);
-    if (names.length) {
-      const flash = new Set(names);
-      state.sftpUploadFlash = flash;
-      // 只在"还是这一批"时清除,避免把随后新上传的高亮一起清掉
-      setTimeout(() => { if (state.sftpUploadFlash === flash) state.sftpUploadFlash.clear(); }, 3000);
-    }
-    if (state.sftp.visible) loadSftpList();
-  }
-  // 状态栏:按逐文件结果给准确文案(部分失败不能被"已下载/上传完成"掩盖)
-  const nFail = failByPath.size;
-  const firstFail = nFail ? [...failByPath.values()][0] : '';
-  if (d.cancelled) {
-    // 取消:半成品与续传点都保留(见 lib/ssh-client 的 cancelError),状态栏明确说明可续传
-    setStatus('传输已取消(半成品与续传点已保留,再次传输同一文件将从断点续)', 'var(--orange)');
-  } else if (d.op === 'upload') {
-    const someOk = (d.uploaded || []).length > 0;
-    if (nFail && someOk) setStatus(`上传完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
-    else if (nFail) setStatus(`上传失败: ${firstFail}`, 'var(--red)');
-    else if (d.ok) setStatus(d.packed ? '📦 打包上传完成,已在远端解压' : `上传完成(${d.count ?? ''} 个)`, 'var(--green)');
-    else if (d.error) setStatus(`传输失败: ${d.error}`, 'var(--red)');
-  } else if (d.op === 'download') {
-    if (d.ok && (d.localPath || d.results)) {
-      if (nFail) setStatus(`下载完成,但 ${nFail} 个文件失败(首因:${firstFail})`, 'var(--orange)');
-      else setStatus(`已下载 → ${d.localPath || (d.results.filter((r) => r && r.ok)[0] || {}).localPath || d.targetDir || ''}`, 'var(--green)');
-    } else if (nFail) {
-      setStatus(`下载失败: ${firstFail}`, 'var(--red)');
-    } else if (d.error) {
-      setStatus(`传输失败: ${d.error}`, 'var(--red)');
-    }
-  }
-});
-// 清空传输记录。可选 sessionId:只清某个会话的行(job 化后多个会话可能同时在传)。
-// 注意点击「清空」按钮时传入的是 MouseEvent → 统一归为"全部清空"。
-function clearSftpTransfers(sessionId) {
-  const only = typeof sessionId === 'string' ? sessionId : '';
-  for (const [key, row] of [...sftpTransfer.rows]) {
-    if (only && row.sessionId !== only) continue;
-    try { row.el.remove(); } catch { /* ignore */ }
-    sftpTransfer.rows.delete(key);
-  }
-  for (const [jobId, sid] of [...sftpTransfer.jobSession]) {
-    if (!only || sid === only) { sftpTransfer.jobs.delete(jobId); sftpTransfer.jobSession.delete(jobId); }
-  }
-  if (!only) sftpTransfer.jobs.clear();
-  // 只清本会话时,若还剩其他会话的行,列表不整体清空(否则会把别人的进行中记录也抹掉)
-  if (sftpTransfer.rows.size === 0) {
-    const list = document.getElementById('sftp-transfers-list');
-    if (list) list.innerHTML = '';
-    if (els.sftpProgress) els.sftpProgress.classList.add('hidden');
-  }
-}
-
 window.api.onSshStatus((sessionId, status) => {
   const t = state.tabs.get(sessionId);
   if (!t) return;
@@ -11347,6 +11573,7 @@ window.api.onSshStatus((sessionId, status) => {
     clearTimeout(t.reconnectClearTimer);
     t.reconnectClearTimer = setTimeout(() => { t.reconnectAttempts = 0; }, 15000);
     t.autoPwBuf = ''; t.autoPwSent = false; // 重置自动填充密码状态,迎接新会话的提示
+    t.suAutoPw = null; t.suAutoPassSent = false; t.suAutoBuf = ''; t.suPending = false; // 重置切换 root 的自动密码状态
     if (t.reconnectTimer) { clearTimeout(t.reconnectTimer); t.reconnectTimer = null; }
     if (dot) dot.title = '已连接';
     setStatus(`已连接: ${t.title}`, 'var(--green)');
@@ -11377,13 +11604,20 @@ window.api.onSshStatus((sessionId, status) => {
     setTabStatus(sessionId, 'closed');
     t.initMask = false; t.initBuf = ''; t.encProbe = null; // 断开 → 复位初始化掩码(重连会重新设置)
     if (t.encSettleTimer) { clearTimeout(t.encSettleTimer); t.encSettleTimer = null; }
-    t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
-    setStatus('连接已断开', 'var(--red)');
+    if (t.noLogin) {
+      // 账号没有登录 shell:服务器发完 nologin 提示就关闭,重连多少次都一样。
+      // 在终端里给出明确原因和处理方式,并停止自动重连(用户换账号后手动重连即可)。
+      t.term.write('\r\n\x1b[33m[Polaris] 远端账号没有可用的登录 shell(nologin),连接已被服务器关闭。\r\n'
+        + '请换有 shell 的账号(资产右键可切换账号),或让管理员执行 usermod -s /bin/bash <账号>。\x1b[0m\r\n');
+      setStatus('账号没有登录 shell(nologin),已停止自动重连', 'var(--red)');
+    } else {
+      t.term.write('\r\n\x1b[31m[连接已断开]\x1b[0m\r\n');
+      setStatus('连接已断开', 'var(--red)');
+    }
     state.recording.delete(sessionId); // 断线 → 录制被主进程收尾,这里清本地标记
     updateRecordBtn();
-    clearSftpTransfers(sessionId); // 连接断开 → 只清本会话的传输记录(其他会话可能还在传)
-    // 非用户主动关闭、非手动断开 → 自动重连
-    if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
+    // 非用户主动关闭、非手动断开 → 自动重连(nologin 不重连:账号问题重试无意义)
+    if (!t.userClosed && !t.manualDisconnect && t.session && !t.noLogin) scheduleReconnect(t);
   } else if (status.status === 'error') {
     setTabStatus(sessionId, 'closed');
     t.term.write(`\r\n\x1b[31m[连接错误] ${status.error}\x1b[0m\r\n`);
@@ -11392,7 +11626,6 @@ window.api.onSshStatus((sessionId, status) => {
     if (t.session && t.session.bastionKey) bastionLog({ ev: 'ssh-error', sessionId, bastionKey: t.session.bastionKey, host: t.session.host, port: t.session.port, account: t.session.username, error: status.error });
     state.recording.delete(sessionId);
     updateRecordBtn();
-    clearSftpTransfers(sessionId); // 连接错误 → 同样只清本会话的传输记录
     if (!t.userClosed && !t.manualDisconnect && t.session) scheduleReconnect(t);
   }
 });
@@ -11466,12 +11699,13 @@ const COMMANDS = [
   { name: '关于 Polaris', hint: 'ℹ️', run: () => openAbout() },
   { name: '新建会话', hint: '⌘N', run: () => openSessionModal(null) },
   { name: '快捷连接', hint: '', run: () => toggleQuickConnect() },
+  { name: '切换 root（su - root）', hint: '', run: () => switchToRoot(state.activeSessionId) },
   { name: '新建分组', hint: '', run: () => newGroup() },
   { name: '连接/断开选中会话', hint: '⌘Enter', run: () => toggleConnectDisconnect() },
   { name: '广播模式', hint: '', run: () => toggleBroadcast() },
   { name: '分屏-垂直', hint: '', run: () => splitActivePane('v') },
   { name: '分屏-横向', hint: '', run: () => splitActivePane('h') },
-  { name: 'SFTP 面板', hint: '⌘⇧S', run: () => toggleSftpPanel() },
+  { name: '用 WinSCP 打开 SFTP', hint: '⌘⇧S', run: () => openSftpEntry() },
   { name: 'SSH 隧道', hint: '⌘⇧T', run: () => openTunnelModal() },
   { name: '批量执行', hint: '⌘⇧B', run: () => toggleBatchPanel() },
   { name: '快速命令', hint: '', run: () => openQuickModal() },
@@ -11571,7 +11805,78 @@ els.paletteInput.addEventListener('keydown', (e) => {
 });
 els.palette.addEventListener('mousedown', (e) => { if (e.target === els.palette) closePalette(); });
 
-// ---------- 关于弹窗(只展示版本 + 简介) ----------
+// ---------- 关于弹窗(版本 + 简介 + 检查/下载更新) ----------
+let __checkingUpdate = false;
+let __updateInfo = null;
+let __updateDownloaded = false;
+function setAboutUpdateMsg(text, cls) {
+  if (!els.aboutUpdateMsg) return;
+  els.aboutUpdateMsg.textContent = text || '';
+  els.aboutUpdateMsg.className = 'about-update-msg' + (cls ? ' ' + cls : '');
+}
+function setUpdateButtons(showDownload, showRelease) {
+  if (els.aboutDownload) {
+    els.aboutDownload.classList.toggle('hidden', !showDownload);
+    els.aboutDownload.disabled = false;
+    els.aboutDownload.textContent = '⬇ 下载更新';
+  }
+  if (els.aboutRelease) els.aboutRelease.classList.toggle('hidden', !showRelease);
+}
+async function checkUpdate() {
+  if (__checkingUpdate) return;
+  __checkingUpdate = true;
+  setAboutUpdateMsg('正在检查更新…');
+  setStatus('正在检查更新…', 'var(--accent)');
+  try {
+    const r = await window.api.checkUpdate();
+    if (!r || !r.ok) {
+      const msg = (r && r.error) || '网络不可用';
+      setAboutUpdateMsg('检查失败: ' + msg, 'bad');
+      setStatus('检查更新失败: ' + msg, 'var(--red)');
+      setUpdateButtons(false, false);
+      return;
+    }
+    if (!r.hasUpdate) {
+      __updateInfo = null; __updateDownloaded = false;
+      setAboutUpdateMsg(`已是最新版本 v${r.current}`, 'ok');
+      setStatus(`已是最新版本 v${r.current}`, 'var(--green)');
+      setUpdateButtons(false, false);
+      return;
+    }
+    __updateInfo = r; __updateDownloaded = false;
+    setAboutUpdateMsg(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'ok');
+    setStatus(`发现新版本 v${r.latest}（当前 v${r.current}）`, 'var(--green)');
+    setUpdateButtons(true, true);
+  } catch (e) {
+    setAboutUpdateMsg('检查失败: ' + ((e && e.message) || e), 'bad');
+    setUpdateButtons(false, false);
+  } finally {
+    __checkingUpdate = false;
+  }
+}
+async function downloadOrInstallUpdate() {
+  if (!__updateInfo) return;
+  if (__updateDownloaded) {
+    const r = await window.api.installUpdate();
+    if (!r || !r.ok) setAboutUpdateMsg('重启安装失败: ' + ((r && r.error) || '未知错误'), 'bad');
+    return;
+  }
+  els.aboutDownload.disabled = true;
+  setAboutUpdateMsg('正在准备下载更新…', 'ok');
+  const r = await window.api.downloadUpdate();
+  if (!r || !r.ok) {
+    els.aboutDownload.disabled = false;
+    setAboutUpdateMsg('下载更新失败: ' + ((r && r.error) || '未知错误') + '（可点「打开下载页」手动下载）', 'bad');
+    return;
+  }
+  // 正常情况下 update:status(downloaded) 会先到;这里兜底
+  if (!__updateDownloaded) {
+    __updateDownloaded = true;
+    els.aboutDownload.disabled = false;
+    els.aboutDownload.textContent = '⟳ 重启安装';
+    setAboutUpdateMsg('更新已下载，点「重启安装」完成', 'ok');
+  }
+}
 function openAbout() {
   els.aboutModal.classList.remove('hidden');
   closeSettingsModal(); // 从设置弹窗进来时,顺手关掉设置,避免叠弹窗
@@ -11582,6 +11887,29 @@ function openAbout() {
 }
 function closeAbout() { els.aboutModal.classList.add('hidden'); }
 els.btnAbout.addEventListener('click', openAbout);
+els.aboutCheck.addEventListener('click', () => checkUpdate());
+els.aboutDownload.addEventListener('click', downloadOrInstallUpdate);
+els.aboutRelease.addEventListener('click', async () => {
+  if (!__updateInfo || !__updateInfo.url) return;
+  const r = await window.api.openRelease(__updateInfo.url);
+  if (!r || !r.ok) setAboutUpdateMsg('打开下载页失败: ' + ((r && r.error) || '未知错误'), 'bad');
+});
+// 主进程下载进度/完成/错误 → 弹窗状态与按钮
+window.api.onUpdateStatus((d) => {
+  if (!d) return;
+  if (d.state === 'downloading') {
+    if (els.aboutDownload) { els.aboutDownload.classList.remove('hidden'); els.aboutDownload.disabled = true; }
+    setAboutUpdateMsg(`正在下载更新 ${Math.max(0, Math.min(100, Number(d.percent) || 0))}%`, 'ok');
+  } else if (d.state === 'downloaded') {
+    __updateDownloaded = true;
+    if (els.aboutDownload) { els.aboutDownload.classList.remove('hidden'); els.aboutDownload.disabled = false; els.aboutDownload.textContent = '⟳ 重启安装'; }
+    setAboutUpdateMsg('更新已下载，点「重启安装」完成', 'ok');
+    setStatus('更新已下载,重启后安装', 'var(--green)');
+  } else if (d.state === 'error') {
+    if (els.aboutDownload) els.aboutDownload.disabled = false;
+    setAboutUpdateMsg('更新下载失败: ' + (d.error || '未知错误') + '（可点「打开下载页」手动下载）', 'bad');
+  }
+});
 $('about-close-x').addEventListener('click', closeAbout);
 $('about-close').addEventListener('click', closeAbout);
 els.aboutModal.addEventListener('mousedown', (e) => { if (e.target === els.aboutModal) closeAbout(); });

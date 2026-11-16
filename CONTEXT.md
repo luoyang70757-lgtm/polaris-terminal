@@ -6,7 +6,7 @@
 
 ## 项目与目标
 
-Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP 面板完善、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.49**（2026-10-30）。
+Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Chaterm 完善功能**，本会话聚焦：堡垒机（JumpServer + H3C）对接与体验打磨、SFTP（v1.0.25 起交给本机 WinSCP）、稳定性修复、全量日志、**CI 发布流水线（GitHub Releases）**。当前版本 **v1.0.25**（2026-11-14；历史 Releases/`v*` 标签已清理，以下 v1.0.x 仅作开发历史）。
 
 - 架构：单文件主进程 `main.js`（~2700 行）+ 渲染进程 `src/renderer.js`（~10000 行）+ `preload.js` contextBridge 安全桥（无 nodeIntegration）
 
@@ -20,7 +20,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 4. **信任弹窗**每次连接都弹 → 加 `autoTrustHostKey` 自动信任
 5. 堡垒机 SFTP 空目录 → 登录 JumpServer 实查：资产 PVE-堡垒机缺 sftp 协议 → API 启用
 6. 上传成功但不知文件到哪 → 状态栏明确路径 + 列表高亮闪烁
-7. 测试 H3C 堡垒机（10.204.240.4）→ 提供真实 HAR 分析 → 实现 accessclient:// 对接
+7. 测试 H3C 堡垒机（h3c-bastion.example）→ 提供真实 HAR 分析 → 实现 accessclient:// 对接
 8. **右键菜单 open/close 刷屏**（多轮）：空菜单数组 → 残留 click 防抖（250ms）→ webview 抢焦点（bastionFocusCheck 暂停）→ 焦点跟随用户（__hostAnyClickTs）
 9. **堡垒机连接后频繁刷新** → pollBastionAssets 站点守卫（仅 H3C /shterm）→ 事件驱动 + 15s 兜底 → 数据无变化零刷新（stableJson + 提示去重）
 10. SFTP 下载失败排查 → 底层全通 → **macOS TCC 权限**（桌面不可写 EPERM）→ 保存位置预检 + 明确指引
@@ -57,9 +57,18 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 - JumpServer API（登录/资产/复合用户名 KoKo 网关）+ H3C Web（accessclient:// token 解码、自动登录、资产捕获）
 - 堡垒机入口整合：头部🛡按钮删除，3 项菜单并入会话列表🛡分组右键菜单；堡垒机连接 CRUD（type=jms|h3c）、编辑入口、双击资产直连 SSH（`bastionConnectAsset`，未登录自动用保存账号登录）；右侧浏览器面板保留
 - 堡垒机收藏分组（按收藏分组展示 + 自动获取 + 上下级缩进）；分组计数与网页一致（多业务目录去重）；收藏分组脏 favGroup 清洗
+- **SFTP 只留「交给本机 WinSCP」一个入口（v1.0.25）**：内置面板在堡垒机网关上反复踩坑（`OPENDIR(".")` 错误码 4、独立 SFTP 通道被限流、维护成本高），**整个删掉不做双轨**——面板/列表/进度/传输记录/远程编辑器/权限属性弹窗/三档模式设置/限速设置/18 个 `sftp:*` IPC/`lib/sftp-*` 五个模块/`lib/ssh-client.js` 的上传下载实现全部移除（`ssh-client.js` 208 行，导出只剩 `connect/connectRaw/openSftp/execCommand/warmup`）。入口统一收敛到 `openSftpEntry(sessionId)`；`syncSftpEntryButton()` 只做 dim/title；`trackShellCwd()` + `resolveSftpHome()` 保留（只为 WinSCP 起始目录）；顺手修 `MaxListenersExceededWarning: 11 did-stop-loading listeners`（webview 型 contents `setMaxListeners(50)`，主窗口不动）。
+- **WinSCP 起始目录必须绝对 + 日志默认关（v1.0.24）**：现场日志证明 `SFTPRealPath=off` 之后唯一翻车点是 WinSCP 拿 `"."` 去 `OPENDIR`（服务器回 4）；所以起始目录未知时主进程现探家目录（`resolveSftpHome`）；WinSCP 日志的 `Parameter:` 行是明文口令，故默认不写日志，`POLARIS_WINSCP_LOG=1`/`POLARIS_WINSCP_DEBUG=1` 才开。见 `docs/winscp-realpath-fix.md` 第八节、`docs/release-v1.0.24.md`
+- **对外可见文字去 IP 化（v1.0.23）**：界面占位符/文档/注释/测试/Release 正文不再出现真实 IP 与凭据串，占位符 `h3c-bastion.example`/`jms.example`/`pve.example`/`storage.example`；HAR 用例按后缀扫 `*.har`；规则写进 `AGENTS.md` 安全约定。见 `docs/release-v1.0.23.md`
+- **SFTP 默认与 WinSCP 协议（v1.0.22）**：点 SFTP **默认开内置面板**（`button` 档，WinSCP 只是面板上的按需按钮）；老配置里没自己选过的 `replace` 一次性迁移到 `button`（`settingsVersion` 4 + `winscpModeMigrated`）。新增「WinSCP 协议 SFTP/SCP」：`scp://` 走服务器 `scp` 命令、绕过 SFTP 子系统（给 `LSTAT/OPENDIR` 回 4 的老设备），SCP 会话不下发 `SFTPRealPath=off`。见 `docs/release-v1.0.22.md` / `docs/winscp-realpath-fix.md` 第七节
+- **WinSCP 排障（v1.0.21）**：WinSCP 会话日志**默认就写** `<数据目录>/logs/winscp-<时间戳>.log`（`/loglevel=1` 请求级，无口令/文件内容；`POLARIS_WINSCP_DEBUG=1` → `*` 全协议包），拉起日志带 `日志=<path>`；`POLARIS_WINSCP_RAWSETTINGS`（`名=值;名=值`）叠加覆盖默认 rawsettings，出问题现场试开关不用发版。`buildArgs()` 的 `logPath` 不再依赖 `debug`。见 `docs/winscp-realpath-fix.md` 第六节 / `docs/release-v1.0.21.md`
+- **SFTP 权限与限速（v1.0.20）**：面板右键「🔐 权限与属性…」先 `sftp:stat` 读远端真实属性再允许保存，mode/uid/gid/mtime 一起改，目录可递归（上限 20000 条、软链不递归），**下发顺序 chown→chmod→utimes**；设置里「传输限速(每条连接,KB/s;0=不限)」用节流 Transform 插在 `rs.pipe→mid→ws`，0 档不插流零开销，取消/出错分支都销毁流。纯函数在 `lib/sftp-attrs.js` / `lib/sftp-throttle.js`，回归 `verify-sftp-attrs`(100)/`verify-sftp-throttle`(37)/`verify-sftp-attrs-dialog`(16)。见 `docs/release-v1.0.20.md`
+- **协议识别（v1.0.18）+ 客户端透传（v1.0.19）**：`dev.services.services` 的键=协议名，RDP/存储 Web 资产不再当 SSH 连（不请求 accessUrl、加橙色徽标）；去掉「RDP 在终端里跑」的错误预期，改为把堡垒机签发的 `accessclient://` **原样交给本机 `AccessClient.exe`**（`lib/h3c-client.js` 纯函数 + `h3cClient:detect` + `app:openExternal` 的 `accessclient:` 分支，**分支提前且不过 `new URL()`**）。没装客户端 → 提示缺 AccessClient + 浏览器直达，不发无效请求。见 `docs/decision-rdp-support.md`、`docs/release-v1.0.19.md`
 - 左侧列表显示未登录的 JMS 服务器；默认折叠分组；webview 焦点不抢占终端
 
-### SFTP
+> **v1.0.25 起内置 SFTP 面板整套删除**（SFTP 只保留「用本机 WinSCP 打开这个会话」）。以下三条为历史记录，保留作背景。
+
+### SFTP（历史，已删除）
 - 面板（浏览/上传下载断点续传/编辑/重命名/删除/多选）、按标签独立状态、连接名下拉、真实目标主机区分、路径面包屑、文件右键菜单、默认家目录探测
 - 上传/下载远端大小对账（三态校验 + 读回核对），中继截断不再误报成功、0 字节不再被静默放过、设备 stat 骗人不再误删文件
 - **断点续传磁盘化**（lib/sftp-partials.js）：中断点落盘，app 重启/崩溃后跨会话续传，不再退化为全量重传；大批量压测通过（verify-sftp-stress.js / verify-sftp-partials.js）
@@ -98,7 +107,7 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 13. **堡垒机分组计数**：设备可在多个业务目录同时显示（与网页一致），计数按设备去重（871 不虚增到 2066）；根级设备归到业务根
 14. **CI 发布**（`.github/workflows/build-windows.yml`）：push main 只传 artifact；标签 `v*` 自动发布、手动触发发草稿；macOS 只编译 x64（`--mac --x64`，arm64 不编译）；两平台 build job 完成后由单独 release job 汇总发布（避免并发建 Release 冲突）
 15. **gitee 同步**（`scripts/sync-to-gitee.js`）：只依赖 Node 18+ 内置 fetch/FormData，无第三方依赖，CI 和本机都能跑；**10MB 分块** + 每附件 60s 超时 + 失败重试 3 次（2/4s 背退），对抗海外 runner → 国内网络；多个分片文件**逐条**拼接提示，不混进一条 cat 命令拼坏
-16. **主题系统**（renderer.js）：预设只写 term 配色 + `appearance`，UI 变量走 `deriveUiTokens` 派生（dark 面板/边框比 bg 提亮，light 则加深），预设可 `css` 覆盖；`auto` 跟随系统
+16. **主题系统**（renderer.js）：10 套配色取自 Tabby 社区配色（Xresources 转换，MIT；v1.0.8 替换掉原来的自研 10 套），预设只写 term 配色 + `appearance`，UI 变量走 `deriveUiTokens` 派生（dark 面板/边框比 bg 提亮，light 则加深）并做**对比度保底**（正文 ≥4.5、`--text-dim` ≥3.0）；旧键走 `THEME_ALIASES` 迁移；`auto` 跟随系统（深→tokyonight / 浅→github）
 17. **断点续传磁盘化**（lib/sftp-partials.js + main.js）：中断点存 `lockDir()/sftp-partials.json`（仿 known-hosts：原子写 + 0600 + 损坏兜底），每次 set/remove **同步落盘**（崩溃/强杀后记录仍在，这是磁盘化的核心价值）；键用**稳定主机身份** `hostId:kind:path`（`hostId` 在 ssh:connect 时补存 = `username@host:port`，JMS 复合用户名区分同网关不同资产；sessionId 每次启动从 sess-1 重计、不能单独做键，否则 A 主机断点会续到 B 主机）；启动时 `prune` 掉 7 天前过期条目防磁盘表无限增长；「判定失效删记录返回 0（全量）」与「续传成功后删记录」语义不变
 18. **main.js 拆模块**（v1.0.38，3263→2712 行）：抽 `lib/connect-opts.js`（makeHostVerifier/resolvePrivateKey/withHostVerify 指纹校验链，被 ssh:connect/批量/AI/导入共用）、`lib/session-groups.js`（分组/命令历史归档/快速命令/导入模板 IPC）、`lib/session-ipc.js`（会话管理/导入导出/系统探测，含 packJump/unpackJump）。**依赖惰性注入**：`register(ipcMain, { getSessionStore, schedulePersist, getMainWindow })`——sessionStore/mainWindow 启动早期不可用，传 getter 不取快照。SFTP/SSH/堡垒机等被数据管线重度消费的命脉区块**未拆**（拆分需同步改消费方，收益/风险不成比例）
 19. **命令补全**（v1.0.38，renderer.js）：输入命令前缀 ≥2 字符弹候选（内置常用命令数组 + `recommendCmds(host)` 该主机历史高频带 desc + 快捷命令首词），**Tab 补全选中 / ↑↓ 切换 / 点击补全，不自动执行**；转义/回车/Ctrl+C/U/点击面板外自动关闭；**dirty 保护**（行被服务器改写时不补全，避免误删输入）；只补全命令词（第一个词），不做路径/参数（远程文件系统不可知）
@@ -120,6 +129,28 @@ Polaris（北极星）— Electron SSH/SFTP 终端。开发主线：**参考 Cha
 
 32. **弹窗焦点锁（导出密码无法输入）**（2026-10-30，renderer.js + preload.js + main.js）：导出加密备份的「设置导出密码」弹窗打开后，原生菜单关闭/终端重聚焦/堡垒机 webview 可能把焦点抢回终端，随后按键被 BODY 兜底转发进终端 → 密码框永远为空（实测复现）。修法：① `focusModalInput` 立即聚焦 + rAF/50/250/500/1000/2000ms 补聚焦；② 全局 `focusin`/`focusout` 守卫：焦点落到弹窗外时拉回最上层弹窗第一个可输入元素；③ 全局 keydown：弹窗打开且焦点不在弹窗内时绝不把按键转发给终端；④ **v1.0.48 加固**：导出流程去掉原生 `confirm()`（数量/加密说明并入密码弹窗），避免 Windows 上 confirm 关闭后的焦点恢复抢走密码框；新增 `window:focus` IPC（主进程 show/focus + webContents.focus）恢复 OS 级焦点；弹窗打开期间暂停 `bastionFocusCheck`，避免 webview 每 500ms 抢焦点。同时统一密码长度口径为 **8 位**（前端标签/渲染层校验/`sessions:export` 后端校验；旧 4 位备份仍可导入）。回归：`verify-export-password.js`（9/9）；⑤ **v1.0.49**：导入加密备份时导入弹窗仍开着、密码弹窗叠在上面，旧 keydown 守卫用 `querySelector` 取到背后的导入弹窗，把按键抢到导入框 → 新增 `topVisibleModal()`（DOM 中最后一个可见 `.modal`）统一用于 keydown/focusin/focusout/bastionFocusCheck。
 
+33. **H3C 自签名证书放行**（2026-11-03，lib/h3c-api.js）：诊断包 `Polaris-bastion-diag-2026-11-03-03-38-58.json` 实测同一 `accessUrl` 前两次返回 `net::ERR_CERT_AUTHORITY_INVALID`、第三次才成功。根因：`app.on('certificate-error')` 只对 webContents 生效，`session.fetch()` 走 Chromium 网络栈时不触发该事件。修法：对 `persist:bastion` 会话安装 `setCertificateVerifyProc((_req, cb) => cb(0))`，与内置浏览器放行口径一致；只作用于堡垒机专用 partition。回归：`verify-h3c-cert.js`（自签名 HTTPS + `window.api.h3cTree`）。
+
+
+34. **右侧堡垒机下拉同步**（2026-11-03，renderer.js）：左侧新建 JMS 服务器时 `baseUrl` 为空，右侧下拉会过滤掉；`jmsDoSave` 只刷新左侧 JMS 弹窗下拉，`jmsDoLogin`/`jmsDoMfa`/`jmsDeleteServerCompletely` 同样没有刷新右侧 → “右侧堡垒机获取不到左侧创建的连接信息”。修法：保存/登录/MFA/删除后统一调用 `bastionRenderServerSelect()`，保存后同时 `renderSessionList()`。回归：`verify-bastion-server-sync.js`（4/4）。
+
+35. **检查更新 + Windows 自动更新**（2026-11-03，main.js/preload.js/renderer.js + electron-updater）：① 检查：`app:checkUpdate` 用 Electron `net.fetch` 查 GitHub Releases latest，`compareVersions` 判断 `hasUpdate`；`app:openRelease` 仅允许本项目 Release 地址。② 自动下载/安装：`electron-updater` + GitHub provider，electron-builder 生成 `app-update.yml`；仅 **Windows 安装版**（`app.isPackaged && win32 && !PORTABLE_EXECUTABLE_DIR`）走「下载 → 进度 → 重启安装」，便携版/开发版/非 Windows 回退打开下载页。③ CI 上传 `latest.yml`/`.blockmap` 并随 Release 发布；安装包 `artifactName` 用无空格点号，确保与 GitHub 资产名一致。④ 未签名发布 → `win.verifyUpdateCodeSignature=false`。回归：`verify-check-update.js`（6/6）、`verify-about.js`（15/15）。
+
+
+36. **堡垒机浏览器显示优化**（2026-11-03，src/index.html/styles.css/renderer.js + main/preload）：① 工具栏去掉重复标题，清除历史收进「⋯」更多菜单（隐藏 DOM/ID 保留，兼容 verify-bastion-clear）；② 空态/加载/错误态改为结构化（图标/标题/说明/配置/重试），不再用 `textContent` 覆盖 `#bastion-empty` 导致按钮消失；③ 错误态显示重试、隐藏配置；④ 更多菜单：系统浏览器打开、复制地址、重置缩放、清除历史；新增 `app:openExternal` 仅允许 http/https；⑤ 双击缩放百分比恢复 100%，拖动面板宽度后自动 `bastionFitToWidth`；⑥ 当前页信息行为空时 CSS `:has` 自动隐藏。回归：`verify-bastion-browser-ui.js`（8/8）。
+
+
+37. **空格被 xterm 组合态吞掉的自恢复**（2026-11-03，renderer.js）：调试日志出现 `KEY '␣'` 但无 `SEND`，失焦/聚焦后恢复 → xterm 的 CompositionHelper/输入法会话卡住，xterm 未产生 `onData`。修法：空格 keydown 保留原有 `resetTermComposition`（确认卡住才复位，避免空 SEND）；额外 `armSpaceWatchdog` 250ms 检查本次空格是否产生输入，没有则 `textarea.blur()/focus()` 重建输入法会话（**不自动补发空格**，避免真实组合双空格）；KEY 日志补 `ime=0/1 kc=<keyCode>`。回归：`verify-space-composition-flush.js`（6/6，新增 disableStdin 模拟吞键 → RECOVER）。
+
+
+38. **nologin 账号识别**（2026-11-03，renderer.js + mock/fake-shell.js）：现场 `STATUS connected` → `RECV 45B`（`\r\nThis account is currently not available.`）→ `closed`；认证成功但目标账号 shell=`/usr/sbin/nologin`，服务器立即断开。修法：`onSshData` 检测该消息 → `tab.noLogin=true`、状态栏提示、`dlog('NOLOGIN')`；`closed` 时在终端写明原因与处理方式（换有 shell 的账号 / `usermod -s /bin/bash <账号>`）；`scheduleReconnect` 跳过 nologin（账号问题重试无意义）。mock 支持 `account=nologin` 模拟。回归：`verify-nologin-hint.js`（5/5）。
+
+
+39. **堡垒机配置弹窗遮挡修复**（2026-11-03，index.html/renderer.js）：`bastion-cfg-modal` 缺少右上角 ✕（只有底部「关闭」）；且打开时 bastion-webview（Electron guest view）可能盖住宿主弹窗。修法：补 `#bastion-cfg-x` 并绑定 `closeBastionCfg`；`openBastionCfg` 时 `webview.style.visibility='hidden'`，关闭时若无其它可见弹窗再恢复（`setBastionWebviewForModal`）。回归：`verify-bastion-browser-ui.js`（9/9）。
+
+
+40. **H3C 证书放行时机**（2026-11-03，main.js + lib/h3c-api.js）：Electron `setCertificateVerifyProc` 的结果会被网络服务缓存；H3C webview 先登录时可能把 `ERR_CERT_AUTHORITY_INVALID` 缓存下来，h3c-api 首次请求才懒安装放行已来不及。修法：`app.whenReady` 一开始（任何 webview/请求之前）对 `persist:bastion` 安装 `callback(0)`；h3c-api 保留懒安装兜底，并在捕获 `ERR_CERT_*` 时重新安装 + 重试一次（诊断包实测手动重试第三次才成功）。回归：`verify-h3c-cert.js`（含 webview 先走自签名 HTTPS 再调原生 API）。
+
 ## 运行与调试
 
 ```bash
@@ -134,7 +165,7 @@ node verify-<功能>.js
 
 - **发布流程**：`git tag vX.Y.Z` → `git push origin <tag>` → GitHub Actions 编译 Windows → 自动创建 Release 并附 `.exe`
   **只推 main 不会出 Release**（workflow 的 release job 条件是 `refs/tags/v*`）；CI 不编 macOS、也不再向 gitee 同步产物（gitee 只留源码仓库）
-- 真实环境：JumpServer `192.168.1.250`（admin / 密码见本地 `~/.jms-terminal/jms-servers.json` 或用户提供），PVE 资产 `192.168.1.254`（root，经 KoKo 网关 2222）；H3C 参考 `10.204.240.4`（HAR 已入 .gitignore）
+- 真实环境：JumpServer `jms.example`（admin / 密码见本地 `~/.jms-terminal/jms-servers.json` 或用户提供），PVE 资产 `pve.example`（root，经 KoKo 网关 2222）；H3C 参考 `h3c-bastion.example`（HAR 已入 .gitignore）
 - 日志：`数据目录/logs/app-*.log`（全量）；调试面板 🧾 → ⬇ 下载日志
 - verify 脚本：`verify-bastion-merge.js`（堡垒机入口整合回归）、`verify-sftp-*.js`、`verify-bastion-*.js`、`verify-h3c*.js`、`verify-ctxmenu*.js` 等 40+ 个（CDP e2e，自建 electron + 调试端口 + 临时数据目录）
 
@@ -147,8 +178,9 @@ node verify-<功能>.js
 **已解决（2026-08-23）**：SFTP 断点续传磁盘化（跨重启续传，lib/sftp-partials.js + hostId 键）；SFTP 大批量压测（verify-sftp-stress.js + verify-sftp-partials.js）；工作目录调试产物清理（long_text_*.txt / polaris-logs-*.zip 已删并 gitignore）
 
 **已解决（2026-08-25，历史会话复盘）**：**历史最高频问题——左侧堡垒机（尤其 H3C）获取不到资产列表 /「未捕获到资产」**，跨 4 个会话出现 15+ 次。它是一串根因而非单个 bug，已在 v1.0.2→v1.0.12 逐个铲除，关键节点：v1.0.2 `4ac370d`（API 写死 getAccessViewTree → 改读浏览器真实请求体 paths）、v1.0.3 `c7a28de`（钩子注入死锁）、v1.0.8/9 `8b331c2` + `5c63ff2`（**根因**：注入脚本正则被宿主模板解码破坏 → 钩子永远进不去）、v1.0.12 `f5b5401`（H3C 会话保活放宽到面板隐藏也运行）、08-25 未打 tag（JMS/H3C 共性问题：折叠层级把资产藏起来 → 登录后默认展开）。**判断依据**：v1.0.13 起用户抱怨转移到显示层（分组重复 `df6f473`、收藏分组 `66d4184`/`2a8fffc`/`471aab2`，均已修），资产捕获链路本身是通的（确认 870/879 台设备 dirs 含根），当前 v1.0.18「获取不到资产列表」本体不再出现。**遗留**：SFTP 偶发目录读取超时/大文件传输失败——根因是 v1.0.11 加的 stat 探测挂住 H3C 串行 SFTP 通道，v1.0.17 `5dbb8ef` 移除修复，v1.0.18 `0076967` 加 [SFTP] 调试日志，等真实设备复现后按日志收尾
-- **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析，待执行）：A 类冗余——SFTP 传输历史双份记录、堡垒机面板三重选控件、堡垒机入口重复；B 类健壮性——右侧固定宽面板可同时全开把终端挤没（`min-width:0`）、面板尺寸记忆不一致
-- **主题/字体优化**（`docs/theme-font-optimization.md`，2026-08-23 分析，待执行）：ANSI 16 色全局一份换主题不变（Termius 每主题自带调色板，核心差距）、前 8 套预设硬编码 css 与派生值漂移、字体列表缺 Nerd Font/自定义入口
+- **UI 布局优化**（`docs/layout-redundancy.md`，2026-08-23 分析）：**A1/B1/B2 已完成**（2026-09-11 核对），**A2 已完成**（2026-11-03：堡垒机下拉只留 tabs 覆盖不到的站点——左侧 JumpServer 服务器 + 已有资产的堡垒机 URL，按来源分组，无额外站点时整个下拉收起；`bastionSelectServer` 仍支持 `B:id` 双击资产链路并同步标签高亮）。剩 A3（工具栏 🌐 与分组右键入口轻度重复）、A4/A5、B3/B4/B5 为可选体验项
+- **主题/字体优化**（`docs/theme-font-optimization.md`）：T1–T4 已实现；v1.0.8 起 10 套主题改为 Tabby/iTerm2 精选配色（每套带 ANSI 16 色，署名见 `NOTICE`）
+- **回归与 CI**：全量入口 `node run-verify.js`（入库；`--pure` 纯 Node / `--e2e` / `--only=` / `--retry=N`，默认对失败脚本重跑 1 次以吸收 CDP/mock 抖动）；CI 两道——`build-windows.yml`（tag `v*` 出包发 Release）+ `test.yml`（push/PR 跑 `run-verify.js --pure`）。已知红灯 3 例（debug-log / space-composition-flush / vim-real，与本轮改动无关）见 `docs/verify-known-red.md`
 
 **已解决（2026-09-01，v1.0.35→v1.0.40）**：
 - **SFTP 大文件上传加固**（v1.0.35）：进度节流（lib/sftp-progress-throttle.js，高频进度不再打满渲染层）、120s 传输假死看门狗（连接假死主动终止）、stat 30s 超时（H3C 串行通道挂住不阻塞）；断开/关标签清空传输记录、彻底移除启动自动连接（v1.0.35）
@@ -157,7 +189,7 @@ node verify-<功能>.js
 - **堡垒机连接编辑入口**（v1.0.39/40）：新建连接自动展开子区 + H3C 资产区块头「编辑连接」——用户"左侧连接没编辑功能"根因是已保存连接子区默认折叠 + 资产区块头无编辑入口，非功能缺失
 - 完整回归：14 项 verify 脚本全过（含 verify-pack-upload 抓到节流文件切换回归并修复）
 
-**遗留**：macOS 双击启动网络限制**根治需公证**（无 Apple 证书，短期保留启动器方案）；「UI 布局优化」「主题/字体优化」两份 docs 清单仍待执行；H3C 网页收藏若要彻底 SQLite 化（跨设备/清 localStorage 也不丢）需读取 H3C 网页 localStorage 结构设计捕获，当前靠"保留 localStorage"兜底。
+**遗留**：macOS 双击启动网络限制**根治需公证**（无 Apple 证书，短期保留启动器方案）；`docs/layout-redundancy.md` 仅剩 A3/A4/A5、B3/B4/B5 可选体验项（A1/A2/B1/B2 已完成）；H3C 网页收藏若要彻底 SQLite 化（跨设备/清 localStorage 也不丢）需读取 H3C 网页 localStorage 结构设计捕获，当前靠"保留 localStorage"兜底。
 
 **已解决（2026-09-10，v1.0.41）**：
 - **输入法残留被当输入发到服务器**（renderer.js）：用户报「敲 `df -Th` 回车，服务端收到 `df -Th T` 报 `df: T: 没有那个文件或目录`」。日志取证：空格键每次出现两条 SEND（一条多余的空串/`" T"`，一条正常空格），多出的内容来自 xterm 组合冲刷（见技术决策 24）。修法：统一入口 `resetTermComposition`（只在真卡组合态复位 + 复位前清空 textarea）。复现/回归 `verify-space-composition-flush.js`（改前逐字复现 `SEND " T"`，改后 4/4 通过）；`verify-vim-space.js`（原"vim 退出后空格失效"修复）无回退
@@ -167,4 +199,43 @@ node verify-<功能>.js
 
 **已解决（2026-09-11，v1.0.43）**：本清单 `docs/issues-2026-09-11.md` 的 #1～#12、#14、#15 与"三条新发现"全部完成（#13 需用户决定是否改写 git 历史）。要点：敏感输入不落盘、取消传输保留半成品+可续传、批量传输并入加固管线、危险命令确认覆盖 6 类一键入口(含 batch:exec)、批量连接不抢焦点(后台模式)、多堡垒机资产按 bastionUrl 分键、关闭命令记录后补全失效等交互四修、终端行残留两处防护、xlsx 换官方 tarball 且 `npm audit` 清零、verify 脚本端口全库去重 + `freePort` 校验真空闲、过时 verify 脚本清理（删 2 重写 1）。回归：19 个 verify 脚本全绿 + `npm run dist` 打包通过并已装入本机 /Applications。
 
+**已实现（2026-11-11，v1.0.13）**：**「文件夹下载 / 多文件下载失败」五个成因全修**——① `walkRemote` 子目录 `readdir` 失败不再整批抛错（记失败项 + 继续，界面出「✗ 失败」行）；② 批量下载失败项**串行重试**一次（H3C/KoKo 串行 SFTP 设备上"并发 2 路部分文件失败、单文件正常"正是这个原因，`retried:true` + 日志「下载重试成功」，重试前 `getSftp` 重开通道）；③ 符号链接按 `stat` 跟随判真实类型（链接到目录继续递归 + `visited` 防环）；④ `sftp:downloadMany` 对 `isDir:false` 条目 stat 兜底；⑤ 批量进度 `total` 不再被回调参数遮蔽（此前总进度恒 100%）。附带：`friendlyDownloadError` 按错误码补提示（ENAMETOOLONG/ENOSPC/EISDIR/EPERM）、递归时先 `mkdirSync` 本地子目录（空目录不再丢）。回归 `verify-sftp-download-many.js` 16/16（修复前 5/11）。
+
+**已实现（2026-11-11，v1.0.14）**：**修「AI 对话区文字不能复制」+「Ctrl+C 不生效」**（用户同一份日志，同一根因）——全局 keydown 兜底（BODY 焦点）对每个按键 `preventDefault()` 后合成 `KeyboardEvent` 转发给终端：一方面把 ⌘/Ctrl+C 的**原生复制**一起吞掉（AI 对话区不可聚焦 → 点过面板焦点就掉 BODY），另一方面合成事件**没带 keyCode**（日志 `KEY 'c' ^ … kc=0`）→ xterm 键码映射拿不到 → 静默丢弃（`SEND` 一条都没有，Ctrl+C/Ctrl+D/Tab/字母全废）。修法：`#ai-chat` 加 `tabindex="-1"` + mousedown 取焦点；`hasSelectionOutsideTerm()` 命中时放行 ⌘C（不 preventDefault、不转终端）；合成事件 `Object.defineProperty` 补 `keyCode`/`which`；合成事件打 `__polarisSynthetic` 防递归；对话区 ⌘A = `selectAllInRegion`；每条消息「📋」+ 代码块「📋 复制命令」（`window.api.copyText`）；`.ai-*` 补 `user-select: text`；对话区组合键不转发（避免无声 `^C` 打断远端命令）。回归 `verify-ai-copy.js` 11/11（修复前 1/9）、`verify-key-forward.js` 7/7（修复前 3/7）。
+
+**已实现（2026-11-11，v1.0.12）**：**DeepSeek 默认改 OpenAI 兼容端点**（`https://api.deepseek.com/v1` + `format:openai`，实测工具调用正常），Anthropic 兼容端点（`…/anthropic` + `format:anthropic`）作为备选模板保留；**端点与格式必须配套**，`migrateDeepSeekUrl` 按各厂商 `format` 补对应地址（否则空地址的 openai 厂商会被补成 `…/anthropic` → `…/anthropic/chat/completions` 404）。回归 `verify-ai-config.js` 11/11。
+
+**已实现（2026-11-11，v1.0.11）**：**修「AI 功能用不了」+ 工具栏「调试」移入菜单栏**——
+① 用户填了 DeepSeek Key 仍发不出消息,根因是配置缺失时**静默回落**:新厂商 `url` 为空 → 请求偷偷发到 `https://api.anthropic.com/v1/messages`,界面只有 `HTTP 401/404`;`model` 为空 → 静默用 `claude-sonnet-5` 请求 DeepSeek → 400。现 `main.js` `ai:chat` / `lib/session-groups.js` `ai:suggestCmd` 在 url/model 为空时直接返回可读错误,`aiSend` 发送前校验并自动展开 ⚙,`lib/ai-stream.js` 新增 `aiErrorHint`(401/403 Key 无效、402 余额、404 地址或模型名、429 限流、5xx 服务端)。② ⚙ 新增「快速模板」(`AI_VENDOR_PRESETS`:DeepSeek/OpenAI/DashScope/智谱/Moonshot/Anthropic/OpenRouter),选中即填地址+协议+模型(Anthropic 格式的 base 不带 `/v1`,否则 normalize 会拼成 `/v1/v1/messages`);「＋ 新增厂商」默认即 DeepSeek 可跑通配置。③ 工具栏「调试」删除,入口移到菜单栏「调试」(紧跟「帮助」);**新增菜单项必须同步登记 `preload.js` `onMenu` 白名单,否则点击静默无反应**(本次踩过)。回归 `verify-ai-config.js` 10/10(含可选 `POLARIS_AI_KEY` 真实连通性)。
+
+**已实现（2026-11-06，v1.0.10）**：**修「输入法死键吞字符」**——IME 卡在假组合时字符键只出 `KEY 'Process' kc=229`、无任何 SEND（命令打不进，仅退格/回车有效）。旧门槛「连续 3 个死键」被用户「2 连发 → 退格 → 2 连发」的节奏复位，永不触发。改为**时间窗 + 延迟判定**：每个 229 各自排 150ms 结算，期间无 `compositionstart` 才算死键，3s 内累计 2 个即 `blur()+focus()` 重建 IME 会话；跨窗口不累计；`compositionstart` 清空统计。同时修掉"真字符清计数"从未生效的问题（xterm 处理普通按键后 `stopImmediatePropagation`，只有 229 能到 ta 的 keydown）→ 改用 `term.onData`。状态栏提示放开到全平台、每终端一次。回归 `verify-ime-deadkey.js` 9/9（修复前 6/9）。
+
+**已实现（2026-11-06，v1.0.9）**：**终端打开浏览器链接**——此前终端里的 URL 只是死文本。现由 `registerTermLinks`（`term.registerLinkProvider`）识别 `http/https` 链接：悬停下划线/手型光标 + 状态栏提示，⌘/Ctrl+点击走 `app:openExternal` 打开系统浏览器；裸点击仍归拖选。要点：range 按单元格宽度算（CJK 占两列，用字符串下标会点偏）；折行按 `isWrapped` 拼回；主进程保留 http/https 白名单，另加 `POLARIS_TEST_NO_EXTERNAL=1` 测试钩子。回归 `verify-term-links.js` 28/28。
+
+**已解决（2026-11-06，v1.0.8）**：**自动锁定后无法输入密码**（用户反馈，已用 `verify-autolock-input.js` 复现并修复）——根因是锁定覆盖层没守住焦点：① 点卡片空白处 → 焦点掉到 BODY → 全局 keydown 的"BODY 兜底转发给终端"把密码字符发到 SSH 会话；② 弹窗开着时锁定 → 弹窗焦点锁（`focusin`/`focusout`）把焦点抢回弹窗输入框；③ 命令补全面板 z-index 1000 浮在锁定层（300）之上。修法：锁定期全局 keydown 一律路由到 `#lo-pw`（Enter 解锁/Backspace 删除，不 preventDefault 正常字符）、覆盖层 mousedown 抓回焦点、`lo-pw` blur 抓回、弹窗焦点锁锁定时让位、`refocusTerminal`/`sftpRefocusTerminal` 锁定时不抢、窗口 focus 回密码框、`.lock-overlay` z-index → 1200
+
 **已解决（2026-09-15，v1.0.44）**：用户报「SFTP 点击下载后没有任何反应」。现场取证（直接查运行中的 app）：进程仍持有 4 个残留写 fd、`sftp-partials.json` 有 0B/2106B 两条失败记录、本地落下 3 个 0 字节文件、app 日志**无任何下载记录**、面板截图**无任何传输行**。根因是"失败文件零进度 → 不建行 + 不写日志"，叠加"读错不销毁写流 → fd 泄漏"。修法与回归见技术决策 30 与 `verify-sftp-download-fail.js`(7/7)。
+
+**已实现（2026-11-12，v1.0.15）**：**「点 SFTP 直接用本机 WinSCP 打开这个会话」**（Windows-only 外链，不集成引擎）——
+上一轮评估已否决"把 WinSCP 当引擎"（GPLv3 + 17 个 C++Builder `.cbproj` + VCL 无公共 C ABI，见 `docs/decision-winscp-integration.md`），
+本轮只做外链且**升级为默认行为**（用户要求自动登录，据此推翻了原"密码不进 URL"的口径）。要点：
+① 三档设置 `#set-winscp-mode`：`replace`（默认，点 SFTP 拉起 WinSCP，未装/失败回落内置面板）/ `button`（内置面板 + 工具栏按钮）/ `panel`（入口隐身）；
+入口显隐只认 `state.winScp.installed`。② 参数 `sftp://账号:密码@主机:端口/ [-privatekey=<路径>] [-passphrase=<口令>]`，
+user/password 一律 `encodeURIComponent`（否则 WinSCP 解析歪成"密码错误"）；堡垒机复合用户名整体编码、`displayHost` 只展示不连接；
+主机指纹交 WinSCP 自己问（PuTTY 风格与 `known_hosts` 不通用）。③ 密码进 argv 的配套硬约束：**不落盘 + 不写日志**
+（`redactUrl`/`describeCommand` 把密码与 `-passphrase=` 压成 `***`，`termDebug`/状态栏/`app-*.log` 只见 `sftp://user:***@host:22/`），
+风险边界（同用户/本机管理员可见 argv）写进文档，不要就切 `button`/`panel`。④ 代码：新增 `lib/winscp-open.js`（纯函数，可注入
+`platform/env/exists` 便于单测）+ `main.js` `winScp:detect|open`（`spawn` `detached:true` + `unref()`）+ `preload.js` 两桥接 +
+`toggleSftpPanel` 抽出 `openInlineSftp()` 供回落；`POLARIS_WINSCP_PATH` / `POLARIS_WINSCP_DEBUG=1` 供自定义路径与排障。
+⑤ 非 Windows 无感：`detectExe` 对 `darwin/linux` 返 `null`。回归新增 `verify-winscp-args.js` 25/25（纯 Node）、
+`verify-winscp-open.js` 27/27（Electron + shell 桩）、`--pure` 13/13 脚本 128 断言。
+
+**已实现（2026-11-12，v1.0.16）**：**修「WinSCP 报『不能获得 '.' 的真实路径』（错误码 4）」**——用户装上 v1.0.15 后一拉起 WinSCP 就弹这句、会话进不去。根因在 WinSCP 侧：建会话时先对 `"."` 发 `SSH_FXP_REALPATH` 当作家目录（`source/core/SftpFileSystem.cpp:2976` `FHomeDirectory = RealPath(L".")`；`SessionData.cpp:303` 默认 `SFTPRealPath = asAuto`），chroot 型服务端（JumpServer KoKo / H3C 网关 / `internal-sftp` chroot / 老 ProFTPD）对该请求直接回 `SSH_FX_FAILURE`（错误码 4）→ WinSCP 当致命错误抛出。Polaris 自己面板从不发 REALPATH（家目录 `exec pwd` + `readdir`），所以没这问题。修法：拉起命令追加 `/rawsettings SFTPRealPath=off`（`RealPath()` 改走 `LocalCanonify`、不发请求）+ 已知绝对路径作为 `RemoteDirectory`（优先级：面板当前目录 > 标签 `sftpPath` > 跟踪的 `shellCwd`；相对/未知不传）；要还原 WinSCP 原生行为设 `POLARIS_WINSCP_REALPATH=on`。代码：`lib/winscp-open.js` 加 `RAW_SETTINGS_DEFAULTS`/`buildArgs({rawSettings})`/`normalizeRemotePath()`/`realPathCompat(env)`；`main.js winScp:open` 组装 rawsettings 并在拉起日志记 `rawsettings=…`（无凭据）；`renderer.js winScpPayloadFor()` 加 `remotePath`。回归：`verify-winscp-args.js` 32/32、`verify-winscp-open.js` 32/32、`--pure` 13/13 脚本 135 断言。排障/手工绕过见 `docs/winscp-realpath-fix.md`。
+
+**已实现（2026-11-12，v1.0.17）**：**WinSCP 排障日志可见**——用户贴回 v1.0.16 的调试日志导出一看，里面一条 `[WINSCP]` 都没有（只有 `FOCUS window blur … active=BUTTON#btn-sftp-toggle`）。查明是**日志可观测性缺口**：`main.js` 里 WinSCP 拉起/失败走 `appLog.log('main', …)`，它**只写 `数据目录/logs/app-*.log`，不转发渲染层调试面板**（面板只能看到经 `main:log` 转发的 `console.log` 系内容），于是「点 SFTP 后 WinSCP 到底起没起、`SFTPRealPath=off` 带没带」在面板上完全无痕。修法：① 主进程两处改 `console.log`（面板 + 落盘双写，内容仍是 `describeCommand` 脱敏后的命令行 + `rawsettings={…}`）；② 渲染层 `openSessionInWinScp`/`toggleSftpPanel` 新增 `dlog('WINSCP', …)`（`交给 WinSCP: 账号@主机:22 起始目录=…` / `WINSCP·错误 …` / `拉起失败 → 回落内置面板` / `本机未检测到 WinSCP`），只含账号/主机/路径，**永不写密码**；③ `verify-winscp-open.js` 的 sid 轮询失败会再点一次连接再等一轮，消除一次 mock 握手抖动连带 18 条断言全红的偶发。回归：`verify-winscp-open.js` 32→**37**、`--pure` 13/13 脚本 135 断言、key-forward 7/7、ai-copy 11/11、sftp-panel 5/5。发布说明 `docs/release-v1.0.17.md`。
+
+**已实现（2026-11-13，v1.0.18）**：**H3C 资产协议识别（RDP / Web 不再当 SSH 连）**——用户给出真实流量 `bastion-5.har`，对照后发现 `dev.services.services` 的键**就是 H3C 的 proto 名**（实测 `ssh` / `rdp` / `Device_Storage_web`），而旧代码只认 `srv.ssh`/`srv.sftp`、其余一律当 `ssh`。后果：双击 RDP 或存储资产时 **拿 `proto='ssh'` 去 `POST /shterm/api/deviceAccess/accessUrl`**（堡垒机侧协议不匹配，还留一条失败访问记录），若真的拿到图形 token（`app:"mstsc"`、`fa:"网关:3389"`、`as:"…OTP:…"`，**没有 `pw`/`hn`/`pn`**）前端只能落到「堡垒机连接信息不完整」——用户完全看不出是资产类型不支持。规模：`-11.har` 全量复算 **854 台资产里 180 台（约 21%）不是 SSH**，旧版下都是"点了没反应/连不上"。
+
+修法：① `src/renderer.js bastionParseDevs` 按服务键识别协议，新增 `protocols`（保留原始键，缺省 `['ssh']` 兼容老缓存）、`webUrl`（`services.<*web*>.url`，只收 `http/https`），`proto` 取 `ssh`→`sftp`→首个服务键，`port` 取所选服务端口（缺省 22）；② `bastionConnect` 开头用 `bastionAssetSupportsSsh()` **拦下非 SSH 资产、不发 `accessUrl`**，提示由 `bastionUnsupportedAssetMsg()` 生成（写明真实协议；有 `webUrl` 就指到右键「🌐 用系统浏览器打开」，否则让用户去 H3C 网页打开）；③ `handleAccessClientUrl` 先 `accessClientSessionKind(info)` 分类：`mstsc/rdp/vnc/guacamole/xfreerdp/spice` → `graphic`（明确"图形会话，Polaris 无法接管"）、缺 `pw`+`hn/pn` → `incomplete`、其余（含带 `app` 字段的 SSH token）→ `ssh`；④ 批量连接只连 SSH 资产并注明「跳过 M 台非 SSH」；⑤ 列表行非 SSH 资产加橙色协议徽标（`asset-proto`：`RDP`/`Web`/原始键，多协议并集）+ 名字压次要色（`.asset-nonssh`）+ `title` 写"双击查看说明"，右键菜单首项换成「ℹ️ 非 SSH 资产(RDP)，点此查看说明」、有 `webUrl` 增加「🌐 用系统浏览器打开」，SSH 专属项（连接/账号/断开/打开 SFTP）只对 SSH 资产出现。
+
+回归：**新增 `verify-bastion-proto.js`（纯 Node，29/29）**——直接从 `src/renderer.js` 切出 `bastionTagPaths … // 合并:按 devId 去重` 区块 eval，覆盖 SSH / RDP / Web / `ssh+rdp` / `sftp-only` / 无 services（向后兼容）/ 树结构 / token 类型判定 / 真实 HAR 一致性（21 台 SSH 11 + 非 SSH 9 全部对上）；`verify-bastion-har.js` **6/6**（`-5.har` 小样本）/ **13/13**（`-11.har` 全量）：`findHar()` 支持 `POLARIS_HAR` 与 `-5.har`，小样本 HAR（只录一页 20 台）不再被「≥800 台 / >100 目录 / 多目录设备」阈值误报红，新增真实数据协议判定（⑦）与 DOM 徽标/文案断言（⑧）；`run-verify --pure` **14/14 脚本 164 断言**（原 13/135）；`verify-bastion-ui` 11/11 无退化。发布说明 `docs/release-v1.0.18.md`。

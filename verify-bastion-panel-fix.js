@@ -59,7 +59,7 @@ async function ev(c, expr) { return evaluate(c, expr); }
 
     // ---- ② 断开连接功能 ----
     await ev(c, `(function(){
-      state.settings.bastionServers = [{ id: 's-h3c', name: 'H3C测试', url: 'https://10.204.240.4/shterm/', type: 'h3c' }];
+      state.settings.bastionServers = [{ id: 's-h3c', name: 'H3C测试', url: 'https://h3c-bastion.example/shterm/', type: 'h3c' }];
       state.collapsedTopBastion = false; state.collapsedBastionSaved = false;
       // 伪造一个该连接发起的会话(带 closeTab 需要的 DOM 元素)
       const fe = { remove(){} };

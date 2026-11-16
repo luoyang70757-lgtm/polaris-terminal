@@ -23,7 +23,7 @@
       <button id="btn-broadcast" class="btn-mini" title="广播模式:把输入同步到所有已连接会话">广播</button>
       <button id="btn-view" class="btn-mini" title="视图:垂直/横向分屏">视图</button>
       <span class="toolbar-sep"></span>
-      <button id="btn-sftp-toggle" class="btn-mini" title="SFTP 文件面板 (⌘⇧S)">SFTP</button>
+      <button id="btn-sftp-toggle" class="btn-mini" title="用本机 WinSCP 打开当前会话的 SFTP (⌘⇧S)">🪟 WinSCP</button>
       <button id="btn-tunnel" class="btn-mini" title="SSH 隧道/端口转发(跳板/内网数据库) (⌘⇧T)">隧道</button>
       <span class="toolbar-sep"></span>
       <button id="btn-batch" class="btn-mini" title="批量执行:一条命令发到多台主机,结果统一看 (⌘⇧B)">批量</button>
@@ -35,7 +35,6 @@
       <button id="btn-filter" class="btn-mini" title="输出过滤:创建/清除过滤条件(含关键词的行常亮、其余变暗) (⌘⇧F)">过滤</button>
       <button id="btn-lock" class="btn-mini" title="锁定(隐藏并上锁,解锁后会话保持) (⌘L)">锁定</button>
       <button id="btn-settings" class="btn-mini" title="设置(主题/字体/AI) (⌘,)">设置</button>
-      <button id="btn-debug" class="btn-mini" title="终端调试日志:按键/焦点/收发数据,排查终端/vim 按键不生效问题 (⌘⇧D)">调试</button>
       <button id="btn-ai" class="btn-mini ai-btn" title="AI 运维助手 (⌘⇧A)">
         <span class="ai-logo"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" /></svg></span>
         AI
@@ -77,8 +76,6 @@
           <span id="batch-count" class="dim">已选 0 台</span>
           <button id="batch-connect" class="btn-mini" title="批量连接选中会话">连接</button>
           <button id="batch-close" class="btn-mini" title="批量关闭选中的已连接">关闭</button>
-          <button id="batch-upload" class="btn-mini" title="批量上传文件到选中主机">上传</button>
-          <button id="batch-download" class="btn-mini" title="从选中主机批量下载文件">下载</button>
           <button id="batch-delete" class="btn-mini" title="批量删除选中会话">删除</button>
           <button id="batch-clear" class="btn-mini" title="取消选择">✕</button>
         </div>
@@ -106,7 +103,7 @@
         <!-- 快捷连接条(点会话列表 ⚡ 开关):临时直连,不保存会话 -->
         <div id="quick-connect" class="quick-connect hidden">
           <span class="qc-icon" title="快捷连接(不保存会话)">🔗</span>
-          <input id="qc-input" class="qc-input" placeholder="user@host[:port],如 root@10.0.0.5:2222,回车直连" spellcheck="false" />
+          <input id="qc-input" class="qc-input" placeholder="user@host[:port],如 root@主机地址:2222,回车直连" spellcheck="false" />
           <button id="qc-go" class="btn-mini" title="连接">连接</button>
           <button id="qc-close" class="btn-mini" title="关闭">✕</button>
         </div>
@@ -116,47 +113,6 @@
           <button id="tab-scroll-right" class="tab-scroll-btn hidden" title="向右滚动标签">▶</button>
         </div>
         <div id="terminal-container" class="terminal-container"></div>
-
-        <!-- 上下分隔条:拖动可调整 SFTP 面板高度(面板隐藏时一起隐藏) -->
-        <div id="divider-h" class="divider-h hidden" title="拖动调整高度"></div>
-
-        <!-- ============ SFTP 文件面板(终端下方,可收起) ============ -->
-        <section id="sftp-panel" class="sftp-panel hidden">
-          <div class="sftp-toolbar">
-            <div class="sftp-toolbar-row sftp-toolbar-main">
-              <button id="sftp-conn" class="sftp-conn dim" title="当前 SFTP 浏览的连接(点击切换浏览哪台已连接主机的文件)">—</button>
-              <span class="spacer"></span>
-              <button id="btn-sftp-up" class="btn-mini" title="返回上一级">⬆ 上一级</button>
-              <button id="btn-sftp-refresh" class="btn-mini" title="刷新当前目录(编辑保存/外部改动后点这里看最新)">🔄 刷新</button>
-              <button id="btn-sftp-mkdir" class="btn-mini" title="在当前目录新建目录">＋ 新建目录</button>
-              <button id="btn-sftp-upload" class="btn-mini" title="上传本地文件或文件夹到当前目录">上传</button>
-              <button id="btn-sftp-download" class="btn-mini" title="下载选中文件(可多选)">下载</button>
-              <button id="btn-sftp-delete" class="btn-mini" title="删除选中文件/目录(可多选)">删除</button>
-              <button id="btn-sftp-edit" class="btn-mini" title="编辑选中的远程文本文件(双击文件也行,保存即上传)">✏ 编辑</button>
-              <button id="btn-sftp-select-all" class="btn-mini" title="全选当前目录全部文件/目录(再点一次取消全选)">☑ 全选</button>
-            </div>
-            <!-- 第二行:完整路径(连接主机信息下方) -->
-            <div class="sftp-toolbar-row sftp-path-row">
-              <span class="sftp-path-label" title="当前浏览的完整远程路径">路径</span>
-              <div id="sftp-path" class="sftp-path" title="当前目录(点路径段可直接跳转)"></div>
-            </div>
-          </div>
-          <!-- 上传/下载进度(Xshell 式:每个文件一行+独立进度条;完成留在列表当"本次会话的历史",可删/清空,关 app 自动清) -->
-          <div id="sftp-progress" class="sftp-progress hidden">
-            <div class="sftp-progress-head">
-              <span id="sftp-progress-label" class="sftp-progress-label">传输记录</span>
-              <button id="btn-sftp-transfers-clear" class="btn-mini" title="删除全部传输历史(本次会话内)">清空</button>
-            </div>
-            <div id="sftp-transfers-list" class="sftp-transfers-list"></div>
-          </div>
-          <div id="sftp-list" class="sftp-list"></div>
-          <!-- 传输记录:每次上传/下载/新建/删除都留一行(时间 + 操作 + 结果) -->
-          <div id="sftp-log" class="sftp-log hidden"></div>
-          <div id="sftp-footer" class="sftp-footer dim">上传/下载都作用于路径栏显示的当前目录 · 双击进入目录 · 单击选中(可多选) · 左上角连接名可切换浏览的连接</div>
-        </section>
-
-        <!-- SFTP 连接切换下拉(点左上角连接名弹出:列出所有已连接的 SSH 会话) -->
-        <div id="sftp-conn-menu" class="ctx-menu sftp-conn-menu hidden"></div>
       </section>
 
       <!-- ============ 命令记录面板(右侧,可收起) ============ -->
@@ -208,7 +164,6 @@
           <div id="bastion-tabs-list" class="bastion-tabs-list"></div>
         </div>
         <div class="bastion-bar">
-          <span class="bastion-title dim" title="堡垒机浏览器">🌐 堡垒机</span>
           <select id="bastion-server-select" class="select bastion-server-select" title="已保存的堡垒机,选一个加载"></select>
           <span class="bastion-nav" title="浏览导航(可拖左侧分隔条调面板宽度)">
             <button id="bastion-back" class="btn-mini" title="后退">←</button>
@@ -216,27 +171,32 @@
             <button id="bastion-reload" class="btn-mini" title="刷新">↻</button>
           </span>
           <div class="bastion-addr">
-            <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://10.204.240.4" />
+            <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://h3c-bastion.example" />
             <button id="bastion-go" class="btn-mini" title="打开堡垒机">打开</button>
           </div>
-          <span class="bastion-zoom" title="画面缩放">
+          <span class="bastion-zoom" title="画面缩放(双击百分比恢复 100%)">
             <button id="bastion-zoom-out" class="btn-mini" title="缩小画面">A−</button>
             <span id="bastion-zoom-label" class="bastion-zoom-label">100%</span>
             <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
           </span>
-          <button id="bastion-clear" class="btn-mini" title="清除堡垒机浏览器历史记录(浏览历史/登录态/表单,下次需重新登录)">🧹 清除历史</button>
+          <button id="bastion-more" class="btn-mini" title="更多操作(系统浏览器打开/复制地址/重置缩放/清除历史)">⋯</button>
           <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
           <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
           <button id="bastion-close" class="btn-mini" title="关闭堡垒机面板">✕</button>
+          <!-- 保留 DOM/ID：清除历史入口已收进「⋯」菜单，旧回归脚本仍可直接 click -->
+          <button id="bastion-clear" class="btn-mini hidden" title="清除堡垒机浏览器历史记录(浏览历史/登录态/表单,下次需重新登录)">🧹 清除历史</button>
         </div>
         <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
         <div class="bastion-body">
           <div class="bastion-web-wrap">
             <div id="bastion-empty" class="bastion-empty">
-              <div class="be-title">🌐 堡垒机浏览器</div>
-              <div class="be-sub">在上方输入堡垒机 Web 地址,点「打开」开始</div>
-              <div class="be-sub">登录后在堡垒机里选主机 → 点连接 → 自动用本应用打开 SSH</div>
-              <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机(保存常用地址)</button>
+              <div class="be-icon">🌐</div>
+              <div id="bastion-empty-title" class="be-title">堡垒机浏览器</div>
+              <div id="bastion-empty-sub" class="be-sub">在上方选择/输入堡垒机 Web 地址,点「打开」开始</div>
+              <div class="be-actions">
+                <button id="bastion-empty-cfg" class="btn-mini">⚙ 配置堡垒机</button>
+                <button id="bastion-empty-retry" class="btn-mini hidden">↻ 重试</button>
+              </div>
             </div>
             <div id="bastion-loading" class="bastion-loading hidden"><span class="bspin"></span><span class="blabel">加载中…</span></div>
             <webview id="bastion-webview" class="bastion-webview" partition="persist:bastion"></webview>
@@ -272,6 +232,19 @@
         </div>
         <!-- 模型配置(点 ⚙ 展开/收起) -->
         <div id="ai-config" class="ai-config hidden">
+          <label class="field"><span>快速模板(一键填好接口地址 / 协议 / 模型)</span>
+            <select id="ai-vendor-preset" class="select" title="选常见服务商,自动填好接口地址、协议格式和模型名;填完补上 API Key 保存即可">
+              <option value="">自定义(手动填写)</option>
+              <option value="deepseek">DeepSeek(官方 · OpenAI 兼容)</option>
+              <option value="deepseek-anthropic">DeepSeek(Anthropic 兼容端点)</option>
+              <option value="openai">OpenAI(官方)</option>
+              <option value="dashscope">通义千问(DashScope · OpenAI 兼容)</option>
+              <option value="zhipu">智谱 GLM(OpenAI 兼容)</option>
+              <option value="moonshot">Moonshot Kimi(OpenAI 兼容)</option>
+              <option value="anthropic">Anthropic Claude(官方)</option>
+              <option value="openrouter">OpenRouter(聚合)</option>
+            </select>
+          </label>
           <label class="field"><span>模型厂商(如 DeepSeek / OpenAI / 通义千问 / Anthropic)</span>
             <input id="ai-vendor" placeholder="DeepSeek" />
           </label>
@@ -355,7 +328,8 @@
             <div id="kb-results" class="kb-results dim small"></div>
           </div>
         </div>
-        <div id="ai-chat" class="ai-chat"></div>
+        <!-- tabindex=-1:点进对话区就把焦点给它,否则焦点停在 BODY 时全局按键兜底会 preventDefault(Cmd+C 被吞) -->
+        <div id="ai-chat" class="ai-chat" tabindex="-1"></div>
         <div class="ai-input-row">
           <textarea id="ai-input" rows="2" placeholder="输入运维问题,回车发送(Shift+回车换行)…"></textarea>
           <button id="ai-stop" class="btn-mini ai-stop-btn hidden" title="停止 AI 执行">
@@ -389,7 +363,7 @@
       </label>
       <div class="field-row">
         <label class="field"><span>主机(IP 或域名)</span>
-          <input id="f-host" type="text" placeholder="192.168.1.10" />
+          <input id="f-host" type="text" placeholder="主机地址" />
         </label>
         <label class="field port-field"><span id="f-port-label">端口(默认 22)</span>
           <input id="f-port" type="number" value="22" />
@@ -446,7 +420,7 @@
               <summary>跳板机(SSH 代理,可选)</summary>
               <div class="jump-inner">
                 <label class="field"><span>跳板主机(IP/域名)</span>
-                  <input id="f-jump-host" type="text" placeholder="如 10.0.0.1(留空 = 直连)" />
+                  <input id="f-jump-host" type="text" placeholder="如 跳板机地址(留空 = 直连)" />
                 </label>
                 <div class="field-row">
                   <label class="field"><span>端口(默认 22)</span>
@@ -464,6 +438,12 @@
                 </label>
               </div>
             </details>
+            <label class="field"><span>root 密码(切换 root 时自动使用,可选)</span>
+              <div class="pwd-row">
+                <input id="f-su-password" type="password" placeholder="如 root 的密码(留空则每次切换时输入)" />
+                <button id="f-su-password-toggle" class="btn-mini pwd-eye" type="button" title="显示/隐藏 root 密码">👁</button>
+              </div>
+            </label>
           </div>
           <label class="field"><span>终端编码(中文乱码时改 GBK)</span>
             <select id="f-encoding" class="select">
@@ -490,7 +470,7 @@
     <div class="modal-card">
       <h3>🔎 端口探测</h3>
       <label class="field"><span>主机(IP 或域名)</span>
-        <input id="probe-host" type="text" placeholder="192.168.1.10" />
+        <input id="probe-host" type="text" placeholder="主机地址" />
       </label>
       <label class="field"><span>端口(逗号分隔,支持范围,如 22,23,80,1000-1010)</span>
         <input id="probe-ports" type="text" placeholder="22,23,80,443,3389" />
@@ -516,15 +496,16 @@
       <div class="import-methods">
         <button id="import-excel" class="btn-ghost">📄 从 Excel 文件导入</button>
         <button id="import-backup" class="btn-ghost">🔒 从加密备份导入(.polaris)</button>
-        <button id="import-external" class="btn-ghost">🔄 从 Xshell/iTerm2 导入</button>
+        <button id="import-external" class="btn-ghost">🔄 从 Xshell/iTerm2/SSH config 导入</button>
+        <button id="import-sshconfig" class="btn-ghost">🔑 从 ~/.ssh/config 导入</button>
         <button id="import-template" class="btn-ghost">⬇ 下载导入模板</button>
         <input type="file" id="import-file" accept=".xlsx,.xls" class="hidden" />
         <input type="file" id="import-backup-file" accept=".polaris" class="hidden" />
-        <input type="file" id="import-external-file" accept=".xsh,.json" multiple class="hidden" />
+        <input type="file" id="import-external-file" accept=".xsh,.json,.conf,.config" multiple class="hidden" />
       </div>
       <p class="import-hint dim">Excel 列顺序: <code>名称,主机,端口,用户名,密码,分组</code>(首行表头会自动识别跳过);加密备份是"导出"生成的 .polaris 文件,导入时需输入当时设置的密码。</p>
       <p class="import-or dim">———————— 或者手动粘贴文本 ————————</p>
-      <textarea id="import-text" class="import-text" placeholder="web01,192.168.1.10,22,root,123456,生产&#10;,192.168.1.11,22,ubuntu,,测试"></textarea>
+      <textarea id="import-text" class="import-text" placeholder="web01,&lt;主机地址&gt;,22,root,123456,生产&#10;,&lt;主机地址&gt;,22,ubuntu,,测试"></textarea>
       <label class="field field-check"><span>覆盖更新已存在的会话(同名时用文件里的数据更新,而不是跳过)</span>
         <input type="checkbox" id="import-overwrite" />
       </label>
@@ -541,7 +522,14 @@
     <div class="modal-card">
       <h3 id="prompt-title">输入</h3>
       <label class="field"><span id="prompt-label">内容</span>
-        <input id="prompt-input" type="text" />
+        <div class="prompt-input-row">
+          <input id="prompt-input" type="text" />
+          <button id="prompt-paste" type="button" class="btn-ghost" title="从剪贴板粘贴到输入框（支持密码粘贴）">📋 粘贴</button>
+        </div>
+      </label>
+      <label id="prompt-remember-row" class="field field-check hidden">
+        <input type="checkbox" id="prompt-remember" />
+        <span id="prompt-remember-label">记住到本会话</span>
       </label>
       <div class="modal-actions">
         <button id="prompt-ok" class="btn-primary">确定</button>
@@ -625,7 +613,7 @@
       <label class="field field-check"><span>服务器指纹校验(known_hosts,首次连接会询问)</span>
         <input type="checkbox" id="set-verify" />
       </label>
-      <label class="field field-check"><span>自动信任新主机密钥(未记录的主机不再弹窗,直接信任并记录;仅建议在可信内网开启)</span>
+      <label class="field field-check"><span>自动信任新主机密钥(未记录的主机不再弹「信任并连接」,直接校验并记录;仅建议在可信内网开启)</span>
         <input type="checkbox" id="set-autotrust" />
       </label>
       <div class="settings-sec">功能</div>
@@ -637,6 +625,14 @@
       </label>
       <label class="field field-check"><span>自动填充密码(终端出现 Password:/password: 提示时,自动发送该会话保存的密码)</span>
         <input type="checkbox" id="set-autofillpw" />
+      </label>
+      <div class="settings-sec">SFTP(用本机 WinSCP 打开,无内置文件面板)</div>
+      <label class="field"><span>WinSCP 协议</span>
+        <select id="set-winscp-protocol">
+          <option value="sftp">SFTP(默认)</option>
+          <option value="scp">SCP(老设备/受限 SFTP 用这个)</option>
+        </select>
+        <span class="pwd-note">SFTP 子系统残缺的设备(报「错误码 4 / General failure」)可试 SCP——它走服务器上的 scp 命令,不碰 SFTP</span>
       </label>
       <div class="settings-sec">安全</div>
       <label class="field"><span>闲置自动锁定(分钟,0=关闭)</span>
@@ -656,6 +652,8 @@
     </div>
   </div>
 
+  <!-- ============ 权限 / 属主 / 时间戳(SFTP 右键「🔐 权限与属性」) ============ -->
+
   <!-- ============ 关于 Polaris(版本 + 简介,其余说明已精简) ============ -->
   <div id="about-modal" class="modal hidden">
     <div class="modal-card about-card">
@@ -663,14 +661,69 @@
       <div class="about-body">
         <div class="about-logo">✦ Polaris <span class="about-cn">北极星</span></div>
         <div class="about-ver">版本 <b id="about-version">—</b></div>
+        <div class="about-update-row">
+          <button id="about-check" class="btn-mini" title="检查 GitHub Releases 是否有新版本">检查更新</button>
+          <button id="about-download" class="btn-mini hidden" title="下载并安装新版本(仅 Windows 安装版)">⬇ 下载更新</button>
+          <button id="about-release" class="btn-mini hidden" title="打开 GitHub 下载页">打开下载页</button>
+          <span id="about-update-msg" class="about-update-msg dim"></span>
+        </div>
         <p class="about-intro">
           科幻风格的 SSH / SFTP 终端工具。多标签与分屏、SFTP 断点续传、JumpServer / H3C 堡垒机对接、
-          SSH 隧道、批量执行、命令补全与智能推荐、25 套主题。
+          SSH 隧道、批量执行、命令补全与智能推荐、10 套精选主题。
           会话数据存本地、整库 AES-256-GCM 加密,密码走系统 safeStorage,不联网。
         </p>
       </div>
       <div class="modal-actions">
         <button id="about-close" class="btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 新手引导向导(首次使用自动弹出;空态卡片可随时重开) ============ -->
+  <div id="onboarding-modal" class="modal hidden">
+    <div class="modal-card ob-card">
+      <h3>✦ Polaris 北极星<button id="ob-close-x" class="modal-x" title="关闭">✕</button></h3>
+      <div class="ob-steps">
+        <span class="ob-dot active" data-step="0"></span>
+        <span class="ob-dot" data-step="1"></span>
+        <span class="ob-dot" data-step="2"></span>
+      </div>
+
+      <!-- 步骤 0:欢迎 -->
+      <div class="ob-step" data-step="0">
+        <div class="ob-head">👋 欢迎使用 Polaris</div>
+        <p class="ob-desc">科幻风的 SSH / SFTP 终端：多标签与分屏、SFTP 断点续传、JumpServer / H3C 堡垒机、批量执行与命令推荐。</p>
+        <div class="ob-badges">
+          <span>🔐 本机 AES-256-GCM 加密</span>
+          <span>🛡 主机指纹校验</span>
+          <span>🌐 数据不出网</span>
+        </div>
+      </div>
+
+      <!-- 步骤 1:建立第一台主机 -->
+      <div class="ob-step hidden" data-step="1">
+        <div class="ob-head">🚀 建立你的第一台主机</div>
+        <p class="ob-desc">从下面任选一个入口，几秒钟连上你的服务器。</p>
+        <div class="ob-options">
+          <button id="ob-import-ssh" class="ob-opt" type="button"><b>🔑 导入 SSH 配置</b><span>直接读取 ~/.ssh/config</span></button>
+          <button id="ob-import-batch" class="ob-opt" type="button"><b>📥 批量导入</b><span>Excel / Xshell / iTerm2 / 加密备份</span></button>
+          <button id="ob-new-session" class="ob-opt" type="button"><b>➕ 新建会话</b><span>手动填主机 / 账号 / 密码</span></button>
+          <button id="ob-quick" class="ob-opt" type="button"><b>⚡ 快捷连接</b><span>user@host 临时直连，不保存</span></button>
+        </div>
+        <p class="ob-note">导入的密码 / 私钥口令不会还原，导入后需补填。</p>
+      </div>
+
+      <!-- 步骤 2:完成 -->
+      <div class="ob-step hidden" data-step="2">
+        <div class="ob-head">✅ 一切就绪</div>
+        <p class="ob-desc">左侧双击会话即可连接；「🛡 堡垒机」分组右键可创建 JumpServer / H3C 连接。空列表里的「🚀 查看新手引导」可随时重开本向导。</p>
+      </div>
+
+      <div class="modal-actions ob-actions">
+        <button id="ob-back" class="btn-ghost hidden" type="button">← 上一步</button>
+        <button id="ob-skip" class="btn-ghost" type="button">跳过</button>
+        <button id="ob-next" class="btn-primary" type="button">开始 →</button>
+        <button id="ob-finish" class="btn-primary hidden" type="button">开始使用</button>
       </div>
     </div>
   </div>
@@ -886,7 +939,7 @@
           <label class="field"><span>名称(可选)</span><input id="tunnel-name" placeholder="如:内网数据库" /></label>
         </div>
         <div id="tunnel-remote-row" class="field-row">
-          <label class="field"><span>远程主机</span><input id="tunnel-remotehost" placeholder="如 192.168.1.50" /></label>
+          <label class="field"><span>远程主机</span><input id="tunnel-remotehost" placeholder="如 内网主机地址" /></label>
           <label class="field"><span>远程端口</span><input id="tunnel-remoteport" type="number" value="3306" /></label>
         </div>
         <div class="modal-actions">
@@ -903,7 +956,7 @@
   <!-- ============ 堡垒机(H3C)配置:保存/管理常用地址 ============ -->
   <div id="bastion-cfg-modal" class="modal hidden">
     <div class="modal-card wide">
-      <h3>🌐 堡垒机配置(H3C 等)</h3>
+      <h3>🌐 堡垒机配置(H3C 等)<button id="bastion-cfg-x" class="modal-x" title="关闭">✕</button></h3>
       <p class="jms-hint dim">保存常用的堡垒机 Web 地址,方便切换;登录会话在浏览器里保持。</p>
       <div class="field-row">
         <label class="field"><span>类型</span>
@@ -915,7 +968,7 @@
         <label class="field"><span>名称</span><input id="bastion-cfg-name" placeholder="测试堡垒机" /></label>
       </div>
       <div class="field-row">
-        <label class="field"><span>Web 地址</span><input id="bastion-cfg-url" placeholder="https://10.204.240.4" /></label>
+        <label class="field"><span>Web 地址</span><input id="bastion-cfg-url" placeholder="https://h3c-bastion.example" /></label>
       </div>
       <div class="field-row">
         <label class="field"><span>账号(登录后自动填入)</span><input id="bastion-cfg-account" placeholder="用户名" autocomplete="off" /></label>
@@ -974,16 +1027,6 @@
   </div>
 
   <!-- ============ SFTP 远程文件编辑弹窗 ============ -->
-  <div id="edit-modal" class="modal hidden">
-    <div class="modal-card edit-card">
-      <h3>编辑远程文件 · <span id="edit-path" class="edit-path"></span></h3>
-      <textarea id="edit-content" rows="20" spellcheck="false" placeholder="(读取中…)"></textarea>
-      <div class="modal-actions">
-        <button id="edit-save" class="btn-primary">保存并上传</button>
-        <button id="edit-cancel" class="btn-ghost">取消</button>
-      </div>
-    </div>
-  </div>
 
   <!-- ============ 会话右键菜单(编辑 / 删除) ============ -->
   <div id="ctx-menu" class="ctx-menu hidden">

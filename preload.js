@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   exportSessions: (rows, password) => ipcRenderer.invoke('sessions:export', { rows, password }),
   importBackup: (buf, password) => ipcRenderer.invoke('sessions:importBackup', { buf, password }),
   importExternal: (files) => ipcRenderer.invoke('sessions:importExternal', { files }),
+  importSshConfig: () => ipcRenderer.invoke('sessions:importSshConfig'),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveTemplate: () => ipcRenderer.invoke('template:save'),
   pickKeyFile: () => ipcRenderer.invoke('pick:keyFile'),
@@ -58,33 +59,24 @@ contextBridge.exposeInMainWorld('api', {
   // keyboard-interactive 认证:主进程推提示 → 弹窗 → 应答
   onSshKbd: (cb) => ipcRenderer.on('ssh:kbd-interactive', (_e, sessionId, data) => cb(sessionId, data)),
   sshKbdRespond: (id, answers, cancelled) => ipcRenderer.send('ssh:kbd-respond', id, answers, cancelled),
+  // 主机指纹信任:用户在信任框选「信任并记住所有主机」→ 渲染层打开 autoTrustHostKey;
+  // 指纹写不进数据目录 → 渲染层提示「下次仍会询问」+ 具体文件路径
+  onTrustAll: (cb) => ipcRenderer.on('settings:trustAll', () => cb()),
+  onTrustPersistFail: (cb) => ipcRenderer.on('settings:trustPersistFail', (_e, id, where) => cb(id, where)),
 
-  // ---- 应用菜单事件(文件/视图/工具/帮助) ----
+  // ---- 应用菜单事件(文件/视图/工具/帮助/调试) ----
   onMenu: (cb) => {
     for (const ch of [
-      'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about',
+      'menu:new-session', 'menu:new-group', 'menu:import', 'menu:export', 'menu:toggle-panel', 'menu:settings', 'menu:about', 'menu:check-update',
       'menu:split-v', 'menu:split-h', 'menu:sftp', 'menu:tunnel', 'menu:batch', 'menu:quick',
       'menu:cmd', 'menu:record-toggle', 'menu:record-list', 'menu:log-open', 'menu:ai',
       'menu:connect', 'menu:disconnect', 'menu:lock', 'menu:jms',
+      'menu:debug-toggle', 'menu:debug-download', 'menu:debug-clear',
     ]) {
       ipcRenderer.on(ch, () => cb(ch));
     }
   },
 
-  // ---- SFTP 文件传输 ----
-  sftpList: (sessionId, remotePath) => ipcRenderer.invoke('sftp:list', { sessionId, remotePath }),
-  sftpHome: (sessionId) => ipcRenderer.invoke('sftp:home', { sessionId }),
-  sftpMkdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
-  sftpRmdir: (sessionId, remotePath) => ipcRenderer.invoke('sftp:rmdir', { sessionId, remotePath }),
-  sftpDelete: (sessionId, remotePath) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath }),
-  sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', { sessionId, from, to }),
-  sftpReadFile: (sessionId, remotePath) => ipcRenderer.invoke('sftp:readFile', { sessionId, remotePath }),
-  sftpWriteFile: (sessionId, remotePath, content) => ipcRenderer.invoke('sftp:writeFile', { sessionId, remotePath, content }),
-  sftpUpload: (sessionId, remoteDir, mode) => ipcRenderer.invoke('sftp:upload', { sessionId, remoteDir, mode }),
-  sftpUploadPaths: (sessionId, remoteDir, localPaths) => ipcRenderer.invoke('sftp:uploadPaths', { sessionId, remoteDir, localPaths }),
-  sftpDownload: (sessionId, remotePath) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath }),
-  // entries = [{ remotePath, isDir }] —— 支持文件+目录混合下载(目录递归)
-  sftpDownloadMany: (sessionId, entries) => ipcRenderer.invoke('sftp:downloadMany', { sessionId, entries }),
   addCmdHistory: (host, command) => ipcRenderer.invoke('cmd:add', host, command),
   listCmdHistory: () => ipcRenderer.invoke('cmd:list'),
   clearCmdHistoryDb: () => ipcRenderer.invoke('cmd:clear'),
@@ -97,14 +89,6 @@ contextBridge.exposeInMainWorld('api', {
   listArchiveFiles: () => ipcRenderer.invoke('cmd:listArchiveFiles'),
   downloadArchive: (filePath) => ipcRenderer.invoke('cmd:downloadArchive', filePath),
   deleteArchive: (archiveId, filePath) => ipcRenderer.invoke('cmd:deleteArchive', archiveId, filePath),
-  sftpBatchUpload: (sessions, remoteDir, localPaths) => ipcRenderer.invoke('sftp:batchUpload', { sessions, remoteDir, localPaths }),
-  sftpBatchDownload: (sessions, remotePath) => ipcRenderer.invoke('sftp:batchDownload', { sessions, remotePath }),
-  // 上传/下载进度事件(主进程推送,驱动进度条)
-  onSftpProgress: (cb) => ipcRenderer.on('sftp:progress', (_e, p) => cb(p)),
-  // 传输 job 完成/取消事件(仿 WinSCP:后台传输完成时刷新)
-  onSftpDone: (cb) => ipcRenderer.on('sftp:done', (_e, d) => cb(d)),
-  // 取消某个传输 job
-  sftpCancel: (jobId) => ipcRenderer.invoke('sftp:cancel', jobId),
 
   // ---- 批量执行结果面板 ----
   batchExec: (data) => ipcRenderer.invoke('batch:exec', data),
@@ -169,8 +153,22 @@ contextBridge.exposeInMainWorld('api', {
   copyText: (text) => clipboard.writeText(text),
   readClipboard: () => clipboard.readText(),
 
+  // ---- 用 WinSCP 打开 SFTP 会话(Windows 可选:本机装了 WinSCP 才可用) ----
+  h3cClientDetect: () => ipcRenderer.invoke('h3cClient:detect'), // H3C AccessClient(accessclient://)是否已装
+  winScpDetect: () => ipcRenderer.invoke('winScp:detect'),
+  winScpOpen: (payload) => ipcRenderer.invoke('winScp:open', payload),
+
   // ---- 全量日志 ----
   appAbout: () => ipcRenderer.invoke('app:about'),
+  // 检查更新(手动):查 GitHub Releases 最新版本;openRelease 只允许打开本项目 Release
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  openRelease: (url) => ipcRenderer.invoke('app:openRelease', url),
+  // 通用外部链接(仅 http/https;堡垒机「在系统浏览器打开」用)
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  // 自动下载更新(仅 Windows 安装版):下载进度经 update:status 事件推送
+  downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_e, d) => cb(d)),
   appLogDump: () => ipcRenderer.invoke('app:log-dump'),
   appLogDlog: (lines) => ipcRenderer.send('app:log-dlog', lines),
 

@@ -1,7 +1,7 @@
 const { freePort, killTree, guardTimeout, evaluate } = require('./test-helper');
 // 验证:堡垒机资产轮询只在 H3C(/shterm)站点运行,连接 JMS 后不再频繁刷新
-//   ① webview = JMS 站点(http://192.168.1.250/ui/) → pollBastionAssets 提前返回,不执行 executeJavaScript
-//   ② webview = H3C 站点(https://10.204.240.4/shterm/login) → pollBastionAssets 正常执行
+//   ① webview = JMS 站点(http://jms.example/ui/) → pollBastionAssets 提前返回,不执行 executeJavaScript
+//   ② webview = H3C 站点(https://h3c-bastion.example/shterm/login) → pollBastionAssets 正常执行
 //   ③ triggerBastionFullFetch 对 JMS 站点也提前返回(不拉取、不改状态栏)
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
@@ -77,7 +77,7 @@ async function main() {
       if (origGetURL) wv.getURL = () => mockUrl;
 
       // ① JMS 站点 → poll 提前返回(execCalls 应 0)
-      mockUrl = 'http://192.168.1.250/ui/';
+      mockUrl = 'http://jms.example/ui/';
       execCalls = 0;
       pollBastionAssets();
       await new Promise((r) => setTimeout(r, 100));
@@ -85,7 +85,7 @@ async function main() {
       const jmsAllFetched = state.bastionAllFetched;
 
       // ② H3C 站点 → poll 正常执行(execCalls 应 1)
-      mockUrl = 'https://10.204.240.4/shterm/login';
+      mockUrl = 'https://h3c-bastion.example/shterm/login';
       execCalls = 0;
       state.bastionAllFetched = false;
       pollBastionAssets();
@@ -93,7 +93,7 @@ async function main() {
       const h3cPollExec = execCalls;
 
       // ③ triggerBastionFullFetch 对 JMS 提前返回
-      mockUrl = 'http://192.168.1.250/ui/';
+      mockUrl = 'http://jms.example/ui/';
       execCalls = 0;
       const stBefore = document.querySelector('.status-bar') ? document.querySelector('.status-bar').textContent : '';
       triggerBastionFullFetch();
