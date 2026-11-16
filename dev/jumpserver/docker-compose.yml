@@ -1,0 +1,225 @@
+# Polaris 开发/测试用 JumpServer（社区版 v4）—— Docker Desktop 单机编排
+#
+# 目的：给 Polaris 的 JumpServer 对接链路（登录 / 拉资产 / KoKo 网关 SSH / SFTP）
+#       提供一个可复现的真机环境，替代只能验证协议形状的 mock。
+#
+# 用法：node dev/jumpserver/setup.mjs            # 首次安装 + 起服务 + 建种子数据
+#       node dev/jumpserver/setup.mjs --reset    # 清空数据重装
+#       docker compose -f dev/jumpserver/docker-compose.yml ps
+#
+# 组件取自官方 installer（jumpserver/installer）的 compose/*.yml，去掉 XPack 专属
+# 组件（magnus/razor/nec/video-worker），把 CONFIG_DIR/VOLUME_DIR 换成仓库内相对路径。
+name: polaris-jms
+
+networks:
+  net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DOCKER_SUBNET:-192.168.250.0/24}
+
+services:
+  postgresql:
+    image: ${DB_IMAGE:-postgres:16.15-bookworm}
+    container_name: jms_postgresql
+    hostname: jms_postgresql
+    restart: always
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      POSTGRES_DB: ${DB_NAME:-jumpserver}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?run setup.mjs to generate .env}
+    volumes:
+      - ./data/postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - net
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4.10-bookworm}
+    container_name: jms_redis
+    hostname: jms_redis
+    restart: always
+    # config.txt 里的 REDIS_PASSWORD 直接注入，避免再维护一份 .env 口令
+    command: ["sh", "-c", "exec redis-server /etc/redis.conf --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?run setup.mjs to generate .env}
+    volumes:
+      - ./data/redis:/data
+      - ./config/redis.conf:/etc/redis.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - net
+
+  core:
+    image: ${NAMESPACE:-jumpserver}/core:${VERSION:-v4.10.20-ce}
+    container_name: jms_core
+    hostname: jms_core
+    restart: always
+    command: start web
+    env_file:
+      - ./config/config.txt
+    environment:
+      TIME_ZONE: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./config/certs:/opt/jumpserver/data/certs
+      - ./data/core/data:/opt/jumpserver/data
+    healthcheck:
+      test: ["CMD-SHELL", "check http://localhost:8080/api/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - net
+
+  celery:
+    image: ${NAMESPACE:-jumpserver}/core:${VERSION:-v4.10.20-ce}
+    container_name: jms_celery
+    hostname: jms_celery
+    restart: always
+    command: start task
+    privileged: ${CELERY_PRIVILEGED:-true}
+    env_file:
+      - ./config/config.txt
+    environment:
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./config/certs:/opt/jumpserver/data/certs
+      - ./data/core/data:/opt/jumpserver/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash /opt/jumpserver/utils/check_celery.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      core:
+        condition: service_started
+    networks:
+      - net
+
+  koko:
+    image: ${NAMESPACE:-jumpserver}/koko:${VERSION:-v4.10.20-ce}
+    container_name: jms_koko
+    hostname: jms_koko
+    restart: always
+    privileged: ${KOKO_PRIVILEGED:-true}
+    env_file:
+      - ./config/config_safe.txt
+    environment:
+      WEB_PROXY_BIND_HOST: 0.0.0.0
+      WEB_PROXY_PORT: 5001
+      WEB_PROXY_ALLOWED_HOSTS: ${WEB_PROXY_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    ports:
+      - ${KOKO_SSH_PORT:-2222}:2222
+      - ${KOKO_WEB_PROXY_PORT:-5001}:5001
+    volumes:
+      - ./config/certs:/opt/koko/data/certs
+      - ./data/koko/data:/opt/koko/data
+    healthcheck:
+      test: ["CMD-SHELL", "check http://localhost:5000/koko/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      core:
+        condition: service_started
+    networks:
+      - net
+
+  chen:
+    image: ${NAMESPACE:-jumpserver}/chen:${VERSION:-v4.10.20-ce}
+    container_name: jms_chen
+    hostname: jms_chen
+    restart: always
+    env_file:
+      - ./config/config_safe.txt
+    volumes:
+      - ./data/chen/data:/opt/chen/data
+      - ./config/certs:/opt/chen/data/certs
+    healthcheck:
+      test: ["CMD-SHELL", "check http://localhost:8082/chen/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      core:
+        condition: service_started
+    networks:
+      - net
+
+  # 注意：v4.10 没有 kael 镜像（kael 从 v5 起引入），故 web 里 KAEL_ENABLED=0
+  web:
+    image: ${NAMESPACE:-jumpserver}/web:${VERSION:-v4.10.20-ce}
+    container_name: jms_web
+    hostname: jms_web
+    restart: always
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      HTTP_PORT: 80
+      USE_LB: ${USE_LB:-1}
+      USE_IPV6: 0
+      USE_XPACK: 0
+      GZIP: on
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-4096m}
+      CORE_ENABLED: 1
+      KOKO_ENABLED: 1
+      CHEN_ENABLED: 1
+      KAEL_ENABLED: 0
+      RAZOR_ENABLED: 0
+    ports:
+      - ${HTTP_PORT:-8080}:80
+    volumes:
+      - ./data/core/data:/opt/jumpserver/data
+      - ./data/nginx/logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD-SHELL", "check http://localhost:51980/web/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    depends_on:
+      core:
+        condition: service_started
+    networks:
+      - net
+
+  # 测试目标主机（可选）：被 JumpServer 纳管的真实 Linux，用于验证 SSH/SFTP 全链路
+  target:
+    image: ${TARGET_IMAGE:-linuxserver/openssh-server:latest}
+    container_name: jms_target
+    hostname: target
+    profiles: ["target"]
+    restart: always
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-Asia/Shanghai}
+      USER_NAME: ${TARGET_USER:-polaris}
+      SUDO_ACCESS: "true"
+      PASSWORD_ACCESS: "true"
+      USER_PASSWORD: ${TARGET_PASSWORD:?run setup.mjs to generate .env}
+    volumes:
+      - ./data/target/config:/config
+    networks:
+      - net

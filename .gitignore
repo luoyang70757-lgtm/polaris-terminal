@@ -63,3 +63,8 @@ polaris-logs-*.zip
 /虚拟机_*.csv
 /verify-shots/
 /list-*.png
+
+# JumpServer 本地开发环境生成物(setup.mjs 生成,含数据库/Redis 口令)
+/dev/jumpserver/.env
+/dev/jumpserver/config/
+/dev/jumpserver/volumes/

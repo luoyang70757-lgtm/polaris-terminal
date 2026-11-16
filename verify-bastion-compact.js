@@ -14,7 +14,8 @@
  *   ③ H3C 区块头不再重复 ⭐N
  *   ④ 没有站点时标签栏整条隐藏；工具栏只剩一行（高 < 60px）
  *   ⑤ 导航/缩放按钮不在可视区但仍在 DOM（脚本/快捷键仍可用）
- *   ⑥ 「⋯」菜单含 后退/前进/刷新/放大/缩小/重置缩放
+ *   ⑥ 「⋯」菜单含 堡垒机配置/后退/前进/刷新/放大/缩小/重置缩放
+ *   ⑦ 工具栏按钮收敛:⚙ 收进菜单、不再有与地址栏重复的「当前页」行
  *
  * 运行：node verify-bastion-compact.js（需 9482 空闲）
  */
@@ -148,6 +149,10 @@ const head = (t) => console.log(`\n— ${t} —`);
         backInDom: !!document.getElementById('bastion-back'),
         zoomInDom: !!document.getElementById('bastion-zoom-label'),
         emptyIcon: (document.querySelector('#bastion-empty .be-icon') || {}).textContent,
+        cfgHidden: document.getElementById('bastion-cfg').offsetParent === null,
+        cfgInDom: !!document.getElementById('bastion-cfg'),
+        visibleBtns: [...bar.querySelectorAll('button')].filter((b) => b.offsetParent !== null).length,
+        currentText: (document.getElementById('bastion-current') || {}).textContent || '',
       });
     })()`);
     const P = JSON.parse(panel);
@@ -157,6 +162,10 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('工具栏仍是多行', JSON.stringify({ h: P.barH, rows: P.barRows }));
     if (P.navHidden && P.zoomHidden && P.backInDom && P.zoomInDom) ok('导航/缩放按钮不可见但仍在 DOM(脚本与快捷键可调)');
     else bad('导航/缩放按钮状态异常', panel);
+    if (P.cfgHidden && P.cfgInDom) ok('⚙ 配置按钮收进菜单(仍在 DOM,「编辑连接」等流程可直接调用)');
+    else bad('⚙ 配置按钮状态异常', panel);
+    if (P.visibleBtns <= 4) ok(`工具栏可见按钮只剩 ${P.visibleBtns} 个:站点下拉 / 打开 / ⋯ / 最小化 / 关闭`);
+    else bad('工具栏按钮仍然偏多', P.visibleBtns);
     if (P.emptyIcon === '🌐') ok('空态图标保留(🌐)但改为内联小图标');
     else bad('空态图标异常', P.emptyIcon);
 
@@ -170,7 +179,7 @@ const head = (t) => console.log(`\n— ${t} —`);
       return JSON.stringify({ vis, txt });
     })()`);
     const M = JSON.parse(menu);
-    const need = ['后退', '前进', '刷新页面', '放大', '缩小', '重置缩放'];
+    const need = ['堡垒机配置', '后退', '前进', '刷新页面', '放大', '缩小', '重置缩放'];
     const miss = need.filter((k) => !M.txt.includes(k));
     if (M.vis && !miss.length) ok(`「⋯」菜单含 ${need.join(' / ')}`);
     else bad('「⋯」菜单缺少项', JSON.stringify({ miss, txt: M.txt.slice(0, 200) }));

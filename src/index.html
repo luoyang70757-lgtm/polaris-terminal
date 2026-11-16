@@ -182,7 +182,8 @@
             <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
           </span>
           <button id="bastion-more" class="btn-mini" title="更多操作(系统浏览器打开/复制地址/重置缩放/清除历史)">⋯</button>
-          <button id="bastion-cfg" class="btn-mini" title="堡垒机配置:保存/管理常用地址">⚙</button>
+          <!-- ⚙ 已收进「⋯」菜单(保留 DOM/ID:回归脚本与「编辑连接」流程仍可直接点) -->
+          <button id="bastion-cfg" class="btn-mini bastion-hidden-tools" title="堡垒机配置:保存/管理常用地址" aria-hidden="true">⚙</button>
           <button id="bastion-min" class="btn-mini" title="最小化到会话列表">—</button>
           <button id="bastion-close" class="btn-mini" title="关闭堡垒机面板">✕</button>
           <!-- 保留 DOM/ID：清除历史入口已收进「⋯」菜单，旧回归脚本仍可直接 click -->

@@ -7855,7 +7855,9 @@ function loadBastion(url) {
   bastionFetchFailNotified = false;
   hideBastionEmpty();
   els.bastionLoading.classList.remove('hidden');
-  els.bastionCurrent.textContent = url;
+  // 不再把请求地址写进「当前页」行:那与上面的地址栏完全重复,白白占掉一行高度。
+  // 只有 webview 真的跳转到**别的**地址(如登录后重定向)时才显示,才真正有信息量。
+  els.bastionCurrent.textContent = '';
   els.bastionWebview.src = url;
   applyBastionZoom(); // 新页面同样套用已保存的缩放
 }
@@ -7983,7 +7985,12 @@ function initBastionWebview() {
     bastionPageStableTs = Date.now(); // 停止加载 → 记稳定起点(2s 内不注入/轮询)
     els.bastionLoading.classList.add('hidden');
     hideBastionEmpty();
-    try { if (wv.getURL && wv.getURL()) els.bastionCurrent.textContent = wv.getURL(); } catch { /* ignore */ }
+    try {
+      const real = (wv.getURL && wv.getURL()) || '';
+      const typed = String(els.bastionUrl.value || '').trim();
+      const same = real && typed && real.replace(/\/+$/, '') === typed.replace(/\/+$/, '');
+      els.bastionCurrent.textContent = (real && !same) ? real : ''; // 与地址栏相同就不重复显示
+    } catch { /* ignore */ }
     // 页面加载完:注入焦点桥(资产已原生拉取,不再注入资产捕获钩子)+ 自动适配面板宽度。
     // 登录页会连续跳转(每次 did-stop-loading 都触发注入),而导航切换瞬间 executeJavaScript
     // 帧层面必失败 → debounce:最后一次停止加载 800ms 且未再导航才注入,消除启动期错误爆发。
@@ -10532,6 +10539,7 @@ els.bastionMore.addEventListener('click', () => {
       setStatus('已复制堡垒机地址', 'var(--green)');
     } },
     { separator: true },
+    { label: '⚙ 堡垒机配置…', action: () => els.bastionCfg.click() },
     { label: '← 后退', action: () => els.bastionBack.click() },
     { label: '→ 前进', action: () => els.bastionForward.click() },
     { label: '↻ 刷新页面', action: () => els.bastionReload.click() },
