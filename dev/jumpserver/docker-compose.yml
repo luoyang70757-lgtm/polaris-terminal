@@ -9,7 +9,7 @@
 #
 # 组件取自官方 installer（jumpserver/installer）的 compose/*.yml，去掉 XPack 专属
 # 组件（magnus/razor/nec/video-worker），把 CONFIG_DIR/VOLUME_DIR 换成仓库内相对路径。
-name: polaris-jms
+name: jumpserver
 
 networks:
   net:
@@ -185,6 +185,8 @@ services:
       CORE_ENABLED: 1
       KOKO_ENABLED: 1
       CHEN_ENABLED: 1
+      # 不跑 lion（RDP/VNC 连接器）：社区版开发只测 SSH/SFTP，省 300MB+ 内存
+      LION_ENABLED: 0
       KAEL_ENABLED: 0
       RAZOR_ENABLED: 0
     ports:
@@ -221,5 +223,12 @@ services:
       USER_PASSWORD: ${TARGET_PASSWORD:?run setup.mjs to generate .env}
     volumes:
       - ./data/target/config:/config
+    # 多台资产都指向这同一台机器（地址目标机）——用三个网络别名区分：
+    # JumpServer 的复合用户名里带「资产地址」，三台资产如果都用 `target`，
+    # KoKo 会以为有多台主机命中而弹出「选择其中一个资产登录 Opt>」，直连就断了。
     networks:
-      - net
+      net:
+        aliases:
+          - target-01
+          - target-02
+          - target-03

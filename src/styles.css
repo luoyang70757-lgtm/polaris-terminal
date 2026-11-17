@@ -347,7 +347,6 @@ select.select:focus { border-color: var(--accent); }
   letter-spacing: 0.5px;
 }
 .asset-group-head.top-group:hover { background: rgba(255, 255, 255, 0.08); }
-.asset-group-head.top-group .asset-group-caret { font-size: var(--fs-xs); }
 /* 顶级分组下的内容容器:左侧缩进,体现"分组 > 子项"的层级 */
 .top-group-container {
   margin-left: 10px;
@@ -418,7 +417,18 @@ input[type="checkbox"] {
 }
 .batch-bar .btn-mini { font-size: var(--fs-md); }
 .card-check { position: absolute; top: 6px; left: 6px; accent-color: var(--accent); }
-.asset-group-caret { font-size: var(--fs-2xs); width: 10px; flex-shrink: 0; }
+.asset-group-caret {
+  font-size: var(--fs-base);    /* 折叠三角要一眼看得见(之前 9px 缩小到几乎透明) */
+  width: 12px;
+  flex-shrink: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);         /* 亮色三角:暗背景/灰分组名下也不会看不见 */
+  border-radius: 3px;
+}
+.asset-group-caret:hover { background: rgba(255, 255, 255, 0.14); }
 .asset-group-name { font-weight: 600; letter-spacing: 0.3px; }
 .asset-group-count { color: var(--text-dim); }
 .list-head { cursor: pointer; } /* 列表视图分组头:同样可折叠/点选/右键管理/拖拽投放 */
@@ -970,15 +980,23 @@ input[type="checkbox"] {
 .bastion-saved-assets .asset-item { margin: 2px 0; }
 /* 资产按主机分组展示的小标题 */
 .bastion-asset-group-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--fs-sm);
   color: var(--text-dim);
   font-weight: 600;
-  padding: 4px 0 2px;
+  padding: 4px 6px 2px;
   margin-top: 4px;
   letter-spacing: 0.3px;
   width: max-content;
   max-width: 100%;
+  cursor: pointer;       /* 可折叠:点三角或整行 */
+  user-select: none;
+  border-radius: 4px;
 }
+.bastion-asset-group-head:hover { background: var(--bg-hover); color: var(--text); }
+.bastion-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bastion-hidden-tools { display: none !important; }
 .bastion-bar {
   display: flex; gap: 4px; align-items: center; padding: 6px 6px;
@@ -986,7 +1004,7 @@ input[type="checkbox"] {
 }
 .bastion-bar .btn-mini { white-space: nowrap; }
 .bastion-title { font-size: var(--fs-md); white-space: nowrap; }
-.bastion-server-select { max-width: 120px; font-size: var(--fs-md); padding: 4px 6px; background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
+.bastion-server-select { flex: 0 1 auto; min-width: 84px; max-width: 120px; font-size: var(--fs-md); padding: 4px 6px; background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 /* 导航按钮组:后退/前进/刷新 包在一起,视觉上是一组 */
 .bastion-nav {
   display: inline-flex; gap: 2px; align-items: center;
@@ -995,7 +1013,7 @@ input[type="checkbox"] {
 .bastion-nav .btn-mini { padding: 1px 4px; font-size: var(--fs-base); }
 /* 地址栏组:输入框 + 「打开」按钮连成一体 */
 .bastion-addr {
-  flex: 1 1 190px; min-width: 90px; display: flex; align-items: center;
+  flex: 1 1 140px; min-width: 80px; display: flex; align-items: center;
   background: var(--input-bg, #1a1b1e); border: 1px solid var(--border); border-radius: 5px;
   overflow: hidden;
 }
@@ -1008,14 +1026,14 @@ input[type="checkbox"] {
   display: inline-flex; gap: 2px; align-items: center; flex-shrink: 0;
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 3px;
 }
-.bastion-zoom .btn-mini { padding: 1px 4px; font-size: var(--fs-md); }
-.bastion-zoom-label { min-width: 38px; text-align: center; font-size: var(--fs-sm); color: var(--text-dim); }
+.bastion-zoom .btn-mini { padding: 1px 3px; font-size: var(--fs-md); }
+.bastion-zoom-label { min-width: 34px; text-align: center; font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* ⚙ 配置按钮比同栏 12px 按钮稍大,视觉协调;⚡/🔗 等小图标按钮保持原字号 */
 .bastion-bar #bastion-cfg { font-size: 15px; padding: 2px 6px; }
-.bastion-current-row { padding: 3px 8px 4px; border-bottom: 1px solid var(--border); }
-/* 没有页面标题时整行隐藏，避免空行占高度 */
+/* 当前页信息行:只在 webview 真跳转到别的地址(登录后重定向)时才有内容 */
+.bastion-current-row { display: flex; gap: 6px; align-items: center; padding: 3px 8px 4px; border-bottom: 1px solid var(--border); }
 .bastion-current-row:has(.bastion-current:empty) { display: none; }
-.bastion-current { font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.bastion-current { flex: 1 1 auto; min-width: 0; font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bastion-body { flex: 1; display: flex; flex-direction: row; min-height: 0; background: var(--bg-panel-2, #1a1b1e); }
 .bastion-web-wrap { flex: 1; position: relative; min-width: 0; }
 .bastion-empty {

@@ -159,7 +159,9 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('按钮字号变了', JSON.stringify({ sfEntry: d.sfEntryFs, toolbar: d.toolbarBtnFs }));
     if (!d.sfEntryWrapped && d.sfEntryFs > 0) ok('WinSCP 入口按钮单行(⌘⇧S 提示不折行)');
     else bad('WinSCP 入口按钮折行/未渲染', JSON.stringify({ h: d.sfEntryWrapped, fs: d.sfEntryFs }));
-    if (d.caretFs === 9) ok('折叠三角 9px(与旧版一致)');
+    // v1.0.27:折叠三角从 9px(--fs-2xs)改成 13px(--fs-base)+ 强调色 —— 用户反馈「看不见三角」,
+    // 9px 的 ▶/▼ 在暗背景上几乎糊成一个点。这里锁住新档位,防止被后续样式改动缩回去。
+    if (d.caretFs === 13) ok('折叠三角 13px(放大后暗背景也能看见)');
     else bad('三角字号变了', d.caretFs);
     if (d.footerFs === 11) ok('底部提示 11px(与旧版一致)');
     else bad('底部提示字号变了', d.footerFs);

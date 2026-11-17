@@ -1,6 +1,6 @@
 {
   "name": "polaris-terminal",
-  "version": "1.0.25",
+  "version": "1.0.28",
   "description": "Polaris(北极星)· 科幻风 SSH/SFTP 终端工具",
   "main": "main.js",
   "scripts": {
@@ -9,7 +9,9 @@
     "mock": "node mock/mock-server.js",
     "dev": "electron . --dev",
     "clean": "node clean-release.js",
-    "dist": "npm run clean && electron-builder"
+    "dist": "npm run clean && electron-builder",
+    "dev:jms": "node dev/jumpserver/polaris-dev.mjs",
+    "dev:jms:smoke": "node dev/jumpserver/smoke-bastion.mjs"
   },
   "author": "jms",
   "license": "MIT",

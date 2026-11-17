@@ -175,11 +175,11 @@
             <input id="bastion-url" placeholder="堡垒机 Web 地址,如 https://h3c-bastion.example" />
             <button id="bastion-go" class="btn-mini" title="打开堡垒机">打开</button>
           </div>
-          <!-- 缩放已收进「⋯」菜单(保留 DOM/ID:双击百分比重置的回归脚本仍可用) -->
-          <span class="bastion-zoom bastion-hidden-tools" title="画面缩放(双击百分比恢复 100%)" aria-hidden="true">
-            <button id="bastion-zoom-out" class="btn-mini" title="缩小画面">A−</button>
+          <!-- 画面缩放常显在「打开」后面(宿主 DOM;不能做成浮在 webview 上的角标——guest view 会盖住) -->
+          <span class="bastion-zoom" title="画面缩放:A−/A+、Ctrl+滚轮、Ctrl+加号/减号均可;双击百分比恢复 100%">
+            <button id="bastion-zoom-out" class="btn-mini" title="缩小画面(Ctrl+滚轮 / Ctrl+减号)">A−</button>
             <span id="bastion-zoom-label" class="bastion-zoom-label">100%</span>
-            <button id="bastion-zoom-in" class="btn-mini" title="放大画面">A+</button>
+            <button id="bastion-zoom-in" class="btn-mini" title="放大画面(Ctrl+滚轮 / Ctrl+加号)">A+</button>
           </span>
           <button id="bastion-more" class="btn-mini" title="更多操作(系统浏览器打开/复制地址/重置缩放/清除历史)">⋯</button>
           <!-- ⚙ 已收进「⋯」菜单(保留 DOM/ID:回归脚本与「编辑连接」流程仍可直接点) -->
@@ -189,7 +189,9 @@
           <!-- 保留 DOM/ID：清除历史入口已收进「⋯」菜单，旧回归脚本仍可直接 click -->
           <button id="bastion-clear" class="btn-mini hidden" title="清除堡垒机浏览器历史记录(浏览历史/登录态/表单,下次需重新登录)">🧹 清除历史</button>
         </div>
-        <div class="bastion-current-row"><span id="bastion-current" class="bastion-current dim"></span></div>
+        <div class="bastion-current-row">
+          <span id="bastion-current" class="bastion-current dim"></span>
+        </div>
         <div class="bastion-body">
           <div class="bastion-web-wrap">
             <div id="bastion-empty" class="bastion-empty">

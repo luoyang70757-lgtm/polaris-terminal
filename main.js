@@ -129,6 +129,7 @@ var h3cApi = __req('./lib/h3c-api', 'h3c-api'); // H3C shterm 原生客户端(se
 var appLog = __req('./lib/app-log', 'app-log');
 var fsUtil = __req('./lib/fs-util', 'fs-util'); // 原子写(Windows 杀软占用重试)
 var connectOpts = __req('./lib/connect-opts', 'connect-opts'); // 共享:makeHostVerifier/resolvePrivateKey/withHostVerify
+var jumpHost = __req('./lib/jump-host', 'jump-host'); // 一次性连接(批量执行/AI 命令/系统探测)的跳板隧道
 var sessionGroups = __req('./lib/session-groups', 'session-groups'); // 分组/命令历史归档/快速命令/导入模板 IPC
 var sessionIpc = __req('./lib/session-ipc', 'session-ipc'); // 会话管理/导入导出/系统探测 IPC
 __mark('模块加载完成');
@@ -199,7 +200,25 @@ app.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
 // 这里只给 webview 类型的 WebContents 放宽上限,主窗口不动(主窗口若有泄漏仍会报出来)。
 app.on('web-contents-created', (_e, contents) => {
   try {
-    if (contents.getType() === 'webview') contents.setMaxListeners(50);
+    if (contents.getType() === 'webview') {
+      contents.setMaxListeners(50);
+      // 堡垒机网页里缩放(Ctrl+滚轮 / 触控板捏合):webview 拿到焦点时渲染层收不到这些事件,
+      // 由主进程统一转给渲染层,与 A−/A+ 共用同一份 state(否则网页和工具栏百分比会不一致)。
+      const sendZoom = (dir) => { try { broadcast('bastion:zoom', dir); } catch { /* ignore */ } };
+      contents.on('zoom-changed', (_ev, direction) => sendZoom(direction === 'out' ? -1 : 1));
+      contents.on('before-input-event', (ev, input) => {
+        if (input.type !== 'keyDown' || input.alt) return;
+        if (!input.control && !input.meta) return;
+        const k = input.key;
+        let dir = 0;
+        if (k === '+' || k === '=') dir = 1;
+        else if (k === '-' || k === '_') dir = -1;
+        else if (k === '0') dir = 'reset';
+        else return;
+        ev.preventDefault();
+        sendZoom(dir);
+      });
+    }
   } catch { /* ignore */ }
 });
 
@@ -743,9 +762,57 @@ ipcMain.handle('probe:ports', async (_e, { host, ports, timeoutMs }) => {
 // ---------- IPC:测试连接(会话弹窗「测试连接」按钮) ----------
 // 协议感知,比纯 TCP 探测严格:端口 accept 但没服务(如 NAT/防火墙转发后静默断开)会误报成功,
 // 而真实 SSH 连接会 "Connection lost before handshake"。这里 SSH 必须收到 SSH banner、Telnet 等到任意数据才算可达。
-ipcMain.handle('test:connect', async (_e, { host, port, protocol, timeoutMs }) => {
-  const t = timeoutMs || 3000;
-  const wantSsh = (protocol || 'ssh') !== 'telnet';
+ipcMain.handle('test:connect', async (_e, spec) => {
+  const host = spec && spec.host;
+  const port = spec && spec.port;
+  const t = (spec && spec.timeoutMs) || 3000;
+  const wantSsh = ((spec && spec.protocol) || 'ssh') !== 'telnet';
+  const jump = spec && spec.jump && spec.jump.host ? spec.jump : null;
+  // 配了跳板机:目标只在内网可达 → 直接 net.connect 必然失败(会误报"端口未开放"),
+  // 先开跳板隧道,再在同一条隧道上看 banner。
+  // 隧道是 ssh2 的 duplex,没有 socket.setTimeout,超时/半截 banner 只能自己计时。
+  if (jump) {
+    let opened;
+    try {
+      opened = await jumpHost.openTunnel(jump, {
+        host, port,
+        username: (spec && spec.username) || '',
+        verifyHostKey: spec && spec.verifyHostKey,
+        autoTrustHostKey: spec && spec.autoTrustHostKey === true,
+      }, { timeoutMs: Math.max(t, 8000) });
+    } catch (e) {
+      return { ok: false, message: `跳板机连接失败: ${(e && e.message) || '未知错误'}` };
+    }
+    return new Promise((resolve) => {
+      const { conn, stream } = opened;
+      let done = false, buf = '', dataSeen = false, partialTimer = null, timer = null;
+      const finish = (ok, message) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (partialTimer) clearTimeout(partialTimer);
+        try { stream.destroy(); } catch { /* ignore */ }
+        try { conn.end(); } catch { /* ignore */ }
+        resolve({ ok, message });
+      };
+      timer = setTimeout(() => finish(false, wantSsh
+        ? (dataSeen ? '端口可达,但不是 SSH 服务(未收到 SSH banner)' : '端口可达但无响应,可能不是 SSH 服务')
+        : '连接后无响应'), t);
+      stream.on('data', (d) => {
+        buf += d.toString('utf8', 0, 64);
+        dataSeen = true;
+        if (wantSsh) {
+          if (buf.indexOf('SSH-') >= 0) return finish(true, 'SSH 服务正常(经跳板)');
+          // banner 可能分片:再等 500ms 排除半截,然后判"不是 SSH"
+          if (!partialTimer) partialTimer = setTimeout(() => finish(false, '端口可达,但不是 SSH 服务(未收到 SSH banner)'), 500);
+          return;
+        }
+        return finish(true, '服务可达(经跳板)');
+      });
+      stream.on('close', () => finish(false, '连接被对端关闭(未完成握手)'));
+      stream.on('error', (e) => finish(false, `连接失败(${(e && e.code) || (e && e.message) || '未知'})`));
+    });
+  }
   return new Promise((resolve) => {
     const sock = net.connect({ host, port });
     let done = false; let buf = ''; let dataSeen = false;
@@ -843,7 +910,8 @@ async function runAiCommand(hostList, cmd, executed) {
   const outputs = [];
   for (const item of hostList) {
     try {
-      const res = await sshClient.execCommand(item.hostOpts, cmd);
+      // 配了跳板机的会话:AI 命令同样经跳板执行(与手动终端走同一条路径),用完回收跳板连接
+      const res = await jumpHost.withJump(item.hostOpts, (o) => sshClient.execCommand(o, cmd));
       const out = (res.stdout || '') + (res.stderr ? `\n[stderr] ${res.stderr}` : '') || '(无输出)';
       const hostLabel = item.hostOpts.host;
       outputs.push(`[${hostLabel}] ${out}`);
@@ -877,8 +945,9 @@ ipcMain.handle('batch:exec', async (_e, { hosts, command }) => {
         const opts = connectOpts.withHostVerify(connectOpts.resolvePrivateKey({
           host: h.host, port: h.port || 22, username: h.username, password: h.password,
           privateKey: h.privateKey, passphrase: h.passphrase,
+          jump: (h && h.jump) || null, // 目标只在内网可达时,这条一次性连接也要经跳板
         }));
-        const res = await sshClient.execCommand(opts, cmd);
+        const res = await jumpHost.withJump(opts, (o) => sshClient.execCommand(o, cmd));
         const out = ((res.stdout || '') + (res.stderr ? `\n[stderr] ${res.stderr}` : '')).trim() || '(无输出)';
         results.push({ ok: true, name: h.name || h.host, host: h.host, code: res.code, output: out.slice(0, 4000), durationMs: Date.now() - t0 });
       } catch (err) {
@@ -923,7 +992,7 @@ ipcMain.handle('ai:chat', async (_e, { apiKey, url, model, format, messages, hos
   // 多主机:每项含连接信息 + 对应终端的 sessionId(命令会同步到这些终端)
   const hostList = (Array.isArray(hosts) ? hosts : []).map((h) => ({
     hostOpts: h && h.host
-      ? connectOpts.withHostVerify(connectOpts.resolvePrivateKey({ host: h.host, port: h.port || 22, username: h.username, password: h.password, privateKey: h.privateKey, passphrase: h.passphrase }))
+      ? connectOpts.withHostVerify(connectOpts.resolvePrivateKey({ host: h.host, port: h.port || 22, username: h.username, password: h.password, privateKey: h.privateKey, passphrase: h.passphrase, jump: (h && h.jump) || null }))
       : null,
     sessionId: (h && h.sessionId) || null,
   })).filter((x) => x.hostOpts);
@@ -1786,6 +1855,20 @@ ipcMain.handle('winScp:open', async (_e, payload) => {
     }
     // 逃生阀:用户可自己追加/覆盖 WinSCP 会话开关(试错不用等新版本),
     // 例:set POLARIS_WINSCP_RAWSETTINGS=SFTPRealPath=on;RemoteDirectory=/tmp
+    // 跳板机会话必须先交 WinSCP 自己的 SSH 隧道:URL 里的 host 是内网目标,
+    // 从本机根本连不上(不接隧道就是"点了没反应 / 连接超时")。
+    // 隧道开关名与明文密码键(TunnelPasswordPlain 等)以 WinSCP 6.7.1 实测为准。
+    let tunnel = null;
+    if (p.jump && winScp.tunnelEnabled(process.env)) {
+      tunnel = winScp.tunnelSettings(p.jump, {
+        defaultUser: p.username,
+        hostKey: process.env.POLARIS_WINSCP_TUNNEL_HOSTKEY, // 在意指纹的用户可钉死(默认 * = 首次信任)
+      });
+      if (tunnel && tunnel.error) return { ok: false, error: '跳板机隧道不可用: ' + tunnel.error };
+      if (tunnel) Object.assign(rawSettings, tunnel.rawSettings); // 环境变量逃生阀仍可覆盖
+    } else if (p.jump) {
+      console.log('[WINSCP] 跳板机隧道已被 POLARIS_WINSCP_TUNNEL=off 关闭,将直连目标(内网主机多半连不上)');
+    }
     Object.assign(rawSettings, winScp.parseRawSettings(process.env.POLARIS_WINSCP_RAWSETTINGS));
     // 知道落在哪个目录(标签的 SFTP 路径 / 跟踪到的 cd 目录)就把起始目录也交过去,
     // 免得 WinSCP 自己猜(猜错会让用户看到 "目录不存在" 或落到错误位置)。
@@ -1815,8 +1898,8 @@ ipcMain.handle('winScp:open', async (_e, payload) => {
       try { console.log(`[WINSCP] 拉起失败: ${err.message} | ${show}`); } catch { /* ignore */ }
     });
     child.unref();
-    try { console.log(`[WINSCP] 已拉起(协议=${scheme}): ${show} | rawsettings=${JSON.stringify(rawSettings)}${logPath ? ` | 日志=${logPath}(含口令,勿外发)` : ' | 日志=关闭(要开日志设 POLARIS_WINSCP_LOG=1)'}`); } catch { /* ignore */ }
-    return { ok: true, command: show };
+    try { console.log(`[WINSCP] 已拉起(协议=${scheme}${tunnel ? `, 跳板=${tunnel.jump.host}:${tunnel.jump.port}${tunnel.usedKey ? '(私钥)' : ''}` : ''}): ${show} | rawsettings=${JSON.stringify(winScp.redactRawSettings(rawSettings))}${logPath ? ` | 日志=${logPath}(含口令,勿外发)` : ' | 日志=关闭(要开日志设 POLARIS_WINSCP_LOG=1)'}`); } catch { /* ignore */ }
+    return { ok: true, command: show, tunneled: !!tunnel };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -2437,7 +2520,9 @@ app.whenReady().then(() => {
   setImmediate(() => {
     __mark('后台维护开始');
     migrateUserData(); // 改名后把旧目录的设置/AI 配置迁过来
-    if (DEV_MODE) {
+    // POLARIS_NO_MOCK=1:用真环境(本地 docker JumpServer)联调时不启 mock。
+    // mock 默认占 8080/2222,正好和 jms_web/jms_koko 撞端口。
+    if (DEV_MODE && process.env.POLARIS_NO_MOCK !== '1') {
       try {
         require('./mock/mock-server').start();
       } catch (err) {

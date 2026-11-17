@@ -145,13 +145,23 @@ const head = (t) => console.log(`\n— ${t} —`);
         barH: Math.round(bar.getBoundingClientRect().height),
         barRows,
         navHidden: document.getElementById('bastion-back').offsetParent === null,
-        zoomHidden: document.getElementById('bastion-zoom-label').offsetParent === null,
+        zoomInBar: bar.contains(document.getElementById('bastion-zoom-label')),
+        zoomVisible: document.getElementById('bastion-zoom-label').offsetParent !== null,
+        // 缩放组必须排在整个地址栏(含「打开」)的后面
+        zoomAfterGo: (function(){
+          try {
+            const g = document.getElementById('bastion-go').getBoundingClientRect();
+            const z = document.getElementById('bastion-zoom-out').getBoundingClientRect();
+            return z.left >= g.right - 2;
+          } catch (e) { return false; }
+        })(),
         backInDom: !!document.getElementById('bastion-back'),
         zoomInDom: !!document.getElementById('bastion-zoom-label'),
         emptyIcon: (document.querySelector('#bastion-empty .be-icon') || {}).textContent,
         cfgHidden: document.getElementById('bastion-cfg').offsetParent === null,
         cfgInDom: !!document.getElementById('bastion-cfg'),
         visibleBtns: [...bar.querySelectorAll('button')].filter((b) => b.offsetParent !== null).length,
+        visibleIds: [...bar.querySelectorAll('button')].filter((b) => b.offsetParent !== null).map((b) => b.id).sort(),
         currentText: (document.getElementById('bastion-current') || {}).textContent || '',
       });
     })()`);
@@ -160,12 +170,16 @@ const head = (t) => console.log(`\n— ${t} —`);
     else bad('空站点仍占一条标签栏', panel);
     if (P.barH < 60 && P.barRows <= 1) ok(`工具栏收成一行(高 ${P.barH}px)`);
     else bad('工具栏仍是多行', JSON.stringify({ h: P.barH, rows: P.barRows }));
-    if (P.navHidden && P.zoomHidden && P.backInDom && P.zoomInDom) ok('导航/缩放按钮不可见但仍在 DOM(脚本与快捷键可调)');
-    else bad('导航/缩放按钮状态异常', panel);
+    if (P.navHidden && P.backInDom) ok('导航按钮不可见但仍在 DOM(「⋯」菜单与脚本可调)');
+    else bad('导航按钮状态异常', panel);
+    // 缩放按钮和地址栏同一行、紧跟在「打开」后面(用户要求常显;不占额外一行、不把 bar 挤成两行)
+    if (P.zoomVisible && P.zoomInBar && P.zoomAfterGo) ok('缩放控件常显在「打开」后面(工具栏一行内)');
+    else bad('缩放控件位置异常', JSON.stringify({ visible: P.zoomVisible, inBar: P.zoomInBar }));
     if (P.cfgHidden && P.cfgInDom) ok('⚙ 配置按钮收进菜单(仍在 DOM,「编辑连接」等流程可直接调用)');
     else bad('⚙ 配置按钮状态异常', panel);
-    if (P.visibleBtns <= 4) ok(`工具栏可见按钮只剩 ${P.visibleBtns} 个:站点下拉 / 打开 / ⋯ / 最小化 / 关闭`);
-    else bad('工具栏按钮仍然偏多', P.visibleBtns);
+    const wantIds = ['bastion-close', 'bastion-go', 'bastion-min', 'bastion-more', 'bastion-zoom-in', 'bastion-zoom-out'].sort();
+    if (P.visibleBtns === 6 && JSON.stringify(P.visibleIds) === JSON.stringify(wantIds)) ok('工具栏只有 6 个按钮:打开 / A− / A+ / ⋯ / 最小化 / 关闭');
+    else bad('工具栏按钮集合不对', JSON.stringify(P.visibleIds));
     if (P.emptyIcon === '🌐') ok('空态图标保留(🌐)但改为内联小图标');
     else bad('空态图标异常', P.emptyIcon);
 

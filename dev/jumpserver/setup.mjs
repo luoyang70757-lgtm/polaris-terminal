@@ -15,6 +15,8 @@
  *   node dev/jumpserver/setup.mjs --reset      # 先 down -v 删库重装（数据目录也清）
  *   node dev/jumpserver/setup.mjs --no-target  # 不拉起测试目标机（默认拉起）
  *   node dev/jumpserver/setup.mjs --infra-only # 只起服务，不建种子数据
+ *   node dev/jumpserver/setup.mjs --seed-only  # 只重跑种子数据（改了 seed() 后不用等容器/迁移）
+ *   node dev/jumpserver/setup.mjs --mirror=docker.1ms.run   # 国内网络走镜像源
  *
  * 依赖：Node 18+（内置 fetch）、Docker Desktop（linux 容器）。
  */
@@ -37,17 +39,35 @@ const has = (k) => args.includes(k);
 const RESET = has('--reset');
 const WITH_TARGET = !has('--no-target');
 const INFRA_ONLY = has('--infra-only');
+const SEED_ONLY = has('--seed-only'); // 只重跑种子数据（不碰容器/迁移），调 seed() 时很快
 
 const HTTP_PORT = process.env.JMS_HTTP_PORT || '8080';
 const KOKO_SSH_PORT = process.env.JMS_KOKO_SSH_PORT || '2222';
 const VERSION = process.env.JMS_VERSION || 'v4.10.20-ce';
+// 国内网络拉 docker.io 基本必失败：--mirror=docker.1ms.run 把所有镜像走代理前缀
+const MIRROR = (args.find((a) => a.startsWith('--mirror=')) || `--mirror=${process.env.JMS_MIRROR || ''}`).split('=').slice(1).join('=').replace(/\/+$/, '');
 const BASE = `http://127.0.0.1:${HTTP_PORT}`;
 
-const ADMIN_PASSWORD = 'ChangeMe';
+// admin 口令：JumpServer v4 有弱口令策略（ChangeMe 会报 PasswordTooSimple → 登录 500），
+// 所以默认用强口令；早年手动改过 admin 口令的，用 JMS_ADMIN_PASSWORD 传进来。
+const ADMIN_PASSWORD = process.env.JMS_ADMIN_PASSWORD || 'Polaris@Admin2026';
 const SEED = {
-  user: { username: 'polaris', name: 'Polaris 开发账号', password: 'Polaris@123' },
+  // users[0] 有全部 3 台资产；users[1] 只授权 dev-target-02 —— 用来验「权限隔离」（各自只看到被授权的资产）
+  users: [
+    { username: 'polaris', name: 'Polaris 开发账号', password: 'Polaris@123', email: 'polaris@example.com', permName: 'polaris-dev-all',
+      assets: ['dev-target-01', 'dev-target-02', 'dev-target-03'] },
+    { username: 'polaris-ro', name: 'Polaris 受限账号（权限隔离用）', password: 'Polaris@123', email: 'polaris-ro@example.com', permName: 'polaris-ro-limited',
+      assets: ['dev-target-02'] },
+  ],
   systemUser: { name: 'polaris-dev', username: 'polaris', password: 'Polaris@123' },
-  asset: { name: 'dev-target-01', address: 'target', port: 2222 },
+  // 多台资产都指向同一台目标机（容器 target）：地址用三个网络别名 target-01/02/03，
+  // 不能共用 `target` —— JumpServer 复合用户名里的「资产地址」重复时，KoKo 会当成多台主机
+  // 命中而弹出「选择其中一个资产登录 Opt>」，直连（双击）会卡在那里。
+  assets: [
+    { name: 'dev-target-01', address: 'target-01', port: 2222 },
+    { name: 'dev-target-02', address: 'target-02', port: 2222 },
+    { name: 'dev-target-03', address: 'target-03', port: 2222 },
+  ],
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -114,11 +134,16 @@ function ensureConfig({ regenerateSecrets = false } = {}) {
   const targetPassword = (!regenerateSecrets && old.TARGET_PASSWORD) || 'Polaris@123';
 
   // compose 插值用
+  const img = (name) => (MIRROR ? `${MIRROR}/${name}` : name);
   writeIfChanged(ENV_FILE, [
     `VERSION=${VERSION}`,
     `HTTP_PORT=${HTTP_PORT}`,
     `KOKO_SSH_PORT=${KOKO_SSH_PORT}`,
     `KOKO_WEB_PROXY_PORT=${process.env.JMS_KOKO_WEB_PROXY_PORT || '5001'}`,
+    `NAMESPACE=${img('jumpserver')}`,
+    `DB_IMAGE=${img('library/postgres:16.15-bookworm')}`,
+    `REDIS_IMAGE=${img('library/redis:7.4.10-bookworm')}`,
+    `TARGET_IMAGE=${img('linuxserver/openssh-server:latest')}`,
     `DB_NAME=jumpserver`,
     `DB_USER=postgres`,
     `DB_PASSWORD=${dbPassword}`,
@@ -258,7 +283,7 @@ async function login(username, password) {
     body: { username, password },
     allowFail: true,
   });
-  if (r.status === 200 && r.data && r.data.token) return r.data;
+  if (r.data && r.data.token) return r.data; // JumpServer v4 成功时返回 201（老版本 200），两种都收
   return null;
 }
 
@@ -280,96 +305,110 @@ async function listAll(urlPath, token) {
 async function seed(adminToken) {
   const t = adminToken;
   const findByName = (list, name) => list.find((x) => x.name === name);
+  const listAssets = async () => {
+    let list = await listAll('/api/v1/assets/hosts/?limit=200', t).catch(() => []);
+    if (!list.length) list = await listAll('/api/v1/assets/assets/?limit=200', t);
+    return list;
+  };
 
   // ① 普通用户（Polaris 里登录用的 JMS 用户）
   let users = await listAll('/api/v1/users/users/?limit=200', t);
-  let user = users.find((u) => u.username === SEED.user.username);
-  if (!user) {
-    const r = await api('POST', '/api/v1/users/users/', {
-      token, body: { name: SEED.user.name, username: SEED.user.username, password: SEED.user.password, role: 'user' },
-    });
-    user = r.data;
-    log(`  · 创建用户 ${SEED.user.username}`);
-  } else {
-    await api('PATCH', `/api/v1/users/users/${user.id}/`, { token, body: { password: SEED.user.password } });
-    log(`  · 用户 ${SEED.user.username} 已存在（口令已重置）`);
+  for (const u of SEED.users) {
+    const found = users.find((x) => x.username === u.username);
+    if (!found) {
+      await api('POST', '/api/v1/users/users/', {
+        token: t, body: { name: u.name, username: u.username, password: u.password, email: u.email, role: 'user' },
+      });
+      log(`  · 创建用户 ${u.username}`);
+    } else {
+      await api('PATCH', `/api/v1/users/users/${found.id}/`, { token: t, body: { password: u.password } });
+      log(`  · 用户 ${u.username} 已存在（口令已重置）`);
+    }
   }
+  users = await listAll('/api/v1/users/users/?limit=200', t); // 重新拉，拿回带 id 的最新列表
 
-  // ② 系统用户（连目标主机用的账号，口令存在堡垒机里）
-  let sysUsers = await listAll('/api/v1/assets/system-users/?limit=200', t);
-  let sysUser = findByName(sysUsers, SEED.systemUser.name);
-  const sysBody = {
-    name: SEED.systemUser.name,
-    username: SEED.systemUser.username,
-    password: SEED.systemUser.password,
-    protocol: 'ssh',
-  };
-  if (!sysUser) {
-    sysUser = (await api('POST', '/api/v1/assets/system-users/', { token: t, body: sysBody })).data;
-    log(`  · 创建系统用户 ${SEED.systemUser.name}`);
-  } else {
-    await api('PATCH', `/api/v1/assets/system-users/${sysUser.id}/`, { token: t, body: sysBody });
-    log(`  · 系统用户 ${SEED.systemUser.name} 已存在`);
+  // ② 目标机账号：v4.10 起 “系统用户” 已并入 accounts（/api/v1/assets/system-users/ 现在是 404），
+  //    所以不再单独建对象，只在 ④ 里把它作为账号“推送”到每台资产上。
+
+  // ③ 资产（多台，全指向同一台目标机）
+  // v4.10 的 platform 字段要 pk（传字符串 'Linux' 会 400：期望 pk 值），这里现查一次
+  const platforms = await listAll('/api/v1/assets/platforms/?limit=500', t).catch(() => []);
+  const linuxPlatform = findByName(platforms, 'Linux');
+  const platformRef = linuxPlatform ? linuxPlatform.id : undefined;
+  let assets = await listAssets();
+  for (const a of SEED.assets) {
+    const body = {
+      name: a.name,
+      address: a.address,
+      ...(platformRef ? { platform: platformRef } : {}),
+      protocols: [{ name: 'ssh', port: a.port }],
+      nodes: [],
+      comment: 'Polaris 回归用目标机（docker compose profile: target）',
+    };
+    const found = findByName(assets, a.name);
+    if (!found) {
+      await api('POST', '/api/v1/assets/hosts/', { token: t, body });
+      log(`  · 创建资产 ${a.name}（${a.address}:${a.port}）`);
+    } else {
+      await api('PATCH', `/api/v1/assets/hosts/${found.id}/`, { token: t, body });
+      log(`  · 资产 ${a.name} 已存在`);
+    }
   }
+  assets = await listAssets();
 
-  // ③ 资产（目标主机）
-  let assets = await listAll('/api/v1/assets/hosts/?limit=200', { token: t }).catch(() => []);
-  if (!assets.length) assets = await listAll('/api/v1/assets/assets/?limit=200', t);
-  let asset = findByName(assets, SEED.asset.name);
-  const assetBody = {
-    name: SEED.asset.name,
-    address: SEED.asset.address,
-    platform: 'Linux',
-    protocols: [{ name: 'ssh', port: SEED.asset.port }],
-    nodes: [],
-    comment: 'Polaris 回归用目标机（docker compose profile: target）',
-  };
-  if (!asset) {
-    asset = (await api('POST', '/api/v1/assets/hosts/', { token: t, body: assetBody })).data;
-    log(`  · 创建资产 ${SEED.asset.name}（${SEED.asset.address}:${SEED.asset.port}）`);
-  } else {
-    await api('PATCH', `/api/v1/assets/hosts/${asset.id}/`, { token: t, body: assetBody });
-    log(`  · 资产 ${SEED.asset.name} 已存在`);
-  }
-
-  // ④ 把系统用户"推送"成资产上的账号（等价于 Web 上的「资产 → 账号 → 添加」）
+  // ④ 把目标机账号“推送”到每台资产上（等价于 Web 上的「资产 → 账号 → 添加」）
   const accounts = await listAll('/api/v1/accounts/accounts/?limit=500', t);
-  const exists = accounts.find((a) => a.asset && a.asset.id === asset.id && a.username === SEED.systemUser.username);
-  if (!exists) {
+  for (const a of SEED.assets) {
+    const asset = findByName(assets, a.name);
+    if (!asset) continue;
+    const exists = accounts.find((x) => x.asset && x.asset.id === asset.id && x.username === SEED.systemUser.username);
+    if (exists) {
+      // 早期建出来的账号可能 secret 是空的（KoKo 连资产时会退化成提示 `password:`），每次都补齐
+      await api('PATCH', `/api/v1/accounts/accounts/${exists.id}/`, {
+        token: t, body: { secret_type: 'password', secret: SEED.systemUser.password },
+      });
+      continue;
+    }
     await api('POST', '/api/v1/accounts/accounts/', {
       token: t,
       body: {
         asset: asset.id,
+        name: SEED.systemUser.username,
         username: SEED.systemUser.username,
         secret_type: 'password',
         secret: SEED.systemUser.password,
-        systemuser: sysUser.id,
-        privileged: false,
         is_active: true,
       },
       allowFail: true,
     });
-    log('  · 资产账号已建立');
+    log(`  · 资产账号已建立（${a.name}）`);
   }
 
-  // ⑤ 资产授权：polaris 用户 → 资产 → 系统用户
+  // ⑤ 资产授权：每个用户一条，assets 只放他被授权的那几台
   const perms = await listAll('/api/v1/perms/asset-permissions/?limit=200', t);
-  const permName = 'polaris-dev-all';
-  const permBody = {
-    name: permName,
-    users: [user.id],
-    assets: [asset.id],
-    system_users: [sysUser.id],
-    actions: ['connect', 'upload', 'download', 'copy', 'paste'],
-    is_active: true,
-  };
-  const perm = perms.find((p) => p.name === permName);
-  if (!perm) {
-    await api('POST', '/api/v1/perms/asset-permissions/', { token: t, body: permBody });
-    log(`  · 创建资产授权 ${permName}`);
-  } else {
-    await api('PATCH', `/api/v1/perms/asset-permissions/${perm.id}/`, { token: t, body: permBody });
-    log(`  · 资产授权 ${permName} 已存在`);
+  for (const u of SEED.users) {
+    const user = users.find((x) => x.username === u.username);
+    if (!user) continue;
+    const assetIds = u.assets
+      .map((name) => (findByName(assets, name) || {}).id)
+      .filter(Boolean);
+    const permBody = {
+      name: u.permName,
+      users: [user.id],
+      assets: assetIds,
+      // v4.10：授权对象从 system_users(id) 改成了 accounts(用户名数组)
+      accounts: [SEED.systemUser.username],
+      actions: ['connect', 'upload', 'download', 'copy', 'paste'],
+      is_active: true,
+    };
+    const perm = perms.find((p) => p.name === u.permName);
+    if (!perm) {
+      await api('POST', '/api/v1/perms/asset-permissions/', { token: t, body: permBody });
+      log(`  · 创建资产授权 ${u.permName}（${assetIds.length} 台）`);
+    } else {
+      await api('PATCH', `/api/v1/perms/asset-permissions/${perm.id}/`, { token: t, body: permBody });
+      log(`  · 资产授权 ${u.permName} 已存在（${assetIds.length} 台）`);
+    }
   }
 }
 
@@ -386,27 +425,31 @@ async function main() {
     fs.rmSync(ENV_FILE, { force: true });
   }
 
-  log('\n— 1/4 生成配置 —');
-  const conf = ensureConfig({ regenerateSecrets: RESET });
-  log('  · config/config.txt、config_safe.txt、redis.conf、.env 就绪');
+  if (SEED_ONLY) {
+    log('\n— 种子数据模式：跳过配置 / 容器 / 迁移（--seed-only）—');
+  } else {
+    log('\n— 1/4 生成配置 —');
+    const conf = ensureConfig({ regenerateSecrets: RESET });
+    log('  · config/config.txt、config_safe.txt、redis.conf、.env 就绪');
 
-  log('\n— 2/4 拉镜像并启动容器 —');
-  up();
+    log('\n— 2/4 拉镜像并启动容器 —');
+    up();
 
-  log('\n— 3/4 等待服务 + 初始化数据库 —');
-  waitInfra();
-  waitCore();
-  if (!(await (async () => {
-    try {
-      const health = shOut('docker', ['exec', 'jms_core', 'bash', '-c', 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/health/']);
-      return health === '200';
-    } catch { return false; }
-  })())) {
-    // core 首次启动可能已建表（数据目录保留），upgrade_db 幂等，直接跑
-    log('  · core 健康检查未通过，仍尝试 upgrade_db（幂等）');
+    log('\n— 3/4 等待服务 + 初始化数据库 —');
+    waitInfra();
+    waitCore();
+    if (!(await (async () => {
+      try {
+        const health = shOut('docker', ['exec', 'jms_core', 'bash', '-c', 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/health/']);
+        return health === '200';
+      } catch { return false; }
+    })())) {
+      // core 首次启动可能已建表（数据目录保留），upgrade_db 幂等，直接跑
+      log('  · core 健康检查未通过，仍尝试 upgrade_db（幂等）');
+    }
+    migrateDb();
+    shOut('docker', ['restart', 'jms_core']);
   }
-  migrateDb();
-  shOut('docker', ['restart', 'jms_core']);
 
   log('\n— 4/4 等待 Web 就绪 + 建种子数据 —');
   if (!(await waitHttp(`${BASE}/api/health/`, 300))) throw new Error('Web 未就绪，稍后重试：node dev/jumpserver/setup.mjs');
@@ -415,8 +458,9 @@ async function main() {
   if (!INFRA_ONLY) {
     let admin = await login('admin', ADMIN_PASSWORD);
     if (!admin) {
-      warn('  ! admin/ChangeMe 登录失败（可能已改过密码）；跳过种子数据。');
-      warn('    如忘记密码：docker exec -it jms_core bash -c "./jms changepassword"');
+      warn(`  ! admin 登录失败（当前口令不是 ${ADMIN_PASSWORD}）；跳过种子数据。`);
+      warn('    口令改过：JMS_ADMIN_PASSWORD=你的口令 node dev/jumpserver/setup.mjs');
+      warn('    忘了口令：docker exec -it jms_core bash → cd /opt/jumpserver/apps && python manage.py shell');
     } else {
       await seed(admin.token);
     }
@@ -424,18 +468,24 @@ async function main() {
 
   const env = readEnvFile(ENV_FILE);
   log('\n=== 完成 ===');
-  log(`  Web 控制台   : ${BASE}  （admin / ${ADMIN_PASSWORD} → 首次登录会要求改密）`);
+  log(`  Web 控制台   : ${BASE}  （admin / ${ADMIN_PASSWORD}）`);
   log(`  SSH/SFTP 网关: 127.0.0.1:${KOKO_SSH_PORT}`);
-  log(`  测试账号     : ${SEED.user.username} / ${SEED.user.password}`);
-  log(`  目标机       : ${SEED.asset.name} = target:${SEED.asset.port}（账号 ${SEED.systemUser.username} / ${env.TARGET_PASSWORD || 'Polaris@123'}）`);
-  log('\n  Polaris 里填：会话列表「🛡 堡垒机」右键 → JumpServer API 对接');
-  log(`    地址 http://127.0.0.1:${HTTP_PORT} · 用户 ${SEED.user.username} · 密码 ${SEED.user.password}`);
+  log(`  资产         : ${SEED.assets.map((a) => a.name + '@' + a.address).join(' / ')}:${SEED.assets[0].port}（目标机账号 ${SEED.systemUser.username} / ${env.TARGET_PASSWORD || 'Polaris@123'}）`);
+  for (const u of SEED.users) {
+    log(`  账号         : ${u.username} / ${u.password} → 授权 ${u.assets.length} 台（${u.assets.join(', ')}）`);
+  }
+
+  log('\n  Polaris 里两种用法：');
+  log('    · 图形界面：会话列表「🛡 堡垒机」右键 → JumpServer API 对接');
+  log('    · 一键联调：node dev/jumpserver/polaris-dev.mjs（自动写配置 + 关 mock + 起应用）');
+  log(`    地址 http://127.0.0.1:${HTTP_PORT} · 用户 ${SEED.users[0].username} · 密码 ${SEED.users[0].password}`);
   log(`    SSH 网关 127.0.0.1:${KOKO_SSH_PORT}`);
+
   log('\n  手工验证：');
   log(`    curl -s -X POST ${BASE}/api/v1/authentication/auth/ -H 'Content-Type: application/json' \\`);
-  log(`      -d '{"username":"${SEED.user.username}","password":"${SEED.user.password}"}'`);
-  log(`    ssh -p ${KOKO_SSH_PORT} ${SEED.user.username}@127.0.0.1   # 进 Web 上的资产列表后选资产`);
-  log(`    docker exec -it jms_koko sh -c 'echo > /dev/tcp/target/2222'   # 目标机连通性`);
+  log(`      -d '{"username":"${SEED.users[0].username}","password":"${SEED.users[0].password}"}'`);
+  log(`    ssh -p ${KOKO_SSH_PORT} '${SEED.users[0].username}@ssh@${SEED.systemUser.username}@${SEED.assets[0].address}'@127.0.0.1   # 复合用户名直连资产`);
+  log('    docker exec -it jms_core bash -c \'(exec 3<>/dev/tcp/target-01/2222) && echo 目标机可达\'');
   log('');
 }
 

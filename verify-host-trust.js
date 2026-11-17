@@ -100,7 +100,12 @@ eq(verify(KEY), true, '#4 同一主机第二次连接:指纹一致直接放行')
 eq(dialogs.length, n1, '#5 同一主机第二次连接不再弹窗(说明指纹已落盘)');
 const disk = JSON.parse(fs.readFileSync(knownHosts.location(), 'utf8'));
 eq(disk['10.9.9.9:22'], knownHosts.fingerprint(KEY), '#6 指纹已写入 known_hosts.json');
-eq((fs.statSync(knownHosts.location()).mode & 0o777), 0o600, '#7 known_hosts.json 权限 0600');
+// Windows 没有 POSIX 权限位（chmod 实际不生效，实测 0o666），0600 只在类 Unix 上有意义
+if (process.platform === 'win32') {
+  ok('#7 known_hosts.json 已落盘（Windows 无 POSIX 权限位，跳过 0600 断言）');
+} else {
+  eq((fs.statSync(knownHosts.location()).mode & 0o777), 0o600, '#7 known_hosts.json 权限 0600');
+}
 
 // ③ 新主机选「信任并记住所有主机」→ onTrustAll + 落盘
 answer = 1;

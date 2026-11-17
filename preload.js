@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('api', {
   // 主机指纹信任:用户在信任框选「信任并记住所有主机」→ 渲染层打开 autoTrustHostKey;
   // 指纹写不进数据目录 → 渲染层提示「下次仍会询问」+ 具体文件路径
   onTrustAll: (cb) => ipcRenderer.on('settings:trustAll', () => cb()),
+  // 堡垒机网页内部缩放(Ctrl+滚轮 / Ctrl+加减号)由主进程转发过来:dir = +1 / -1 / 'reset'
+  onBastionZoom: (cb) => ipcRenderer.on('bastion:zoom', (_e, dir) => cb(dir)),
   onTrustPersistFail: (cb) => ipcRenderer.on('settings:trustPersistFail', (_e, id, where) => cb(id, where)),
 
   // ---- 应用菜单事件(文件/视图/工具/帮助/调试) ----

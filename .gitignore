@@ -68,3 +68,6 @@ polaris-logs-*.zip
 /dev/jumpserver/.env
 /dev/jumpserver/config/
 /dev/jumpserver/volumes/
+/dev/jumpserver/data/
+# 本地排查用的临时探针（含真实账号/口令，不入库）
+/jms-koko-probe.js

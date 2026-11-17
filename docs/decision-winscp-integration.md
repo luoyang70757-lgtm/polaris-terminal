@@ -268,3 +268,20 @@ WinSCP 连会话都开不起来。Polaris 自己的 SFTP 面板之所以没这�
 - **协议可选**:`sftp://`(默认) / `scp://`(走服务器 `scp` 命令,完全绕过 SFTP 子系统——给 LSTAT/OPENDIR
   回 4 的老设备留路)。SCP 会话不下发 `SFTPRealPath=off`;`redactUrl`/`describeCommand` 同样覆盖 `scp://`;
   非法 scheme 一律回落 `sftp`。
+
+### 追加（v1.0.28）：跳板机会话走 WinSCP 自己的 SSH 隧道
+
+- 症状：Polaris 里经跳板连内网主机正常，但「用 WinSCP 打开 SFTP」点了没反应/超时——因为 payload 只带目标
+  `host/port`，WinSCP 从本机**直连内网目标**，根本到不了。
+- 解法（不引入本地端口转发，隧道寿命与实现都交 WinSCP）：
+  `/rawsettings Tunnel=1 TunnelHostName=<跳板> TunnelPortNumber=<端口> TunnelUserName=<账号>
+  TunnelPasswordPlain=<密码>`；跳板机用私钥时 `TunnelPublicKeyFile=<路径>` + `TunnelPassphrase=<口令>`。
+- **键名是实测的，不是猜的**（WinSCP 6.7.1）：`TunnelPasswordPlain` 是唯一可用的**明文**密码键
+  （`TunnelPassword` 是它自己的加密存储格式，塞明文必然认证失败）；`TunnelHostKey` 单独一条，`-hostkey=`
+  只管主会话，隧道默认 `*`（否则会卡在「没有配置所需的主机密钥」）。
+- **失败必须可读**：跳板机既没密码也没私钥 → 直接回「跳板机隧道不可用: …」，绝不静默直连；
+  `POLARIS_WINSCP_TUNNEL=off` 是排障逃生阀；`POLARIS_WINSCP_TUNNEL_HOSTKEY` 可钉死隧道指纹。
+- **脱敏**：隧道密码也是密码 —— `redactRawSettings()` 压 `TunnelPasswordPlain`/`TunnelPassphrase`，
+  `describeCommand()` 按 `名字=值` 逐项压（`/rawsettings` 里的明文否则会一路进面板日志与 `app-*.log`）。
+- 回归：`verify-winscp-tunnel.js`（20 条纯 Node + `POLARIS_WINSCP_SMOKE=1` 时 3 条真实 WinSCP 冒烟：
+  两个 mock SSH 分别当跳板/目标，断言退出码 0 且**跳板侧出现 TCP 转发**）。

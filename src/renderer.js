@@ -665,6 +665,8 @@ const state = {
   bastionFavTree: null,     // 收藏夹树(userFav/getTree: {name, children:[{name}]})(仅历史捕获,手动收藏不再依赖)
   bastionFavGroups: [],     // 手动收藏分组(用户自建:[{id, name, parent_id}] from bastion_fav_groups 表)
   bastionDirCollapsed: new Set(), // 折叠的业务目录名(分组视图)
+  bastionSavedGroupsExpanded: new Set(), // 已保存连接下资产分组的「展开」集合(key=connId::分组名);**默认空=全部折叠**
+  collapsedOrphans: undefined, // 列表视图「未分组」兜底分组是否折叠(undefined=折叠,首次点三角才展开)
   bastionDirsInit: false,   // 分组视图是否已完成"首次默认折叠"初始化
   bastionGrouping: false,   // 是否正在后台逐目录补充分组
   bastionUrl: '',           // 当前资产对应的堡垒机地址 origin(持久化分组键,poll 持续同步)
@@ -1379,6 +1381,7 @@ async function aiSend() {
   const hosts = selTabs.map((t) => ({
     host: t.session.host, port: t.session.port, username: t.session.username, password: t.session.password,
     privateKey: t.session.private_key || '', passphrase: t.session.passphrase || '',
+    jump: t.session.jump && t.session.jump.host ? t.session.jump : null, // 内网主机:经跳板执行
     sessionId: t.sessionId,
   }));
   pushAiHistory({ role: 'user', content: `${ctx}\n${text}` });
@@ -2159,8 +2162,23 @@ function renderGroupHierarchy(sessions, container, opts = {}) {
     const head = document.createElement('div');
     head.className = 'asset-group-head list-head';
     head.style.paddingLeft = '8px';
-    head.textContent = `未分组 (${orphans.length})`;
+    // 兜底分组也给三角(用户反馈「分组都要有三角」):默认折叠,点三角展开
+    const oCollapsed = state.collapsedOrphans !== false;
+    const oCaret = document.createElement('span');
+    oCaret.className = 'asset-group-caret';
+    oCaret.textContent = oCollapsed ? '▶' : '▼';
+    const oName = document.createElement('span');
+    oName.className = 'asset-group-name';
+    oName.textContent = `未分组 (${orphans.length})`;
+    head.appendChild(oCaret);
+    head.appendChild(oName);
+    head.title = `未分组 (${orphans.length})\n点三角折叠/展开`;
+    head.addEventListener('click', () => {
+      state.collapsedOrphans = !(state.collapsedOrphans !== false);
+      renderSessionList(els.inputSessionSearch.value);
+    });
     container.appendChild(head);
+    if (oCollapsed) return;
     for (const s of orphans) {
       const row = makeSessionRow(s);
       row.classList.add('host-item');
@@ -4645,6 +4663,7 @@ async function runBatchExec() {
     name: t.session.name, host: t.session.host, port: t.session.port,
     username: t.session.username, password: t.session.password,
     privateKey: t.session.private_key || '', passphrase: t.session.passphrase || '',
+    jump: t.session.jump && t.session.jump.host ? t.session.jump : null, // 内网主机:经跳板执行
   }));
   els.batchRun.disabled = true;
   els.batchRun.textContent = '⏳ 执行中…';
@@ -4800,6 +4819,152 @@ async function sendQuickBatch(command) {
 function jmsFind(id) { return state.jmsServers.find((s) => s.id === id); }
 function jmsActive() { return jmsFind(state.jmsActiveId); }
 
+// ===== JMS-AUTH-GUARD:BEGIN（纯逻辑，verify-jms-auth-guard.js 直接切这段 eval，改动请保持 marker 与纯函数签名）=====
+// 为什么要有「登录熔断」：JumpServer 同一账号密码错累计 **8 次即临时锁定 30 分钟**（服务端 msg 会带「您还可以尝试 N 次」），
+// 锁定期间 Web 控制台 / API / KoKo 网关**全拒**，用户观感是「和堡垒机网络都不通了」（现场事故：清除历史掉登录 →
+// 自动重登用错账号(Admin≠admin) → 每点一次资产/拉取扣一次 → 锁号）。ensureJmsLogin 是**自动路径**，必须熔断。
+// 只记在内存里（不落 localStorage/文件）：重启 = 重新给一次机会（用户可能已在网页端改好密码）。
+const JMS_AUTH_LOCK_MIN = 30;                 // 与 JumpServer 默认锁号窗口一致（仅文案/冷却用）
+const JMS_AUTH_NET_COOLDOWN_MS = 60 * 1000;   // 网络/5xx 类失败：1 分钟内不再自动重登（恢复后自动重来）
+const jmsAuthGuard = new Map();               // key → { kind, msg, until, failCount, at }
+function jmsGuardKey(s) {
+  return String((s && (s.id || s.id === 0 ? s.id : (s.url || s.baseUrl || '')) || '') + '|' + ((s && s.account) || ''));
+}
+// 失败分类：凭据错（永久熔断，重试只会扣服务端次数）/ 账号被锁（等锁定窗口）/ 网络类（短冷却）/ 需要 MFA（永不自愈）
+function jmsAuthKind(msg) {
+  const m = String(msg || '');
+  if (/password_failed|invalid_login|用户名或密码|账号或密码|密码不正确|认证失败|authentication_failed/i.test(m)) return 'credentials';
+  if (/user_locked|account_locked|账号已(被)?锁定|已被锁定|您已被锁定/i.test(m)) return 'locked';
+  return 'network';
+}
+function jmsGuardRecord(s, msg, opts) {
+  const o = opts || {};
+  const now = o.now == null ? Date.now() : o.now;
+  const key = jmsGuardKey(s);
+  const prev = jmsAuthGuard.get(key);
+  const kind = o.kind || jmsAuthKind(msg);
+  const entry = {
+    kind,
+    msg: String(msg || ''),
+    // credentials / mfa 永不自动过期（until=0），locked 等 30 分钟，network 等 60 秒
+    until: kind === 'locked' ? now + JMS_AUTH_LOCK_MIN * 60000 : (kind === 'network' ? now + JMS_AUTH_NET_COOLDOWN_MS : 0),
+    failCount: o.failCount != null ? o.failCount : ((prev && prev.failCount) || 0) + 1,
+    at: now,
+  };
+  jmsAuthGuard.set(key, entry);
+  return entry;
+}
+function jmsGuardClear(s) { jmsAuthGuard.delete(jmsGuardKey(s)); }
+function jmsGuardClearById(id) {
+  const p = String(id || '') + '|';
+  if (!id) return 0;
+  let n = 0;
+  for (const k of Array.from(jmsAuthGuard.keys())) if (k.startsWith(p)) { jmsAuthGuard.delete(k); n++; }
+  return n;
+}
+// 是否已被熔断拦截：返回命中的 guard 条目；network/locked 过期即自动解除
+function jmsGuardBlocked(s, now) {
+  const key = jmsGuardKey(s);
+  const g = jmsAuthGuard.get(key);
+  if (!g) return null;
+  const t = now == null ? Date.now() : now;
+  if (g.kind === 'network' || g.kind === 'locked') {
+    if (t >= g.until) { jmsAuthGuard.delete(key); return null; }
+  }
+  return g;
+}
+// 熔断原因说人话（弹窗/状态栏统一走这里）
+function jmsGuardHint(g, now) {
+  if (!g) return '';
+  const t = now == null ? Date.now() : now;
+  if (g.kind === 'credentials') {
+    const left = (/还可以尝试\s*(\d+)\s*次/.exec(String(g.msg || '')) || [])[1];
+    return `账号或密码不正确${left ? `（该账号还可错 ${left} 次，打满 8 次会被锁 30 分钟）` : ''}，已停止自动重登（改对密码后自动恢复）`;
+  }
+  if (g.kind === 'mfa') return '该账号开启了双因素认证，自动重登不可用（请右键「🔑 登录」输入验证码）';
+  if (g.kind === 'locked') {
+    const m = Math.max(1, Math.ceil((g.until - t) / 60000));
+    return `账号已被 JumpServer 临时锁定，约 ${m} 分钟后自动恢复（也可管理员解锁/重置密码）`;
+  }
+  const sec = Math.max(1, Math.ceil((g.until - t) / 1000));
+  return `最近一次登录失败（网络/服务端异常），${sec} 秒后自动重试`;
+}
+// ===== JMS-AUTH-GUARD:END =====
+
+// 确保已登录：token 过期（JumpServer token 默认 24h）或未登录时，用已保存的账号+密码**静默重登**。
+// 历史行为：双击资产/批量连接遇到 token 失效会直接弹「请先登录该 JumpServer」，用户得自己去右键登录；
+// 而跳板机 token 是过期的必然事件（第二天再来必现）。现在改为自动重登，失败才提示原因。
+// 约定：
+//   · s.loggedOut（用户主动退出登录）不自动重登，尊重用户意图；
+//   · 密码是 enc:v1: 密文时先 decryptSecret，解不开就放弃（不能把密文当密码发去认证）；
+//   · 重登成功顺手刷新资产列表（失败不阻断连接）。
+async function ensureJmsLogin(s, baseUrl, opts) {
+  const force = !!(opts && opts.force); // force=忽略现有 token 强制重登（token 失效但字段还在时用）
+  if (!s) return false;
+  if (!force && s.token && s.user) return true;
+  if (s.loggedOut) return false;
+  const url = String(baseUrl || s.baseUrl || s.url || '').trim();
+  if (!url || !s.account) return false;
+  // 熔断（连 force 也拦：密码错时重试只会扣 JumpServer 的失败次数 → 锁号 30 分钟）
+  const guard = jmsGuardBlocked(s);
+  if (guard) {
+    s.jmsLoginError = guard.msg || s.jmsLoginError;
+    setStatus(`未自动重登「${s.name || url}」：${jmsGuardHint(guard)}`, 'var(--red)');
+    dlog('JMS', `自动重登已熔断(${guard.kind}, 失败${guard.failCount || 1}次): ${s.account || ''}@${url}`);
+    return false;
+  }
+  let pw = '';
+  try { pw = await decryptSecret(s.password || ''); } catch { pw = ''; }
+  if (!pw) {
+    s.jmsLoginError = '没有可用的保存密码（可能未填，或密文在本机解不开）';
+    return false;
+  }
+  setStatus(`正在自动登录「${s.name || url}」…`, 'var(--accent)');
+  try {
+    const r = await window.api.jmsLogin({ baseUrl: url, username: s.account, password: pw });
+    if (!r || !r.ok || !r.token) {
+      // MFA 账号走不了自动路径（要人工输验证码）；密码错则永久熔断；锁定等窗口；网络类短冷却
+      const raw = (r && r.error) || '账号或密码不正确';
+      const g = jmsGuardRecord(s, raw, { kind: (r && r.mfaRequired) ? 'mfa' : undefined });
+      s.jmsLoginError = raw;
+      setStatus(`自动登录「${s.name || url}」失败：${jmsGuardHint(g)}`, 'var(--red)');
+      dlog('JMS', `自动重登失败(${g.kind}, 第${g.failCount}次): ${s.account || ''}@${url} | ${raw}`);
+      return false;
+    }
+    s.token = r.token;
+    s.user = r.user;
+    s.jmsLoginError = null;
+    jmsGuardClear(s); // 登录成功 → 解除熔断
+    try {
+      const ar = await window.api.jmsAssets({ baseUrl: url, token: s.token });
+      if (ar && ar.ok) s.assets = ar.assets || [];
+    } catch { /* 资产拉取失败不阻断本次连接 */ }
+    try { renderSessionList(els.inputSessionSearch.value); } catch { /* 非列表渲染期忽略 */ }
+    setStatus(`已自动登录「${s.name || url}」`, 'var(--green)');
+    dlog('JMS', `token 失效 → 自动重登成功: ${s.account || ''}@${url}`);
+    return true;
+  } catch (e) {
+    const g = jmsGuardRecord(s, e.message, { kind: 'network' });
+    s.jmsLoginError = e.message;
+    setStatus(`自动登录「${s.name || url}」失败：${jmsGuardHint(g)}`, 'var(--red)');
+    return false;
+  }
+}
+
+// 未登录时的统一提示（自动重登已失败/熔断/没有可用的保存密码）
+function jmsNeedLoginMsg(s) {
+  const name = (s && (s.name || s.baseUrl || s.url)) || '该 JumpServer';
+  const g = s ? jmsGuardBlocked(s) : null;
+  if (g) {
+    if (g.kind === 'credentials' || g.kind === 'mfa') {
+      return `「${name}」未登录：${jmsGuardHint(g)}；请右键「✏️ 编辑连接」改好账号密码，或用「🔑 登录(拉取资产)」手动登录`;
+    }
+    return `「${name}」未登录：${jmsGuardHint(g)}`;
+  }
+  const why = s && s.jmsLoginError ? `：${s.jmsLoginError}` : '';
+  return `「${name}」未登录${why}；请在会话列表右键 →「🔑 登录(拉取资产)」，或「✏️ 编辑服务器」补全账号密码`;
+}
+
 // 持久化服务器配置(名称/地址/账号/密码;token 不持久化,重启后静默重登)
 // 落盘前用主进程 safeStorage 加密密码(异步;调用处不 await,持久化是最终一致的)
 async function jmsPersistConfig() {
@@ -4909,6 +5074,7 @@ function jmsDeleteServer() {
   const s = jmsActive();
   if (!s) return;
   if (!confirm(`删除服务器「${s.name}」的配置吗?`)) return;
+  jmsGuardClearById(s.id); // 删配置同时清熔断记录
   state.jmsServers = state.jmsServers.filter((x) => x.id !== s.id);
   state.jmsActiveId = state.jmsServers.length ? state.jmsServers[0].id : null;
   jmsPersistConfig();
@@ -4932,6 +5098,7 @@ function jmsDoSave() {
   Object.assign(server, { name, baseUrl, sshHost, sshPort, account, password });
   if (!state.jmsServers.includes(server)) state.jmsServers.push(server);
   state.jmsActiveId = server.id;
+  jmsGuardClearById(server.id); // 用户刚改过账号/密码 → 解除登录熔断，下次自动重登重新给机会
   jmsPersistConfig();
   jmsRenderServerSelect();
   // 左侧保存后:右侧堡垒机下拉 + 左侧会话列表都要同步(新建时 baseUrl 还是空,会被右侧下拉过滤;
@@ -4965,7 +5132,14 @@ async function jmsDoLogin() {
   els.jmsLoginBtn.textContent = '登录中…';
   try {
     const r = await window.api.jmsLogin({ baseUrl, username: account, password });
-    if (!r.ok) { showJmsMsg(`登录失败: ${r.error}`); els.jmsLoginBtn.disabled = false; els.jmsLoginBtn.textContent = '连接 JumpServer'; return; }
+    if (!r.ok) {
+      // 手动登录也记一笔：用户看到的是能照明白色错误，但后续自动路径不能接着扣服务端失败次数
+      const g = jmsGuardRecord(server, r.error);
+      showJmsMsg(`登录失败: ${r.error}${g.kind === 'credentials' ? '(已停止自动重试)' : ''}`);
+      els.jmsLoginBtn.disabled = false;
+      els.jmsLoginBtn.textContent = '连接 JumpServer';
+      return;
+    }
     if (r.mfaRequired) {
       server.mfaCookie = r.cookie; server.mfaUrl = r.challengeUrl; server.mfaType = (r.choices && r.choices[0]) || 'otp';
       jmsPersistConfig();
@@ -4981,6 +5155,7 @@ async function jmsDoLogin() {
     }
     server.token = r.token; server.user = r.user;
     server.loggedOut = false; // 手动登录成功 → 恢复自动登录
+    jmsGuardClear(server); // 同时解除熔断
     els.jmsOtpWrap.style.display = 'none';
     els.jmsLoginBtn.disabled = false;
     els.jmsLoginBtn.textContent = '连接 JumpServer';
@@ -5023,6 +5198,7 @@ async function jmsDoMfa() {
       return;
     }
     s.token = r.token; s.user = r.user; s.mfaCookie = null; s.mfaUrl = null;
+    jmsGuardClear(s); // MFA 验证通过 → 解除熔断
     els.jmsOtpWrap.style.display = 'none';
     els.jmsOtp.value = '';
     els.jmsLoginBtn.disabled = false;
@@ -5122,9 +5298,11 @@ function jmsLogout() {
 
 // 连接资产(经 KoKo 网关):用户名 = JMS用户@协议@账号@资产地址
 // accountName 可选:多账号时指定;不传用第一个
-function jmsConnect(serverId, asset, accountName, openSftp, opts) {
+async function jmsConnect(serverId, asset, accountName, openSftp, opts) {
   const s = jmsFind(serverId);
-  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  if (!s) return;
+  // 未登录 / token 过期 → 先自动重登（不再直接弹「请先登录」；只有真的登不上才提示）
+  if (!(await ensureJmsLogin(s))) { alert(jmsNeedLoginMsg(s)); return; }
   const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
   const account = accountName || (asset.accounts && asset.accounts[0] && asset.accounts[0].username) || 'root';
   const username = `${s.user.username}@${protocol}@${account}@${asset.address}`;
@@ -5237,7 +5415,36 @@ async function jmsWebEnsureLogin(s, base) {
 }
 
 
-// 把已登录服务器的资产渲染进会话列表(JumpServer 区块)
+// 已保存堡垒机连接下的资产分组头:带折叠三角,默认折叠(两个分支 JMS/H3C 共用)
+// key 形如 `saved:<connId>:<分组名>`;展开态存 state.bastionSavedGroupsExpanded(仅本次运行,不落盘)
+function makeBastionGroupHead(label, key, opts) {
+  const o = opts || {};
+  const expanded = o.forceExpand || state.bastionSavedGroupsExpanded.has(key);
+  const head = document.createElement('div');
+  head.className = 'bastion-asset-group-head' + (expanded ? ' expanded' : '');
+  head.dataset.groupKey = key;
+  head.dataset.expanded = expanded ? '1' : '0';
+  const caret = document.createElement('span');
+  caret.className = 'asset-group-caret';
+  caret.textContent = expanded ? '▼' : '▶';
+  const nm = document.createElement('span');
+  nm.className = 'bastion-group-name';
+  nm.textContent = label;
+  head.appendChild(caret);
+  head.appendChild(nm);
+  head.title = `${label}\n点三角折叠/展开(默认折叠)`;
+  const toggle = () => {
+    if (state.bastionSavedGroupsExpanded.has(key)) state.bastionSavedGroupsExpanded.delete(key);
+    else state.bastionSavedGroupsExpanded.add(key);
+    renderSessionList(els.inputSessionSearch.value);
+  };
+  caret.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  // 整行也可点(三角太小不易点中);资产行是另一层元素,不会误触连接
+  head.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  if (typeof o.onContextMenu === 'function') head.addEventListener('contextmenu', o.onContextMenu);
+  return head;
+}
+
 // 会话列表"工具区"节点头:小三角折叠/展开 + 右键菜单(与分组头行为一致)
 function makeSectionHead(label, collapsed, onToggle, menuItems) {
   const head = document.createElement('div');
@@ -5261,11 +5468,15 @@ function makeSectionHead(label, collapsed, onToggle, menuItems) {
 
 // 批量打开连接:依次连接一组 JMS 资产(走 KoKo 网关,300ms 错峰避免压网关)
 function batchJmsConnect(s, assets) {
-  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  if (!s) return;
   const list = (assets || []).filter(Boolean);
   if (!list.length) return;
-  setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
-  list.forEach((a, i) => setTimeout(() => jmsConnect(s.id, a, undefined, undefined, { background: true }), i * 300));
+  // 批量连接同样走自动重登（一次登录，再开 N 个标签）
+  ensureJmsLogin(s).then((ok) => {
+    if (!ok) { alert(jmsNeedLoginMsg(s)); return; }
+    setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
+    list.forEach((a, i) => setTimeout(() => jmsConnect(s.id, a, undefined, undefined, { background: true }), i * 300));
+  });
 }
 
 // 批量打开连接:依次连接一组 H3C 资产(走 accessclient,500ms 错峰)
@@ -5281,26 +5492,11 @@ function batchBastionConnect(assets) {
   sshList.forEach((a, i) => setTimeout(() => bastionConnect(a, null, 'ssh', false, { background: true }), i * 500));
 }
 
-// 批量打开连接:依次连接一组「已保存堡垒机连接」的资产(未登录先自动登录)
+// 批量打开连接:依次连接一组「已保存堡垒机连接」的资产（未登录/token 过期先自动登）
 async function batchSavedAssetConnect(s, assets) {
   const list = (assets || []).filter(Boolean);
   if (!list.length) return;
-  if (!s.user || !s.token) {
-    setStatus(`正在登录「${s.name}」…`, 'var(--accent)');
-    try {
-      const pw = await decryptSecret(s.password || '');
-      if (!s.account) { alert(`「${s.name}」未配置账号,无法登录`); return; }
-      if (!pw) {
-        alert((s.password && s.password.startsWith('enc:v1:'))
-          ? `「${s.name}」保存的密码无法在本机解密(可能由其他平台加密),请右键连接→「✏️ 编辑连接」重新输入密码`
-          : `「${s.name}」未配置密码,无法登录`);
-        return;
-      }
-      const lg = await window.api.jmsLogin({ baseUrl: s.url, username: s.account, password: pw });
-      if (!lg.ok || !lg.token) { alert(`登录「${s.name}」失败: ${lg.error || '未知错误'}`); return; }
-      s.token = lg.token; s.user = lg.user;
-    } catch (e) { alert(`登录「${s.name}」失败: ${e.message}`); return; }
-  }
+  if (!(await ensureJmsLogin(s, s.url))) { alert(jmsNeedLoginMsg(s)); return; }
   setStatus(`批量连接「${s.name}」${list.length} 台…`, 'var(--accent)');
   list.forEach((a, i) => setTimeout(() => bastionConnectAsset(s, a, undefined, { background: true }), i * 300));
 }
@@ -5426,12 +5622,10 @@ async function jmsRefreshServer(serverId) {
   const wasLoggedIn = !!(s.token && s.user); // 未登录时点刷新=走登录流程 → 登录后分组折叠
   setStatus(`刷新「${s.name}」资产…`, 'var(--accent)');
   let r = s.token ? await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }) : { ok: false };
-  // token 失效/未登录 → 用保存的密码静默重登后再拉(否则刷新会静默失败,用户以为没生效)
-  if (!r.ok && s.password) {
-    try {
-      const lg = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
-      if (lg.ok && lg.token) { s.token = lg.token; s.user = lg.user; r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }); }
-    } catch { /* 重登失败走下方报错 */ }
+  // token 失效/未登录 → 统一走 ensureJmsLogin 强制重登（顺带解密 enc:v1: 密码）后再拉；
+  // 否则刷新会静默失败、或把密文当密码发去认证（用户以为“刷新没生效”）
+  if (!r.ok && (await ensureJmsLogin(s, s.baseUrl, { force: true }))) {
+    r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
   }
   if (r.ok) {
     s.assets = r.assets || [];
@@ -5976,6 +6170,7 @@ async function bastionCfgAdd() {
       s.name = name || url; s.url = url; s.account = account;
       s.type = els.bastionCfgType.value || 'jms';
       if (password) s.password = encPw; // 留空 = 保留原密码
+      jmsGuardClearById(s.id); // 改过账号/密码 → 解除登录熔断（否则用户改对了也仍被拦）
     }
     delete els.bastionCfgAdd.dataset.editingId;
   } else {
@@ -6021,6 +6216,7 @@ async function bastionCfgEdit(id) {
 }
 function bastionCfgDelete(id) {
   const s = bastionServers().find((x) => x.id === id);
+  jmsGuardClearById(id); // 连接删了,熔断记录也一起清(删了重建同名连接不该背着旧熔断)
   state.settings.bastionServers = bastionServers().filter((x) => x.id !== id);
   saveSettings();
   bastionRenderServerSelect();
@@ -7095,16 +7291,18 @@ function renderBastionSavedSessions(container, f) {
           }
         }
         for (const [g, arr] of groups) {
+          const gkey = 'saved:' + s.id + ':' + (g || '__ungrouped__');
+          if (kw) state.bastionSavedGroupsExpanded.add(gkey); // 搜索命中 → 自动展开并记住(不然搜到了却看不见)
+          const gExpanded = state.bastionSavedGroupsExpanded.has(gkey);
           {
-            const ghead = document.createElement('div');
-            ghead.className = 'bastion-asset-group-head';
-            ghead.textContent = g === '__ungrouped__' ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
-            ghead.addEventListener('contextmenu', (e) => {
+            const onCtx = (e) => {
               e.preventDefault();
               showCtxMenu(e.clientX, e.clientY, [{ label: '🔗 批量连接', action: () => batchSavedAssetConnect(s, arr) }]);
-            });
+            };
+            const ghead = makeBastionGroupHead(g === '__ungrouped__' ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`, gkey, { onContextMenu: onCtx, forceExpand: gExpanded });
             assetsWrap.appendChild(ghead);
           }
+          if (!gExpanded) continue; // 默认折叠:只显示分组头(点三角才逐个展开,资产多时不刷屏)
           for (const a of arr) {
             const row = document.createElement('div');
             row.className = 'asset-item jms-asset-item';
@@ -7184,10 +7382,12 @@ function renderBastionSavedSessions(container, f) {
             return String(x[0]).localeCompare(String(y[0]), 'zh');
           });
           for (const [g, arr] of dirArr) {
-            const ghead = document.createElement('div');
-            ghead.className = 'bastion-asset-group-head';
-            ghead.textContent = (!g || g === '__ungrouped__') ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
-            assetsWrap.appendChild(ghead);
+            const gkey = 'saved:' + s.id + ':h3c:' + (g || '__ungrouped__');
+            if (kw) state.bastionSavedGroupsExpanded.add(gkey);
+            const gExpanded = state.bastionSavedGroupsExpanded.has(gkey);
+            const label = (!g || g === '__ungrouped__') ? `🗂 未分组(${arr.length})` : `📁 ${g}(${arr.length})`;
+            assetsWrap.appendChild(makeBastionGroupHead(label, gkey, { forceExpand: gExpanded }));
+            if (!gExpanded) continue;
             for (const a of arr) assetsWrap.appendChild(makeBastionAssetItem(a));
           }
         } else if (!isCurrentSite) {
@@ -7209,7 +7409,9 @@ function renderBastionSavedSessions(container, f) {
 // 不经过 jmsFind:该连接存于 bastionServers,不在 state.jmsServers。
 async function bastionConnectAsset(bastionServer, asset, accountName, opts) {
   const s = bastionServer;
-  if (!s || !s.user || !s.token) { alert('请先登录该 JumpServer'); return; }
+  if (!s) return;
+  // token 过期/未登录 → 用保存的账号密码自动重登（保存连接的地址在 s.url）
+  if (!(await ensureJmsLogin(s, s.url))) { alert(jmsNeedLoginMsg(s)); return; }
   const protocol = (asset.protocols && asset.protocols[0] && asset.protocols[0].name) || 'ssh';
   const account = accountName || (asset.accounts && asset.accounts[0] && asset.accounts[0].username) || 'root';
   const jmsUser = (s.user && s.user.username) || s.account || 'admin';
@@ -7379,6 +7581,7 @@ function collapseJmsGroupsState(s) {
 // (保留 H3C 区块展开,只看各分组头,避免一屏刷出几百台)
 function collapseAllBastionGroups() {
   collapseBastionGroupsState();
+  state.bastionSavedGroupsExpanded.clear(); // 已保存连接下的资产分组也一起收起(默认就是折叠)
   renderSessionList(els.inputSessionSearch.value);
 }
 
@@ -7867,6 +8070,8 @@ function applyBastionZoom() {
   const wv = els.bastionWebview;
   try { if (wv.setZoomFactor) wv.setZoomFactor(state.bastionZoom); } catch { /* ignore */ }
   if (els.bastionZoomLabel) els.bastionZoomLabel.textContent = `${Math.round(state.bastionZoom * 100)}%`;
+  // 同步到 settings:任何一处 saveSettings() 都会把当前缩放落盘(下次开面板直接恢复)
+  if (state.settings) state.settings.bastionZoom = state.bastionZoom;
 }
 // 页面自动适配面板宽度(fit-to-width):整页加载后按 面板宽/页面内容宽 等比缩放(只缩不放,0.4~1),
 // 保证堡垒机完整页面不被右侧遮挡。手动 A−/A+ 调整过则本会话内不再自动适配。
@@ -7876,13 +8081,14 @@ function bastionFitToWidth() {
   if (!wv || !wv.executeJavaScript) return;
   const panelW = (els.bastionPanel ? els.bastionPanel.offsetWidth : 0) - 24;
   if (panelW <= 0) return;
-  wv.executeJavaScript('document.documentElement.scrollWidth || document.body.scrollWidth || 0')
-    .then((sw) => {
-      if (!sw || sw <= 0) return;
-      const z = Math.min(1, Math.max(0.4, panelW / sw));
-      state.bastionZoom = Math.round(z * 100) / 100;
-      applyBastionZoom();
-    }).catch(() => {});
+  let p = null; // webview 未 attach / 未 dom-ready 时 executeJavaScript 会**同步抛出**(清除历史把 src 置 about:blank 正好命中),.catch() 接不住同步异常
+  try { p = wv.executeJavaScript('document.documentElement.scrollWidth || document.body.scrollWidth || 0'); } catch { return; }
+  p.then((sw) => {
+    if (!sw || sw <= 0) return;
+    const z = Math.min(1, Math.max(0.4, panelW / sw));
+    state.bastionZoom = Math.round(z * 100) / 100;
+    applyBastionZoom();
+  }).catch(() => {});
 }
 function setBastionZoom(delta) {
   bastionManualZoom = true; // 手动调整过 → 不再自动适配
@@ -9882,6 +10088,18 @@ function winScpPayloadFor(sessionId) {
     passphrase: s.passphrase || '',
     name: s.name || '',
     remotePath: /^\//.test(remotePath) ? remotePath : '',
+    // 跳板机:主进程会把它变成 WinSCP 自己的 SSH 隧道(/rawsettings Tunnel=1 …);
+    // 不传的话 WinSCP 直连内网目标 —— 本机到不了,只会超时。
+    jump: s.jump && s.jump.host
+      ? {
+          host: s.jump.host,
+          port: s.jump.port || 22,
+          username: s.jump.username || '',
+          password: s.jump.password || '',
+          private_key: s.jump.private_key || s.jump.privateKey || '',
+          passphrase: s.jump.passphrase || '',
+        }
+      : null,
   };
 }
 
@@ -9894,8 +10112,9 @@ async function openSessionInWinScp(sessionId) {
     setStatus('本机没装 WinSCP(装好后重开本窗口即可;自定义安装路径可设环境变量 POLARIS_WINSCP_PATH)', 'var(--orange)');
     return false;
   }
+  const j = payload.jump;
   // 面板里留一行“交给谁、落在哪”:WinSCP 是否真带上 SFTPRealPath=off 看主进程的 [WINSCP] 行
-  dlog('WINSCP', `交给 WinSCP: ${payload.username}@${payload.host}:${payload.port} 起始目录=${payload.remotePath || '(未定,由 WinSCP 自己落位)'}`);
+  dlog('WINSCP', `交给 WinSCP: ${payload.username}@${payload.host}:${payload.port} 起始目录=${payload.remotePath || '(未定,由 WinSCP 自己落位)'}${j ? ` 经跳板 ${j.host}:${j.port}` : ''}`);
   const r = await window.api.winScpOpen(payload).catch((e) => ({ ok: false, error: e && e.message }));
   if (!r || !r.ok) {
     dlog('WINSCP·错误', (r && r.error) || '打开失败');
@@ -10382,7 +10601,20 @@ els.fTestConn.addEventListener('click', async () => {
   if (!host) { res.textContent = '先填写主机'; res.className = 'tcr tcr-bad'; return; }
   res.textContent = '⏳ 测试中…'; res.className = 'tcr tcr-run';
   try {
-    const r = await window.api.testConnect({ host, port, protocol: els.fProtocol.value, timeoutMs: 2500 });
+    // 填了跳板机就经跳板测(否则内网主机永远显示"端口未开放")
+    const jHost = els.fJumpHost.value.trim();
+    const jump = jHost ? {
+      host: jHost,
+      port: parseInt(els.fJumpPort.value, 10) || 22,
+      username: els.fJumpUsername.value.trim(),
+      password: els.fJumpPassword.value,
+    } : null;
+    const r = await window.api.testConnect({
+      host, port, protocol: els.fProtocol.value, timeoutMs: 2500,
+      jump, username: els.fUsername.value.trim(),
+      verifyHostKey: state.settings.verifyHostKey !== false,
+      autoTrustHostKey: state.settings.autoTrustHostKey === true,
+    });
     if (r && r.ok) { res.textContent = `✅ ${host}:${port} ${r.message}`; res.className = 'tcr tcr-ok'; }
     else { res.textContent = `❌ ${host}:${port} ${(r && r.message) || '连接失败'}`; res.className = 'tcr tcr-bad'; }
   } catch (e) {
@@ -10570,6 +10802,27 @@ els.bastionClose.addEventListener('click', closeBastionPanel); // ✕ 彻底关�
 // 画面缩放(支持 0.5~2.5,按住可连续缩放)
 els.bastionZoomIn.addEventListener('click', () => setBastionZoom(0.1));
 els.bastionZoomOut.addEventListener('click', () => setBastionZoom(-0.1));
+// 网页内部的缩放手势(Ctrl+滚轮 / 触控板捏合 / Ctrl+加减号):webview 拿焦点时渲染层收不到,
+// 主进程把 webview 的 zoom-changed / before-input-event 转成 bastion:zoom 发过来(与 A−/A+ 同一套状态)
+if (window.api.onBastionZoom) {
+  window.api.onBastionZoom((dir) => {
+    if (els.bastionSlot.classList.contains('hidden')) return; // 面板没开不动
+    if (dir === 'reset') {
+      bastionManualZoom = false;
+      state.bastionZoom = 1;
+      applyBastionZoom();
+      saveSettings();
+      bastionFitToWidth();
+      return;
+    }
+    setBastionZoom(dir > 0 ? 0.1 : -0.1);
+  });
+}
+// 恢复上次的画面缩放:手动调过的才恢复(没调过仍由 fit-to-width 自动适配)
+if (typeof state.settings.bastionZoom === 'number' && state.settings.bastionZoom > 0) {
+  state.bastionZoom = Math.min(2.5, Math.max(0.5, state.settings.bastionZoom));
+  if (state.bastionZoom !== 1) bastionManualZoom = true;
+}
 applyBastionZoom(); // 应用持久化的缩放级别
 initBastionWebview();
 // 低频兜底:15s 才轮询一次 H3C 资产(用户操作页面时由 bastionFocusCheck 事件驱动快速同步;
@@ -11408,6 +11661,7 @@ async function detectOsForTab(t) {
     port: t.session.port || 22,
     username: t.session.username,
     password: t.session.password,
+    jump: t.session.jump && t.session.jump.host ? t.session.jump : null, // 经跳板才能连内网主机
   });
   if (!res || !res.ok) return;
   // 只把系统类型记在标签对象里(给 AI 助手用),不再往标签上画徽标

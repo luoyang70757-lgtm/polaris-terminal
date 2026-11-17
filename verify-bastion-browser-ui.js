@@ -81,7 +81,15 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
         retryHidden: document.getElementById('bastion-empty-retry').classList.contains('hidden'),
         more: !!document.getElementById('bastion-more'),
         clearHidden: document.getElementById('bastion-clear').classList.contains('hidden'),
-        currentHidden: getComputedStyle(document.querySelector('.bastion-current-row')).display === 'none',
+        currentRowVisible: getComputedStyle(document.querySelector('.bastion-current-row')).display !== 'none',
+        zoomVisible: document.getElementById('bastion-zoom-label').offsetParent !== null,
+        zoomAfterGo: (function(){
+          try {
+            const g = document.getElementById('bastion-go').getBoundingClientRect();
+            const z = document.getElementById('bastion-zoom-out').getBoundingClientRect();
+            return z.left >= g.right - 2;
+          } catch (e) { return false; }
+        })(),
       };
     })()`);
     if (!idle.hidden && idle.icon === '🌐' && /堡垒机浏览器/.test(idle.title) && idle.sub.length > 5) ok('空态结构完整(图标/标题/说明)');
@@ -90,8 +98,9 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     else bad('空闲态按钮状态异常', JSON.stringify(idle));
     if (idle.more && idle.clearHidden) ok('工具栏保留「⋯」，清除历史收进菜单');
     else bad('工具栏结构异常', JSON.stringify(idle));
-    if (idle.currentHidden) ok('无页面标题时当前页信息行自动隐藏');
-    else bad('空态仍占着当前页信息行', JSON.stringify(idle));
+    // 信息行只在有重定向地址时出现;缩放控件守在工具栏「打开」后面,空态也必须看得见
+    if (!idle.currentRowVisible && idle.zoomVisible && idle.zoomAfterGo) ok('空态信息行仍隐藏、缩放控件常显在「打开」后面');
+    else bad('空态信息行/缩放状态异常', JSON.stringify(idle));
 
     const err = await ev(c, `(function(){
       setBastionEmptyState('error', '加载失败', '(ERR_TEST) 测试');
@@ -124,6 +133,46 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + e 
     })()`);
     if (zoom.z === 1 && zoom.label === '100%') ok('双击缩放百分比恢复 100%');
     else bad('缩放重置异常', JSON.stringify(zoom));
+
+    // A− / A+ 直接点(可见按钮)必须真的改缩放并同步百分比
+    const zoomBtn = await ev(c, `(function(){
+      state.bastionZoom = 1; applyBastionZoom();
+      document.getElementById('bastion-zoom-in').click();
+      const up = { z: state.bastionZoom, label: document.getElementById('bastion-zoom-label').textContent };
+      document.getElementById('bastion-zoom-out').click();
+      const down = { z: state.bastionZoom, label: document.getElementById('bastion-zoom-label').textContent };
+      state.bastionZoom = 1; applyBastionZoom();
+      return { up, down, saved: state.settings.bastionZoom };
+    })()`);
+    if (zoomBtn.up.z === 1.1 && zoomBtn.up.label === '110%' && zoomBtn.down.z === 1 && zoomBtn.down.label === '100%') ok('A+/A− 点一下就生效并同步百分比与设置');
+    else bad('A+/A− 缩放异常', JSON.stringify(zoomBtn));
+
+    // 网页内部缩放手势:主进程 webview 的 zoom-changed / Ctrl+加减号 → bastion:zoom;preload 必须桥接
+    const bridge = await ev(c, `(function(){
+      return { hasApi: typeof window.api.onBastionZoom === 'function' };
+    })()`);
+    if (bridge.hasApi) ok('preload 暴露 onBastionZoom(Ctrl+滚轮/加减号缩放桥)');
+    else bad('preload 缺少 onBastionZoom', JSON.stringify(bridge));
+
+    // 主进程侧:webview 的 zoom-changed / before-input-event 接线必须存在(否则快捷键在网页里无效)
+    let mainWired = false;
+    try {
+      const src = require('fs').readFileSync(require('path').join(__dirname, 'main.js'), 'utf8');
+      mainWired = /zoom-changed/.test(src) && /before-input-event/.test(src) && /broadcast\('bastion:zoom'/.test(src);
+    } catch { /* ignore */ }
+    if (mainWired) ok('webview 缩放事件(zoom-changed / Ctrl+±)已在主进程接线');
+    else bad('主进程缺少 webview 缩放接线');
+
+    // fit-to-width: webview 未 attach 时 executeJavaScript 同步抛错(清除历史 src=about:blank 会命中),
+    // 必须 try/catch 包住调用,否则渲染层冒出 Uncaught Error
+    let fitGuarded = false;
+    try {
+      const rs = require('fs').readFileSync(require('path').join(__dirname, 'src/renderer.js'), 'utf8');
+      const body = /function bastionFitToWidth\(\)[\s\S]{0,900}?\n}/.exec(rs);
+      fitGuarded = !!body && /try\s*\{[^}]*executeJavaScript/.test(body[0]) && /catch\s*\{\s*return;/.test(body[0]);
+    } catch { /* ignore */ }
+    if (fitGuarded) ok('fit-to-width 的 executeJavaScript 有同步 try/catch(清除历史后不再抛未捕获异常)');
+    else bad('bastionFitToWidth 缺少同步 try/catch');
 
     // 配置弹窗:右上角 ✕ 必须存在；打开时隐藏 webview（避免 guest view 盖住宿主弹窗）
     const cfg = await ev(c, `(function(){

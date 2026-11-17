@@ -57,6 +57,9 @@ function argvFrames() {
   const raw = fs.readFileSync(ARGV_FILE, 'utf8');
   return raw.split('---\n').filter((x) => x.trim()).map((x) => x.split('\n').filter(Boolean));
 }
+// 日志文本按行切:app-log 在 Windows 上写 CRLF、Linux 上写 LF —— 只按 \r\n 切会把整段
+// 当成一行(取同一行又会被前一个 sftp 打开的 SFTPRealPath=off 误判,断言假红)。
+const logLines = (t) => String(t == null ? '' : t).split(/\r?\n/);
 
 const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
   env: {
@@ -270,7 +273,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     if (IS_WIN) {
       // 用面板日志里的脱敏命令行验证(与 argv 等价):账号对、起始目录对、密码被 *** 掉
       const logTxt = await evaluate(c, `window.api.appLogDump().then(r => (r && r.content) || '')`);
-      const line = String(logTxt || '').split(String.fromCharCode(13,10)).filter((l) => l.includes('RemoteDirectory=/root/www')).slice(-1)[0] || '';
+      const line = logLines(logTxt).filter((l) => l.includes('RemoteDirectory=/root/www')).slice(-1)[0] || '';
       if (/sftp:\/\/admin:\*\*\*@127\.0\.0\.1:/.test(line)) ok('入口拉起的是这条会话自己的账号(密码脱敏为 ***)+ 跟踪到的 cd 目录');
       else bad('入口使用的账号密码/起始目录', line.slice(0, 160));
     } else if (entryArgs[0] === 'sftp://admin:admin123@127.0.0.1:' + SSH + '/') ok('入口拉起的是这条会话自己的账号密码');
@@ -291,7 +294,7 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     else bad('SCP 协议 → scp:// URL', JSON.stringify(scpArgs));
     if (IS_WIN) {
       const logTxt = String(await evaluate(c, `window.api.appLogDump().then(r => (r && r.content) || '')`) || '');
-      const scpLine = logTxt.split(String.fromCharCode(13,10)).filter((l) => l.includes('scp://')).slice(-1)[0] || '';
+      const scpLine = logLines(logTxt).filter((l) => l.includes('scp://')).slice(-1)[0] || '';
       if (!/SFTPRealPath=off/.test(scpLine) && !/\/log=/.test(scpLine)) ok('SCP 会话不带 SFTPRealPath、不写日志(默认关)');
       else bad('SCP 会话参数不该有 realpath/log', scpLine.slice(0, 160));
     } else {
@@ -367,6 +370,47 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' → ' + (e
     // 起始目录未知时主进程用它现探家目录(exec pwd + readdir 校验),所以 payload 必须带 sessionId
     if (payload.sessionId === sid) ok('payload 带 sessionId(起始目录未知时主进程自己探家目录)');
     else bad('payload 带 sessionId', JSON.stringify(payload.sessionId));
+
+    // ---------- ⑧ 跳板机会话 → WinSCP 自己的 SSH 隧道 ----------
+    // 跳板机会话的 host 是内网目标,从本机直连必失败;主进程必须把跳板机变成
+    // /rawsettings Tunnel=1 … 交出去。这里用 mock SSH 自己当跳板(隧道转发到自身,
+    // 真机上是转发到内网目标),验证"跳板信息确实进了 WinSCP 参数且密码被脱敏"。
+    const jumpPayload = JSON.parse(await ev(c, `(function(){ var t=state.tabs.get('${sid}'); if (!t) return '{}'; t.session.jump={host:'127.0.0.1',port:${SSH},username:'admin',password:'jump@secret:1'}; return JSON.stringify(winScpPayloadFor('${sid}')); })()`) || '{}');
+    if (jumpPayload.jump && jumpPayload.jump.host === '127.0.0.1' && jumpPayload.jump.port === SSH) ok('winScpPayloadFor 把跳板机一起交给主进程');
+    else bad('payload 带跳板机', JSON.stringify(jumpPayload.jump));
+    const openT = JSON.parse(await ev(c, `(async()=>JSON.stringify(await window.api.winScpOpen(${JSON.stringify({
+      sessionId: sid, protocol: 'ssh', host: '127.0.0.1', port: SSH, username: 'admin', password: 'admin123',
+      jump: { host: '127.0.0.1', port: SSH, username: 'admin', password: 'jump@secret:1' },
+    })})))()`));
+    await sleep(400);
+    if (openT.ok) ok('带跳板机的会话能拉起 WinSCP(隧道开关被接受)');
+    else bad('带跳板机的会话能拉起 WinSCP', String(openT.error || '').slice(0, 140));
+    if (IS_WIN) {
+      const tlog = logLines(await ev(c, `window.api.appLogDump().then(r => (r && r.content) || '')`)).filter((l) => l.includes('[WINSCP] 已拉起') && l.includes('Tunnel')).slice(-1)[0] || '';
+      if (/跳板=127\.0\.0\.1:\d+/.test(tlog)) ok('拉起日志写明经跳板(排障时一眼看出走没走隧道)');
+      else bad('拉起日志写跳板', tlog.slice(0, 180));
+      if (/Tunnel=1/.test(tlog) && /TunnelHostName=127\.0\.0\.1/.test(tlog)) ok('隧道开关进了 rawsettings');
+      else bad('隧道开关进了 rawsettings', tlog.slice(0, 180));
+      if (!tlog.includes('jump@secret') && /TunnelPasswordPlain=\*\*\*/.test(tlog)) ok('隧道密码在日志里被脱敏(不落盘/不进面板)');
+      else bad('隧道密码被脱敏', tlog.slice(0, 180));
+    } else {
+      const nT = argvFrames().length;
+      await ev(c, `(async()=>{ await window.api.winScpOpen(${JSON.stringify({ sessionId: sid, host: '127.0.0.1', port: SSH, username: 'admin', password: 'admin123', jump: { host: '127.0.0.1', port: SSH, username: 'admin', password: 'jump@secret:1' } })}); return true; })()`);
+      await sleep(400);
+      const fT = argvFrames().slice(nT).pop() || [];
+      if (fT.includes('Tunnel=1') && fT.includes('TunnelHostName=127.0.0.1')) ok('隧道开关进了 argv');
+      else bad('隧道开关进了 argv', JSON.stringify(fT));
+      if (fT.includes('TunnelPasswordPlain=jump@secret:1')) ok('隧道密码按 WinSCP 明文键传过去(TunnelPasswordPlain)');
+      else bad('隧道密码传参', JSON.stringify(fT));
+    }
+    // 跳板机配置不完整(没密码没私钥)→ 明确失败,绝不静默直连内网目标
+    const noAuth = JSON.parse(await ev(c, `(async()=>JSON.stringify(await window.api.winScpOpen(${JSON.stringify({
+      sessionId: sid, host: '127.0.0.1', port: SSH, username: 'admin', password: 'admin123',
+      jump: { host: '127.0.0.1', port: SSH, username: 'admin' },
+    })})))()`));
+    if (!noAuth.ok && /隧道/.test(String(noAuth.error || ''))) ok('跳板机没密码/私钥 → 明确报错(不静默直连)');
+    else bad('跳板机无认证方式应报错', JSON.stringify(noAuth).slice(0, 160));
+    await ev(c, `(function(){ var t=state.tabs.get('${sid}'); if (t) t.session.jump=null; return true; })()`);
 
     // 走渲染层自己的入口(标签右键菜单/按钮调的就是它),返回值 + 状态栏文案一起验
     await ev(c, `state.winScp.installed = true; true`);
