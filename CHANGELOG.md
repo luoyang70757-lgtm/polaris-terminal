@@ -1,5 +1,28 @@
 # 更新日志
 
+## v1.0.29（2026-11-17）
+
+**跳板机这条线补完整** —— `~/.ssh/config` 的 `ProxyJump`/`ProxyCommand` 真正导入 + JumpServer 登录态加固 + 三个红灯用例查清（其中一条是真 bug：输入法残留会把命令行改坏）。
+
+1. **`ProxyJump` / `ProxyCommand` 导入**：`lib/ssh-config.js` 新增 `parseProxyJump()` / `parseProxyCommand()`，
+   支持 `[user@]host[:port]`、`ssh://user@host:port/`、`ssh -p N host -W %h:%p`、`nc host port`；
+   `ProxyJump` 优先于 `ProxyCommand`（与 OpenSSH 一致），`ProxyJump none` = 不用跳板。
+   **认不出来的写法绝不静默丢跳板**：多跳、只剩 `%h/%p`、不认识的工具 → 主机照常导入但带 `warn`，
+   导入预览逐行显示 `⚠ <名称>: <原因>`。`sessions:import` 统一 `packJump()`（不 pack 会 `cannot bind object`），
+   对已是 JSON 串的输入幂等。
+2. **JumpServer 登录态**：`date_expired` 透传到渲染层，`jmsTokenValid()` 按 5 分钟余量判定；
+   写 token 全部收敛到 `jmsApplyLogin()`；拉资产/刷新失败只在 401/403/token 过期时强制重登
+   （网络抖动不再踢回登录框）；并发登录走 `jmsLoginOnce()` 单飞，避免一次误操作扣掉多次失败额度。
+3. **修「输入法残留把命令行改坏」**：xterm 有时不认为自己在组合（`isComposing=false`），但隐藏 textarea
+   留着上次 preedit（如 `" T"`），敲空格时被一起发给服务器 → `df -Th` 变成 `df -Th T`。
+   现在空格 keydown 时**无条件丢弃非组合态残留**。
+4. **测试债**：`verify-debug-log`（新手引导弹窗开着 → KEY 日志必然为空）、
+   `verify-space-composition-flush`（后台窗口定时器被节流到 ~1s）、
+   `verify-vim-real`（Chromium 右键不派发 `contextmenu`）三条红灯全部定位并修复，
+   `docs/verify-known-red.md` 改为历史记录。
+5. **回归**：`run-verify --pure` 12/12 脚本 314 断言；`verify-ssh-config` 41、`verify-ssh-config-import` 23、
+   `verify-jms-auth-guard` 50、`verify-debug-log` 9/9、`verify-space-composition-flush` 6/6、`verify-vim-real` 5/5。
+
 ## v1.0.25（2026-11-14）
 
 **SFTP 只剩一个入口：用本机 WinSCP 打开当前会话** —— 内置 SFTP 面板整套删除。

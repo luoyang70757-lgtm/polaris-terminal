@@ -95,6 +95,9 @@ async function tap(c, name) {
     for (let i = 0; i < 30; i++) { sid = await ev(c, `(state.tabs.size ? [...state.tabs.keys()][0] : null)`); if (sid && await ev(c, `state.tabs.get('${sid}').status`) === 'connected') break; await sleep(300); }
     if (!sid) throw new Error('未能建立 SSH 连接');
     ok('SSH 连接建立(sid=' + sid + ')');
+    // 新手引导是 .modal:弹窗打开时全局按键归弹窗(KEY/RECOVER 日志都不会有),先按用户操作关掉
+    await ev(c, `(function(){ try { closeOnboarding(true); } catch (e) { /* ignore */ } return true; })()`);
+    for (let i = 0; i < 20; i++) { if (await ev(c, `document.querySelectorAll('.modal:not(.hidden)').length === 0`)) break; await sleep(200); }
 
     const readSends = async (from) => ev(c, `termDebug.lines.slice(${from}).filter(l => l.indexOf('SEND ${sid} ') >= 0)`);
     const mark = async () => ev(c, `termDebug.lines.length`);
@@ -142,8 +145,14 @@ async function tap(c, name) {
     await ev(c, `(function(){ const t=state.tabs.get('${sid}'); t.term.options.disableStdin = true; t.term.focus(); return true; })()`);
     m0 = await mark();
     await tap(c, ' ');
-    await sleep(450); // 看门狗 250ms
-    const rec = await ev(c, `termDebug.lines.slice(${m0}).filter(l => l.indexOf('RECOVER') >= 0)`);
+    // 看门狗 250ms 触发;但测试窗口常处于非焦点态,Chromium 会把后台定时器节流到 ~1s,
+    // 所以这里轮询等待(最多 2s)而不是死等 450ms —— 否则断言会因节流假红。
+    let rec = [];
+    for (let i = 0; i < 20; i++) {
+      rec = await ev(c, `termDebug.lines.slice(${m0}).filter(l => l.indexOf('RECOVER') >= 0)`);
+      if (rec.length) break;
+      await sleep(100);
+    }
     if (rec.length) ok('空格被吞 → 看门狗自动重建输入法会话');
     else bad('看门狗未触发', JSON.stringify(await ev(c, `termDebug.lines.slice(${m0})`)));
     await ev(c, `state.tabs.get('${sid}').term.options.disableStdin = false; true`);

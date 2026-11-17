@@ -78,6 +78,16 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     if (!sid) throw new Error('会话连接失败');
     ok(`会话已连接(sid=${sid})`);
 
+    // 新手引导(首次解锁后自动弹)是 .modal:弹窗打开时全局按键一律归弹窗输入框 →
+    // KEY 日志必然为空(这是产品正确行为,不是 bug)。测试里先按用户操作把引导关掉。
+    await ev(c, `(function(){ try { closeOnboarding(true); } catch (e) { /* ignore */ } return true; })()`);
+    for (let i = 0; i < 20; i++) {
+      if (await ev(c, `document.querySelectorAll('.modal:not(.hidden)').length === 0`)) break;
+      await sleep(200);
+    }
+    const modalCount = await ev(c, `document.querySelectorAll('.modal:not(.hidden)').length`);
+    if (modalCount === 0) ok('先关掉新手引导等弹窗(弹窗开着时按键归弹窗,不会进终端)'); else bad('仍有弹窗未关闭', modalCount);
+
     // ① 打开调试面板(入口已从工具栏挪到菜单栏「调试」;菜单事件最终调用的就是这个函数)
     const toolbarBtn = await ev(c, `!!document.getElementById('btn-debug')`);
     if (!toolbarBtn) ok('工具栏已无「调试」按钮(入口移到菜单栏「调试」)'); else bad('工具栏仍留着调试按钮');

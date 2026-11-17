@@ -100,8 +100,10 @@ const bad = (n, e) => { failed++; console.error('  ✗ ' + n + (e ? ' -> ' + e :
     const paneRect = JSON.parse(await ev(c, `(function(){ const el=document.querySelector('.term-pane'); if(!el) return null; const r=el.getBoundingClientRect(); return JSON.stringify({left:r.left,top:r.top,width:r.width,height:r.height}); })()`));
     if (!paneRect) throw new Error('找不到终端面板');
     const mx = paneRect.left + paneRect.width / 2, my = paneRect.top + paneRect.height / 2;
-    await c.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: mx, y: my, button: 'right', buttons: 2, clickCount: 1 });
-    await c.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: mx, y: my, button: 'right', buttons: 0, clickCount: 1 });
+    // Chrome 的 Input.dispatchMouseEvent 右键**不会**派发 contextmenu(仅 DOM 合成事件才会),
+    // 所以这里直接在终端面板上合成一次 contextmenu —— 走的是产品里同一条 paneEl 监听器,
+    // 仍然验证"右键 → 菜单 → 点粘贴 → 焦点回终端"整条链路(不再依赖浏览器右键行为)。
+    await ev(c, `(function(){ const el=document.querySelector('.term-pane'); if(!el) return false; el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: ${mx}, clientY: ${my} })); return true; })()`);
     await sleep(300);
     const menuVisible = await ev(c, `!els.ctxMenu.classList.contains('hidden')`);
     ok('右键弹出上下文菜单=' + menuVisible);

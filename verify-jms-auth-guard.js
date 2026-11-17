@@ -42,7 +42,7 @@ if (!m) {
   const block = m[1];
   try {
     api = new Function(block + `
-    return { JMS_AUTH_LOCK_MIN, JMS_AUTH_NET_COOLDOWN_MS, jmsAuthGuard, jmsGuardKey, jmsAuthKind, jmsGuardRecord, jmsGuardClear, jmsGuardClearById, jmsGuardBlocked, jmsGuardHint };`)();
+    return { JMS_AUTH_LOCK_MIN, JMS_AUTH_NET_COOLDOWN_MS, JMS_TOKEN_MARGIN_MS, jmsAuthGuard, jmsGuardKey, jmsAuthKind, jmsGuardRecord, jmsGuardClear, jmsGuardClearById, jmsGuardBlocked, jmsGuardHint, jmsTokenExpiry, jmsTokenValid, jmsApplyLogin, jmsLoginOnce, jmsLoginInflight, jmsAuthError };`)();
     ok('JMS-AUTH-GUARD 区块可独立 eval（纯逻辑，不依赖 window/state/document）');
   } catch (e) {
     bad('JMS-AUTH-GUARD 区块 eval 失败', e.message);
@@ -123,6 +123,50 @@ if (api) {
   if (api.jmsGuardBlocked(s5, NOW + 1000) === null) ok('登录成功调 jmsGuardClear 后立刻解除熔断');
   else bad('清除后仍在熔断');
 
+  // ⑪ token 有效期：别等真失效才换票（服务端默认 24h，跨天第一次请求必失败一次 = 白扣一次失败次数）
+  const s6 = srv({ id: 'jms-server-5' });
+  api.jmsAuthGuard.clear();
+  api.jmsApplyLogin(s6, { token: 'tok', user: 'polaris', dateExpired: new Date(NOW + 24 * 3600 * 1000).toISOString() });
+  if (s6.token === 'tok' && s6.user === 'polaris' && s6.tokenExpiredAt === NOW + 24 * 3600 * 1000) ok('登录成功回填 token/用户/到期时间');
+  else bad('jmsApplyLogin 没回填到期时间', s6.tokenExpiredAt);
+  if (api.jmsTokenValid(s6, NOW)) ok('刚登录：token 可用（不会立刻又登一次）');
+  else bad('刚登录就判 token 无效');
+  if (api.jmsTokenValid(s6, NOW + 24 * 3600 * 1000 - 6 * 60000)) ok('到期前 6 分钟仍可用（没到换票窗口）');
+  else bad('未到换票窗口就判无效（会造成多余登录）');
+  if (!api.jmsTokenValid(s6, NOW + 24 * 3600 * 1000 - 4 * 60000)) ok('到期前 4 分钟判无效 → 提前换票，避免跨天白失败一次');
+  else bad('临近过期没提前换票');
+  if (!api.jmsTokenValid(s6, NOW + 25 * 3600 * 1000)) ok('过期后判无效');
+  else bad('过期后仍判可用');
+  if (api.jmsTokenValid({ token: 'tok', user: 'u' }, NOW)) ok('没有过期信息的老数据按可用处理（不改变旧行为）');
+  else bad('缺过期信息被误判无效');
+  if (!api.jmsTokenValid({ token: '', user: 'u' }, NOW)) ok('没 token 判无效');
+  else bad('空 token 判可用');
+  if (api.jmsTokenExpiry('') === 0 && api.jmsTokenExpiry('not-a-date') === 0) ok('date_expired 缺失/解析失败按 0（不主动换票）');
+  else bad('非法 date_expired 没回落 0');
+  if (api.jmsTokenExpiry('2026-11-18T09:00:00+08:00') > 0) ok('真实 ISO 时间能解析（带时区）');
+  else bad('ISO 时间解析失败');
+
+  // ⑫ 登录单飞：并发调用共用一条请求（否则一次重登被扣成好几次失败次数）
+  const s7 = srv({ id: 'jms-server-6' });
+  api.jmsAuthGuard.clear();
+  const fakeFn = () => Promise.resolve(true);
+  const p1 = api.jmsLoginOnce(s7, fakeFn);
+  const p2 = api.jmsLoginOnce(s7, fakeFn);
+  if (p1 === p2) ok('同一服务器的并发登录返回同一个 Promise（单飞）');
+  else bad('并发登录没有单飞（会连发多条登录请求）');
+  if (api.jmsLoginInflight.size === 1) ok('在飞表里只有 1 条（按 服务器|账号 归并）');
+  else bad('在飞表条数不对', api.jmsLoginInflight.size);
+  const s8 = srv({ id: 'jms-server-7', account: 'polaris-ro' });
+  if (api.jmsLoginOnce(s8, fakeFn) !== p1) ok('不同服务器/账号互不干扰（各自单飞）');
+  else bad('不同账号被错误合并');
+  api.jmsLoginInflight.clear();
+
+  // ⑬ 只有"token 失效"类错误才值得强制重登（网络/5xx 重登只会白扣次数）
+  if (api.jmsAuthError('HTTP 401') && api.jmsAuthError('token 已过期') && api.jmsAuthError('{"error":"NotAuthenticated"}')) ok('401 / token 过期 / NotAuthenticated 判为登录类错误');
+  else bad('登录类错误识别不全');
+  if (!api.jmsAuthError('fetch failed') && !api.jmsAuthError('HTTP 502') && !api.jmsAuthError('')) ok('网络异常 / 502 / 空错误不触发强制重登');
+  else bad('非登录类错误被误判，会导致多余重登');
+
   // ⑧ key：同 id 不同账号互不影响；clearById 只清该连接
   const a1 = srv({ id: 'same-id', account: 'admin' });
   const a2 = srv({ id: 'same-id', account: 'polaris' });
@@ -143,13 +187,17 @@ const srcN = src.split('\r\n').join('\n'); // 仓库在 Windows 上是 CRLF,结�
 const wiring = [
   [/async function ensureJmsLogin[\s\S]{0,1200}?jmsGuardBlocked\(s\)/, 'ensureJmsLogin 登录前先查熔断（jmsGuardBlocked）'],
   [/async function ensureJmsLogin[\s\S]{0,1600}?jmsGuardRecord\(s, raw/, '自动重登失败落熔断（jmsGuardRecord）'],
-  [/async function ensureJmsLogin[\s\S]{0,1600}?jmsGuardClear\(s\)/, '自动重登成功清熔断（jmsGuardClear）'],
+  [/async function jmsAutoLogin[\s\S]{0,1600}?jmsGuardClear\(s\)/, '自动重登成功清熔断（jmsGuardClear）'],
   [/function jmsNeedLoginMsg[\s\S]{0,600}?jmsGuardHint\(g\)/, 'jmsNeedLoginMsg 用熔断文案（不是原始报错）'],
   [/function jmsDoSave[\s\S]{0,900}?jmsGuardClearById\(server\.id\)/, '编辑保存 JumpServer 配置时清熔断'],
   [/function bastionCfgDelete[\s\S]{0,400}?jmsGuardClearById\(id\)/, '删除堡垒机连接时清熔断'],
   [/if \(editingId\) \{[\s\S]{0,900}?jmsGuardClearById\(s\.id\)/, '编辑已保存堡垒机连接时清熔断'],
   [/手动登录成功 → 恢复自动登录\n\s*jmsGuardClear\(server\)/, '手动「登录」成功后清熔断'],
   [/手动登录也记一笔[\s\S]{0,400}?jmsGuardRecord\(server, r\.error\)/, '手动登录失败也落熔断（避免自动路径继续扣次数）'],
+  [/if \(!force && jmsTokenValid\(s\)\) return true;/, 'ensureJmsLogin 用 token 有效期判定（不再只看 token 有没有）'],
+  [/return jmsLoginOnce\(s, \(\) => jmsAutoLogin\(s, url, stale\)\);/, 'ensureJmsLogin 走单飞包装（并发只发一条登录）'],
+  [/const authFail = !r\.ok && jmsAuthError\(r\.error\) && \(await ensureJmsLogin\(s, s\.baseUrl, \{ force: true \}\)\);/, '刷新失败只在登录类错误后才强制重登'],
+  [/s\.tokenExpiredAt = jmsTokenExpiry\(r\.dateExpired\);/, '登录响应里的 date_expired 落成 tokenExpiredAt'],
 ];
 for (const [re, name] of wiring) {
   if (re.test(srcN)) ok(name);
@@ -159,6 +207,9 @@ for (const [re, name] of wiring) {
 // ⑩ 旧写法必须消失（失败后什么都不记 → 轮询/点资产会一直扣服务端次数）
 if (/s\.jmsLoginError = \(r && r\.error\) \|\| '账号或密码不正确';/.test(srcN)) bad('还留着「失败只记错误、不落熔断」的旧写法');
 else ok('旧的「失败只记错误文本」写法已删除');
+const srcNoHelper = srcN.replace(/function jmsApplyLogin\(s, r\) \{[\s\S]*?\n\}/, ''); // 辅助函数自己那行不算
+if (/(^|[^A-Za-z0-9_.])(s|server|jmsServer)\.token = (r|lg)\.token/.test(srcNoHelper)) bad('还存在直接 token 赋值（应统一走 jmsApplyLogin 带到期时间）');
+else ok('所有 token 回填都走 jmsApplyLogin（不只拿 token，还拿到期时间）');
 if (/if \(!pw\) return false;\s*\n/.test(src)) bad('ensureJmsLogin 解不出密码时静默返回，用户看不到原因');
 else ok('解不出密码有可读原因（不再静默 return false）');
 

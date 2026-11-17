@@ -4,7 +4,7 @@
  * 不 spawn electron、不碰数据库,直接 require 纯函数验证。用法:node verify-ssh-config.js
  */
 const assert = require('assert');
-const { parseSshConfig, defaultSshConfigPath } = require('./lib/ssh-config');
+const { parseSshConfig, defaultSshConfigPath, parseProxyJump, parseProxyCommand } = require('./lib/ssh-config');
 
 let pass = 0;
 
@@ -85,5 +85,67 @@ eq(new Set(multi.map((r) => r.host)), new Set(['7.7.7.7']), '#13 多 pattern 共
 
 // 12. defaultSshConfigPath 返回用户主目录下的路径
 eq(defaultSshConfigPath(), require('path').join(require('os').homedir(), '.ssh', 'config'), '#14 默认路径');
+
+// 13. ProxyJump → 会话 jump 字段(导入后跳板机直接可用,不用再手工填一遍)
+const pj1 = parseSshConfig('Host db1\n  HostName 192.0.2.10\n  User polaris\n  ProxyJump ops@gw.example:2222\n');
+eq(pj1[0].jump, { host: 'gw.example', port: 2222, username: 'ops', password: '' }, '#15 ProxyJump user@host:port → jump');
+eq(pj1[0].username, 'polaris', '#16 目标账号不被跳板机账号顶替');
+eq(pj1[0].host, '192.0.2.10', '#17 目标主机名照常解析');
+
+const pj2 = parseSshConfig('Host db2\n  Hostname 192.0.2.11\n  ProxyJump gw.example\n');
+eq(pj2[0].jump, { host: 'gw.example', port: 22, username: '', password: '' }, '#18 ProxyJump 只给主机 → 端口 22、用户名空(连接时沿用目标账号)');
+
+const pj3 = parseSshConfig('Host db3\n  ProxyJump ssh://ops@gw.example:2200/\n');
+eq(pj3[0].jump && pj3[0].jump.host, 'gw.example', '#19 ProxyJump ssh:// URI 形式也能认');
+eq(pj3[0].jump && pj3[0].jump.port, 2200, '#19b URI 里的端口');
+
+// 14. ProxyCommand:ssh -W 与 nc 两种常见写法
+const pc1 = parseSshConfig('Host db4\n  ProxyCommand ssh -p 2222 ops@gw.example -W %h:%p\n');
+eq(pc1[0].jump, { host: 'gw.example', port: 2222, username: 'ops', password: '' }, '#20 ProxyCommand ssh -W → jump(端口取 -p)');
+eq(pc1[0].warn, undefined, '#20b 能解析时不带 warn');
+
+const pc2 = parseSshConfig('Host db5\n  ProxyCommand ssh bastion -W %h:%p\n');
+eq(pc2[0].jump, { host: 'bastion', port: 22, username: '', password: '' }, '#21 ProxyCommand ssh bastion -W %h:%p(默认端口 22)');
+
+const pc3 = parseSshConfig('Host db6\n  ProxyCommand nc gw.example 2222\n');
+eq(pc3[0].jump, { host: 'gw.example', port: 2222, username: '', password: '' }, '#22 ProxyCommand nc host port');
+
+// 15. 推不出跳板机时:照常导入主机 + warn(绝不静默丢跳板信息)
+const bad1 = parseSshConfig('Host db7\n  Hostname 192.0.2.12\n  ProxyJump a@gw.example,b@gw.example:22\n');
+eq(bad1[0].jump, undefined, '#23 多跳(A→B→C):不导入跳板');
+eq(!!bad1[0].warn, true, '#23b 多跳给出 warn');
+eq(bad1[0].host, '192.0.2.12', '#23c 多跳时主机照常导入');
+
+const bad2 = parseSshConfig('Host db8\n  ProxyCommand ssh -W %h:%p\n');
+eq(bad2[0].jump, undefined, '#24 ProxyCommand 只有 %h/%p(没有跳板机)');
+eq(!!bad2[0].warn, true, '#24b 给出 warn');
+
+const bad3 = parseSshConfig('Host db9\n  ProxyCommand some-vpn-tool --flag\n');
+eq(bad3[0].warn !== undefined, true, '#25 不认识的 ProxyCommand 也 warn(不猜)');
+
+// 16. ProxyJump 优先于 ProxyCommand;none 视为不使用
+const pri = parseSshConfig('Host dbA\n  ProxyJump gw.example\n  ProxyCommand nc other.example 22\n');
+eq(pri[0].jump, { host: 'gw.example', port: 22, username: '', password: '' }, '#26 ProxyJump 优先于 ProxyCommand');
+eq(parseSshConfig('Host dbB\n  ProxyJump none\n')[0].jump, undefined, '#27 ProxyJump none → 无跳板');
+
+// 17. Host * 里的跳板机也当默认继承(与 OpenSSH 一致)
+const glob = parseSshConfig('Host *\n  ProxyJump gw.example:22\nHost inner\n  HostName 192.0.2.13\n');
+eq(glob[0].jump && glob[0].jump.host, 'gw.example', '#28 Host * 的 ProxyJump 被具体 Host 继承');
+
+// 18. 跳板机与私钥共存(ProxyJump + IdentityFile)
+const both = parseSshConfig('Host dbC\n  Hostname 192.0.2.14\n  ProxyJump ops@gw.example\n  IdentityFile ~/.ssh/id_ed25519\n');
+eq(both[0].jump.host, 'gw.example', '#29 跳板机与私钥并存(不互相顶掉)');
+eq(!!both[0].privateKey, true, '#29b 私钥仍展开成绝对路径');
+
+// 19. 直接调纯函数(导出即契约)
+eq(parseProxyJump('u@h:2222'), { host: 'h', port: 2222, username: 'u' }, '#30 parseProxyJump 导出可用');
+eq(parseProxyCommand('nc h 22'), { host: 'h', port: 22, username: '' }, '#31 parseProxyCommand 导出可用');
+
+// 20. 落库必须 pack(否则 node:sqlite 直接 bind 失败: cannot bind object)
+const fs = require('fs');
+const path = require('path');
+const ipc = fs.readFileSync(path.join(__dirname, 'lib', 'session-ipc.js'), 'utf8');
+eq(/jump: packJump\(x\.jump\)/.test(ipc), true, '#32 sessions:import 把 jump 对象包成 JSON 串再入库');
+eq(/if \(typeof o === 'string'\)/.test(ipc), true, '#32b packJump 兼容已是 JSON 串的输入');
 
 console.log(`\nverify-ssh-config 通过 ${pass} 项断言 ✅`);

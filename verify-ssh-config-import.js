@@ -27,10 +27,13 @@ require('./mock/mock-server').start();
 const fakeHome = path.join(DIR, 'home');
 fs.mkdirSync(path.join(fakeHome, '.ssh'), { recursive: true });
 fs.writeFileSync(path.join(fakeHome, '.ssh', 'config'),
-  '# 临时测试配置\nHost www\n  HostName 10.0.0.9\n  User deploy\n  IdentityFile ~/.ssh/id_ed25519\n');
+  '# 临时测试配置\nHost www\n  HostName 10.0.0.9\n  User deploy\n  IdentityFile ~/.ssh/id_ed25519\n'
+  + '  ProxyJump ops@gw.example:2222\n'
+  + 'Host bad\n  HostName 10.0.0.10\n  User deploy\n  ProxyJump a@gw.example,b@gw.example\n');
 
 const appProc = spawn(require('electron'), ['.', '--dev', `--remote-debugging-port=${PORT}`, '--no-sandbox', '--disable-gpu'], {
-  env: { ...process.env, POLARIS_LOCK_DIR: DIR, HOME: fakeHome, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
+  // POLARIS_SSH_HOME:Windows 上 os.homedir() 不认 HOME,必须显式指定(~ 展开与默认 config 路径都跟它走)
+      env: { ...process.env, POLARIS_LOCK_DIR: DIR, HOME: fakeHome, POLARIS_SSH_HOME: fakeHome, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' },
   stdio: ['ignore', 'ignore', 'ignore'],
   detached: true,
 });
@@ -116,10 +119,14 @@ const eq = (a, b, n) => { if (a === b) ok(n); else bad(n, `期望 ${JSON.stringi
     const r3 = await ev(c, `window.api.importSshConfig()`);
     eq(r3 && r3.ok, true, 'importSshConfig 读到 ~/.ssh/config(假 HOME)');
     if (r3.ok) {
-      eq(r3.rows.length, 1, '  解析出 1 台');
+      eq(r3.rows.length, 2, '  解析出 2 台');
       eq(r3.rows[0].name, 'www', '  name=www');
       eq(r3.rows[0].host, '10.0.0.9', '  HostName=10.0.0.9');
       eq(r3.rows[0].privateKey, path.join(fakeHome, '.ssh', 'id_ed25519'), '  IdentityFile 展开');
+      // ProxyJump 一路带到导入行(渲染层 buildImportList 直接把它当 session.jump)
+      // IPC 回来的对象跨了序列化边界,deepStrictEqual 比到原型会假红 → 按 JSON 比字段
+      eq(JSON.stringify(r3.rows[0].jump), JSON.stringify({ host: 'gw.example', port: 2222, username: 'ops', password: '' }), '  ProxyJump → rows[0].jump');
+      eq(!!r3.rows[1].warn, true, '  推不出跳板机(多跳)→ 带 warn 而不是报错');
     }
 
     // ⑤ 点击按钮 → 导入弹窗出现并进入预览(通过 import-modal 可见性验证渲染端胶水)
@@ -129,6 +136,7 @@ const eq = (a, b, n) => { if (a === b) ok(n); else bad(n, `期望 ${JSON.stringi
     // 预览数量文本应包含 "www"
     const previewTxt = await ev(c, `(document.getElementById('import-result')||{}).innerText || (document.getElementById('import-summary')||{}).innerText || ''`);
     console.log('    (预览内容) ', JSON.stringify(String(previewTxt).slice(0, 120)));
+    eq(/⚠ bad/.test(String(previewTxt)), true, '预览把「跳板机未导入」的 warn 显示出来(不静默)');
 
     console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
     killTree(appProc);

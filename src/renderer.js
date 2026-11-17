@@ -3104,6 +3104,11 @@ window.addEventListener('keydown', (e) => {
         // 先按原有逻辑复位“确认卡住”的组合态；若状态检测不到但空格仍被吞，
         // 由 250ms 看门狗兜底（重建输入法会话），避免每次空格额外发一条空 SEND。
         resetTermComposition(t.term);
+        // 第二道(实测 v1.0.29):xterm 5.3 有时**不认为**自己在组合(isComposing=false),
+        // 但隐藏 textarea 里仍留有 preedit 残留(如 " T")→ 敲空格时被一并发给服务器,
+        // 把命令行改成 `df -Th T`。真实组合(e.isComposing)已在上面排除,这里直接丢弃残留,
+        // 保证空格只发一个 " "。
+        try { if (t.term.textarea && t.term.textarea.value) t.term.textarea.value = ''; } catch { /* ignore */ }
         armSpaceWatchdog(t);
         break;
       }
@@ -4023,6 +4028,7 @@ function buildImportList(sessions) {
             name: s.name, host: s.host, port: s.port, username: s.username, password: s.password,
             privateKey: ex.private_key || '', passphrase: ex.passphrase || '',
             encoding: ex.encoding || 'utf8', groupId: ex.group_id, // 保留原有分组/私钥设置
+            jump: s.jump || ex.jump || null, // 导入行带跳板(ProxyJump)就用新的,否则保留原来的
           },
         });
       } else skippedDup.push(s.name);
@@ -4032,6 +4038,12 @@ function buildImportList(sessions) {
 }
 
 // 预览:解析结果展示出来,但不导入,等用户点"导入"
+// 导入行的非致命提示(目前只有 ProxyJump/ProxyCommand 推不出跳板机)——照常导入,只告诉用户要手动补
+function validWarns(sessions) {
+  return (sessions || []).filter((r) => r && !r.error && r.warn)
+    .map((r) => `⚠ ${r.name}: ${r.warn}`).slice(0, 8);
+}
+
 function setImportPreview(sessions) {
   const { errors, toImport, toUpdate, skippedDup } = buildImportList(sessions);
   pendingImport = toImport;
@@ -4056,6 +4068,8 @@ function setImportPreview(sessions) {
     return;
   }
   if (errors.length) html += `<div class="bad">${errors.map((e) => e.error).join('<br/>')}</div>`;
+  const warns = validWarns(sessions);
+  if (warns.length) html += `<div class="bad">${warns.join('<br/>')}</div>`;
   if (skippedDup.length) html += `<div class="bad">重名跳过: ${dupNamesPreview(skippedDup)}</div>`;
   els.importResult.innerHTML = html;
 }
@@ -4873,6 +4887,45 @@ function jmsGuardBlocked(s, now) {
   }
   return g;
 }
+const JMS_TOKEN_MARGIN_MS = 5 * 60 * 1000;   // 到期前 5 分钟就换票(服务端默认 24h,跨天必现;别等它真失效白失败一次)
+// 登录响应的 date_expired(ISO) → 毫秒时间戳;解析不了返回 0 = "不知道过期时间"
+function jmsTokenExpiry(dateExpired) {
+  const t = Date.parse(String(dateExpired || ''));
+  return Number.isFinite(t) ? t : 0;
+}
+// 现有 token 还能不能用:没有过期信息(服务端没给 / 老数据)按可用处理,与旧行为一致
+function jmsTokenValid(s, now) {
+  if (!s || !s.token || !s.user) return false;
+  const exp = Number(s && s.tokenExpiredAt) || 0;
+  if (!exp) return true;
+  const t = now == null ? Date.now() : now;
+  return t < exp - JMS_TOKEN_MARGIN_MS;
+}
+// 登录成功回填 token/用户/过期时间(所有拿 token 的地方都走这里,免得漏掉有效期)
+function jmsApplyLogin(s, r) {
+  if (!s || !r || !r.token) return false;
+  s.token = r.token;
+  s.user = r.user;
+  s.tokenExpiredAt = jmsTokenExpiry(r.dateExpired);
+  return true;
+}
+// 登录单飞:同一服务器并发重登只发一条请求(轮询 + 手动刷新 + 双击资产会同时进来,
+// 每条都发一次 = 一次失败被扣成好几次,7 次就到锁定)
+const jmsLoginInflight = new Map();
+function jmsLoginOnce(s, fn) {
+  const key = jmsGuardKey(s);
+  const cur = jmsLoginInflight.get(key);
+  if (cur) return cur;
+  const p = Promise.resolve().then(fn).finally(() => {
+    if (jmsLoginInflight.get(key) === p) jmsLoginInflight.delete(key);
+  });
+  jmsLoginInflight.set(key, p);
+  return p;
+}
+// 拉资产失败是不是"token 失效"类:只有这类才值得强制重登(网络/5xx 重登只会白扣失败次数)
+function jmsAuthError(msg) {
+  return /401|403|NotAuthenticated|authenticat|token|认证|登录已(过期|失效)|已过期|expired/i.test(String(msg || ''));
+}
 // 熔断原因说人话（弹窗/状态栏统一走这里）
 function jmsGuardHint(g, now) {
   if (!g) return '';
@@ -4901,10 +4954,18 @@ function jmsGuardHint(g, now) {
 async function ensureJmsLogin(s, baseUrl, opts) {
   const force = !!(opts && opts.force); // force=忽略现有 token 强制重登（token 失效但字段还在时用）
   if (!s) return false;
-  if (!force && s.token && s.user) return true;
+  // 有效 token（且离过期还有 5 分钟以上）直接放行；临近/已过期就静默换票。
+  // 旧版只看 s.token 有没有、不看 24h 有效期 ⇒ 跨天第一次请求必失败一次才重登（白扣服务端失败次数）
+  if (!force && jmsTokenValid(s)) return true;
   if (s.loggedOut) return false;
   const url = String(baseUrl || s.baseUrl || s.url || '').trim();
   if (!url || !s.account) return false;
+  const stale = !!(s.token && s.user); // 走到这儿 = token 过期(或调用方要求强刷)
+  // 单飞：并发进来的调用共用同一条登录请求（否则一次重登被扣成好几次失败次数）
+  return jmsLoginOnce(s, () => jmsAutoLogin(s, url, stale));
+}
+
+async function jmsAutoLogin(s, url, stale) {
   // 熔断（连 force 也拦：密码错时重试只会扣 JumpServer 的失败次数 → 锁号 30 分钟）
   const guard = jmsGuardBlocked(s);
   if (guard) {
@@ -4931,8 +4992,7 @@ async function ensureJmsLogin(s, baseUrl, opts) {
       dlog('JMS', `自动重登失败(${g.kind}, 第${g.failCount}次): ${s.account || ''}@${url} | ${raw}`);
       return false;
     }
-    s.token = r.token;
-    s.user = r.user;
+    jmsApplyLogin(s, r);
     s.jmsLoginError = null;
     jmsGuardClear(s); // 登录成功 → 解除熔断
     try {
@@ -4941,7 +5001,8 @@ async function ensureJmsLogin(s, baseUrl, opts) {
     } catch { /* 资产拉取失败不阻断本次连接 */ }
     try { renderSessionList(els.inputSessionSearch.value); } catch { /* 非列表渲染期忽略 */ }
     setStatus(`已自动登录「${s.name || url}」`, 'var(--green)');
-    dlog('JMS', `token 失效 → 自动重登成功: ${s.account || ''}@${url}`);
+    dlog('JMS', `${stale ? 'token 过期 → 换票成功' : '自动重登成功'}: ${s.account || ''}@${url}`
+      + (s.tokenExpiredAt ? `(新 token 到期 ${new Date(s.tokenExpiredAt).toLocaleString()})` : ''));
     return true;
   } catch (e) {
     const g = jmsGuardRecord(s, e.message, { kind: 'network' });
@@ -5153,7 +5214,7 @@ async function jmsDoLogin() {
       showJmsMsg('该账号开启了双因素认证,请输入验证码');
       return;
     }
-    server.token = r.token; server.user = r.user;
+    jmsApplyLogin(server, r);
     server.loggedOut = false; // 手动登录成功 → 恢复自动登录
     jmsGuardClear(server); // 同时解除熔断
     els.jmsOtpWrap.style.display = 'none';
@@ -5197,7 +5258,7 @@ async function jmsDoMfa() {
       els.jmsOtp.select();
       return;
     }
-    s.token = r.token; s.user = r.user; s.mfaCookie = null; s.mfaUrl = null;
+    jmsApplyLogin(s, r); s.mfaCookie = null; s.mfaUrl = null;
     jmsGuardClear(s); // MFA 验证通过 → 解除熔断
     els.jmsOtpWrap.style.display = 'none';
     els.jmsOtp.value = '';
@@ -5624,7 +5685,9 @@ async function jmsRefreshServer(serverId) {
   let r = s.token ? await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token }) : { ok: false };
   // token 失效/未登录 → 统一走 ensureJmsLogin 强制重登（顺带解密 enc:v1: 密码）后再拉；
   // 否则刷新会静默失败、或把密文当密码发去认证（用户以为“刷新没生效”）
-  if (!r.ok && (await ensureJmsLogin(s, s.baseUrl, { force: true }))) {
+  // 只有 token 失效类错误才强制重登；网络/5xx 重登只会白扣失败次数(7 次就锁 30 分钟)
+  const authFail = !r.ok && jmsAuthError(r.error) && (await ensureJmsLogin(s, s.baseUrl, { force: true }));
+  if (authFail) {
     r = await window.api.jmsAssets({ baseUrl: s.baseUrl, token: s.token });
   }
   if (r.ok) {
@@ -5752,7 +5815,7 @@ async function jmsRestore() {
     try {
       const r = await window.api.jmsLogin({ baseUrl: s.baseUrl, username: s.account, password: s.password });
       if (r.ok && r.token) {
-        s.token = r.token; s.user = r.user;
+        jmsApplyLogin(s, r);
         // 恢复登录成功 → 展开「🛡 堡垒机」顶级分组(区块头含资产数可见),区块内部仍默认折叠
         state.collapsedTopBastion = false;
         // 该服务器区块默认折叠(左侧分组收起,展开才看资产)
@@ -7341,8 +7404,8 @@ function renderBastionSavedSessions(container, f) {
                     setStatus(`登录「${s.name}」失败: ${lg.error || '未知错误'}`, 'var(--red)');
                     return;
                   }
-                  s.token = lg.token; s.user = lg.user; // 存回连接,后续直接可用
-                  jmsServer.token = lg.token; jmsServer.user = lg.user;
+                  jmsApplyLogin(s, lg); // 存回连接,后续直接可用
+                  jmsApplyLogin(jmsServer, lg);
                 } catch (e) {
                   setStatus(`登录「${s.name}」失败: ${e.message}`, 'var(--red)');
                   return;
@@ -7495,7 +7558,7 @@ async function bastionLoadSavedAssets(s) {
         return;
       }
       if (!lg || !lg.ok || !lg.token) { fail((lg && lg.error) || '登录失败'); return; }
-      s.token = lg.token; s.user = lg.user;
+      jmsApplyLogin(s, lg);
     }
     // 增量:已缓存账号的主机跳过详情(登录自动刷新);结果缓存到 SQLite(整批覆盖删消失主机)
     const r = await window.api.jmsAssets({ baseUrl: s.url, token: s.token, cachedById: jmsCachedById(s) });
@@ -7529,7 +7592,7 @@ function promptJmsMfa(s, { cookie, challengeUrl, choices, username, password }) 
           baseUrl: s.url, cookie, challengeUrl, type: mfaType, code, username, password,
         }).then((r) => {
           if (r && r.ok && r.token) {
-            s.token = r.token; s.user = r.user;
+            jmsApplyLogin(s, r);
             s.assetsLoadFailed = false; s.assetsLoadError = '';
             setStatus(`「${s.name}」登录成功`, 'var(--green)');
             bastionLoadSavedAssets(s); // 已有 token,重走直接拉资产

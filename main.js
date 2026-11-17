@@ -531,7 +531,7 @@ ipcMain.handle('jms:login', async (_e, { baseUrl, username, password }) => {
     if (r.mfaRequired) {
       return { ok: true, mfaRequired: true, cookie: r.cookie, choices: r.choices, challengeUrl: r.challengeUrl };
     }
-    return { ok: true, token: r.token, user: r.user };
+    return { ok: true, token: r.token, user: r.user, dateExpired: r.dateExpired || '' };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -540,7 +540,7 @@ ipcMain.handle('jms:login', async (_e, { baseUrl, username, password }) => {
 ipcMain.handle('jms:mfa', async (_e, { baseUrl, cookie, challengeUrl, type, code, username, password }) => {
   try {
     const r = await jmsApi.verifyMfaAndLogin(baseUrl, { cookie, challengeUrl, type, code, username, password });
-    return { ok: true, token: r.token, user: r.user };
+    return { ok: true, token: r.token, user: r.user, dateExpired: r.dateExpired || '' };
   } catch (err) {
     return { ok: false, error: err.message };
   }
