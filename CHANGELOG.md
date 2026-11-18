@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.0.1（2026-11-18）
+
+**版本号重置**：GitHub 历史 Releases 与 `v*` 标签已清空（27 个 Release / 27 个标签），
+版本号从 1 重新开始。**本版代码内容 = 原 v1.0.29**，不是新功能版。
+
+- 能力清单与重置说明：`docs/release-v1.0.1.md`
+- 历史改动仍可查：`git log` + `docs/release-v1.0.0.md` ~ `docs/release-v1.0.29.md`
+- 产物：`Polaris Portable 1.0.1.exe`（Windows 便携版，无安装版/无自动更新）
+- 回归：`node run-verify.js --pure` → 12/12 脚本，314 断言
+
 ## v1.0.29（2026-11-17）
 
 **跳板机这条线补完整** —— `~/.ssh/config` 的 `ProxyJump`/`ProxyCommand` 真正导入 + JumpServer 登录态加固 + 三个红灯用例查清（其中一条是真 bug：输入法残留会把命令行改坏）。
