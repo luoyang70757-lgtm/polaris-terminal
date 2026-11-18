@@ -51,6 +51,9 @@ jobs:
     permissions:
       contents: write   # 创建 GitHub Release 需要(默认 GITHUB_TOKEN 无写权限)
     steps:
+      # 取仓库源码只是为了读发布说明(docs/release-<tag>.md)。
+      # 标签触发时默认 ref 就是标签,手动触发时是分支(说明文件按版本号查,查不到就不带正文)。
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
@@ -68,6 +71,19 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
+      # 发布正文优先用仓库里的 docs/release-<tag>.md(没有就留空,不阻塞发布)
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        run: |
+          f="docs/release-${{ steps.rel.outputs.tag }}.md"
+          if [ -f "$f" ]; then
+            echo "path=$f" >> "$GITHUB_OUTPUT"
+            echo "发布说明: $f"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "发布说明: 无($f 不存在)"
+          fi
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
@@ -75,6 +91,7 @@ jobs:
             artifacts/**/*.exe
           tag_name: ${{ steps.rel.outputs.tag }}
           name: Polaris ${{ steps.rel.outputs.name }}
+          body_path: ${{ steps.notes.outputs.path }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: false
 
